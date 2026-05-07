@@ -27,15 +27,17 @@ Commandline users, script authors, and AI assistants can search, read, download,
 
 ## What your AI can do with it
 
-- Find a booking confirmation buried in your inbox
-- Download the PDF attachment from an invoice
-- Check all the links in a suspicious email
-- Reply with attachments, in the right thread, saved to drafts or sent
-- Compose and send a new message as the right alias
-- Move, flag, or archive messages
-- Search across all folders at once
-- Handle a meeting invite (check availability, draft a response)
-- Answer questions instantly across a large archive when paired with offlineimap and mu for a local indexed cache (see [docs/LOCAL_CACHE.md](docs/LOCAL_CACHE.md))
+- Mailroom runs on your machine, with no service of ours between you and your mailbox.
+- Keep banking, OTPs, and sensitive senders out of the LLM's view, using per-mailbox Sieve rules.
+- Reply from the right alias, using our identity feature.
+- Gmail-style queries (`from:alice newer:3d is:unread`) work on any IMAP provider.
+- An optional local `mu` index makes archive-grade searches near-instant.
+- Search every mailbox in one call with `-A`.
+- Drafts on your server by default; `--send` is opt-in.
+- Handle a meeting invite (parse the `.ics`, draft an RSVP).
+- Chain searches and reads in one call: `mailroom search foo search bar read -f INBOX -u 42`.
+- Move, flag, or archive messages.
+- Download attachments, export messages as HTML, extract links.
 
 ## Installation
 
@@ -214,6 +216,8 @@ IMAP servers drop idle connections after 10-30 minutes. AI assistants work in bu
 ## Security
 
 Mailroom accesses your email account. Store credentials outside your repository (environment variables, a secrets manager, or a config file in `.gitignore`). Use app-specific passwords or OAuth2 rather than your main account password. Restrict `allowed_folders` in the config to limit what the tool can see.
+
+For per-message control over what reaches the LLM, point an `[imap.NAME]` block's `redact` field at a Sieve script. Matching messages have subject, body, and party addresses blanked before mailroom returns them, so banking notices, OTPs, and other sensitive content stay out of the model's context window. See [examples/work-only.sieve](examples/work-only.sieve) for a starting policy.
 
 ## License
 
