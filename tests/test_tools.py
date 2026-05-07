@@ -406,6 +406,129 @@ class TestTools:
         assert "Unknown action" in result
         mock_client.process_email_action.side_effect = None
 
+    @pytest.mark.asyncio
+    async def test_read(self, tools, mock_client, mock_context, mock_email):
+        """Read tool returns JSON with envelope, body, and conditional fields."""
+        read = tools["read"]
+        # mock_email has both html and text content; html should win
+        result = await read("INBOX", 1, mock_context)
+        mock_client.fetch_email.assert_called_with(1, "INBOX")
+        data = json.loads(result)
+        assert data["uid"] == 1
+        assert data["folder"] == "INBOX"
+        assert data["from"] == "Sender <sender@example.com>"
+        assert data["to"] == ["Recipient <recipient@example.com>"]
+        assert data["subject"] == "Test Email"
+        assert data["content_type"] == "text/html"
+        assert "<p>Test content</p>" in data["body"]
+        assert data["flags"] == ["\\Seen"]
+        # cc and attachments are absent on this fixture
+        assert "cc" not in data
+        assert "attachments" not in data
+
+    @pytest.mark.asyncio
+    async def test_read_email_not_found(self, tools, mock_client, mock_context):
+        """Read tool returns an error JSON when fetch_email returns None."""
+        read = tools["read"]
+        mock_client.fetch_email.return_value = None
+        result = await read("INBOX", 9999, mock_context)
+        data = json.loads(result)
+        assert "error" in data
+        assert "9999" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_read_text_only_body(self, tools, mock_client, mock_context):
+        """When only text content is present, content_type is text/plain."""
+        read = tools["read"]
+        text_only = Email(
+            message_id="<text@example.com>",
+            subject="Plain",
+            from_=EmailAddress(name="", address="x@example.com"),
+            to=[],
+            cc=[],
+            bcc=[],
+            date=datetime.now(),
+            content=EmailContent(text="just text", html=None),
+            attachments=[],
+            flags=[],
+            headers={},
+            folder="INBOX",
+            uid=2,
+        )
+        mock_client.fetch_email.return_value = text_only
+        result = await read("INBOX", 2, mock_context)
+        data = json.loads(result)
+        assert data["content_type"] == "text/plain"
+        assert data["body"] == "just text"
+
+    @pytest.mark.asyncio
+    async def test_read_includes_cc_and_attachments(
+        self, tools, mock_client, mock_context
+    ):
+        """When the email carries cc / attachments, both surface in the result."""
+        from mailroom.models import EmailAttachment
+
+        read = tools["read"]
+        with_extras = Email(
+            message_id="<extras@example.com>",
+            subject="Extras",
+            from_=EmailAddress(name="", address="x@example.com"),
+            to=[EmailAddress(name="", address="to@example.com")],
+            cc=[EmailAddress(name="", address="cc@example.com")],
+            bcc=[],
+            date=datetime.now(),
+            content=EmailContent(text="body", html=None),
+            attachments=[
+                EmailAttachment(
+                    filename="report.pdf",
+                    content_type="application/pdf",
+                    size=1234,
+                    content=b"",
+                )
+            ],
+            flags=[],
+            headers={},
+            folder="INBOX",
+            uid=3,
+        )
+        mock_client.fetch_email.return_value = with_extras
+        result = await read("INBOX", 3, mock_context)
+        data = json.loads(result)
+        assert data["cc"] == ["cc@example.com"]
+        assert isinstance(data["attachments"], list)
+        assert data["attachments"][0]["filename"] == "report.pdf"
+
+    @pytest.mark.asyncio
+    async def test_read_exception_returns_error_json(
+        self, tools, mock_client, mock_context
+    ):
+        """When the IMAP fetch raises, the tool surfaces it as an error JSON."""
+        read = tools["read"]
+        mock_client.fetch_email.side_effect = Exception("boom")
+        result = await read("INBOX", 1, mock_context)
+        data = json.loads(result)
+        assert data == {"error": "boom"}
+
+    @pytest.mark.asyncio
+    async def test_folders(self, tools, mock_client, mock_context):
+        """Folders tool returns the JSON list from list_folders()."""
+        folders = tools["folders"]
+        result = await folders(mock_context)
+        data = json.loads(result)
+        assert data == ["INBOX", "Sent", "Archive", "Trash"]
+
+    @pytest.mark.asyncio
+    async def test_folders_exception_returns_error_json(
+        self, tools, mock_client, mock_context
+    ):
+        """When list_folders raises, the tool surfaces it as an error JSON."""
+        folders = tools["folders"]
+        mock_client.list_folders.side_effect = RuntimeError("connection lost")
+        result = await folders(mock_context)
+        data = json.loads(result)
+        assert "error" in data
+        assert "connection lost" in data["error"]
+
 
 class TestRawImapPassthrough:
     """Test the imap: escape hatch via parse_query."""

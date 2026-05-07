@@ -537,6 +537,79 @@ class TestImapClientThreading(unittest.TestCase):
         assert thread_emails[0].uid == initial_uid
         assert thread_emails[1].uid == reply2_uid
 
+    def test_fetch_thread_strict_subject_fallback_filters_unrelated(self):
+        """When SUBJECT search returns >= 20 results, fetch_thread falls back
+        to strict-subject filtering: only candidates whose subject is in the
+        ``Re:/Fwd:/FW:`` family of the canonical subject join the thread.
+        Unrelated messages that share a substring with the subject are
+        excluded."""
+        initial_uid = 600
+        initial_message_id = "<thread6-initial@example.com>"
+
+        initial_email = self.create_mock_email(
+            uid=initial_uid,
+            message_id=initial_message_id,
+            subject="Quarterly Review",
+            sender="person1@example.com",
+            to="person2@example.com",
+            date=datetime.now() - timedelta(hours=2),
+            body_text="Initial message",
+        )
+
+        # 20 candidates: half are valid Re:/Fwd: variants, half are unrelated
+        # but happened to match the SUBJECT search (e.g. broader keyword hit).
+        valid_uids = list(range(610, 620))  # 10 valid
+        unrelated_uids = list(range(620, 630))  # 10 unrelated
+        all_candidate_uids = valid_uids + unrelated_uids
+
+        candidate_emails = {initial_uid: initial_email}
+        for uid in valid_uids:
+            candidate_emails[uid] = self.create_mock_email(
+                uid=uid,
+                message_id=f"<reply-{uid}@example.com>",
+                subject="Re: Quarterly Review",
+                sender="person2@example.com",
+                to="person1@example.com",
+                date=datetime.now() - timedelta(hours=1),
+                body_text=f"Reply {uid}",
+            )
+        for uid in unrelated_uids:
+            candidate_emails[uid] = self.create_mock_email(
+                uid=uid,
+                message_id=f"<unrelated-{uid}@example.com>",
+                subject="About the Quarterly Review process changes",
+                sender="ops@example.com",
+                to="staff@example.com",
+                date=datetime.now() - timedelta(hours=3),
+                body_text="Unrelated body",
+            )
+
+        # First fetch is the initial email; second fetch is the candidate set
+        # (during strict filtering); third fetch is the final thread set.
+        self.mock_client.fetch.side_effect = [
+            {initial_uid: initial_email},
+            candidate_emails,
+            {uid: candidate_emails[uid] for uid in [initial_uid] + valid_uids},
+        ]
+
+        # References / In-Reply-To searches return empty so thread_uids stays
+        # at {initial_uid} and the SUBJECT branch fires.
+        self.mock_client.search.side_effect = [
+            SearchIds([]),  # References from message_id
+            SearchIds([]),  # In-Reply-To from message_id
+            SearchIds(all_candidate_uids),  # SUBJECT search: 20 hits
+        ]
+
+        thread_emails = self.imap_client.fetch_thread(initial_uid)
+
+        # Expect: initial + 10 valid replies, unrelated 10 excluded.
+        thread_uids = [e.uid for e in thread_emails]
+        assert initial_uid in thread_uids
+        for uid in valid_uids:
+            assert uid in thread_uids
+        for uid in unrelated_uids:
+            assert uid not in thread_uids
+
     def test_thread_with_different_encodings(self):
         """Test handling of different encodings within thread messages."""
         # Create emails with different encodings

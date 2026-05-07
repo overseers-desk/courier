@@ -1405,6 +1405,162 @@ class TestSearchEmailsImapResultShape:
         ):
             assert key in results[0]
 
+    def test_imap_search_uses_special_use_all_folder(self):
+        """When the server advertises a SPECIAL-USE \\All folder (Gmail's
+        ``[Gmail]/All Mail``, Fastmail's ``Archive``), the search runs against
+        that one folder rather than iterating every selectable folder."""
+        from datetime import datetime
+
+        client = self._make_client()
+
+        with (
+            patch.object(client, "_build_search_spec", return_value="ALL"),
+            patch.object(
+                client, "find_special_use_folder", return_value="[Gmail]/All Mail"
+            ),
+            patch.object(client, "list_folders") as mock_list,
+            patch.object(client, "search", return_value=[1]),
+            patch.object(client, "select_folder"),
+            patch.object(client, "_client_or_raise") as mock_clientor,
+            patch.object(client, "fetch_emails", return_value={1: self._make_email()}),
+        ):
+            mock_clientor.return_value.fetch.return_value = {
+                1: {b"INTERNALDATE": datetime(2026, 4, 1, 10, 0, 0)}
+            }
+            client._search_emails_imap("from:alice", folder=None, limit=10)
+
+        mock_list.assert_not_called()
+
+    def test_imap_search_skips_folder_when_pass1_search_raises(self, caplog):
+        """A per-folder error during pass 1 is logged and the loop continues
+        with the remaining folders rather than aborting the whole search."""
+        from datetime import datetime
+
+        client = self._make_client()
+
+        def search_side_effect(spec, folder=None):
+            if folder == "Broken":
+                raise RuntimeError("server hiccup")
+            return [42]
+
+        with (
+            patch.object(client, "_build_search_spec", return_value="ALL"),
+            patch.object(client, "find_special_use_folder", return_value=None),
+            patch.object(client, "list_folders", return_value=["Broken", "INBOX"]),
+            patch.object(client, "search", side_effect=search_side_effect),
+            patch.object(client, "select_folder"),
+            patch.object(client, "_client_or_raise") as mock_clientor,
+            patch.object(
+                client,
+                "fetch_emails",
+                return_value={42: self._make_email()},
+            ),
+            caplog.at_level("WARNING"),
+        ):
+            mock_clientor.return_value.fetch.return_value = {
+                42: {b"INTERNALDATE": datetime(2026, 4, 1, 10, 0, 0)}
+            }
+            results = client._search_emails_imap("from:alice", folder=None, limit=10)
+
+        assert len(results) == 1
+        assert results[0]["folder"] == "INBOX"
+        assert any("Broken" in m and "server hiccup" in m for m in caplog.messages)
+
+    def test_imap_search_skips_folder_when_pass2_fetch_raises(self, caplog):
+        """A per-folder error during pass 2 (full fetch) is logged and other
+        folders' results are still returned."""
+        from datetime import datetime
+
+        client = self._make_client()
+
+        def fetch_emails_side_effect(uids, folder="INBOX"):
+            if folder == "Broken":
+                raise RuntimeError("fetch failed")
+            return {uids[0]: self._make_email()}
+
+        with (
+            patch.object(client, "_build_search_spec", return_value="ALL"),
+            patch.object(client, "find_special_use_folder", return_value=None),
+            patch.object(client, "list_folders", return_value=["Broken", "INBOX"]),
+            patch.object(client, "search", return_value=[1]),
+            patch.object(client, "select_folder"),
+            patch.object(client, "_client_or_raise") as mock_clientor,
+            patch.object(client, "fetch_emails", side_effect=fetch_emails_side_effect),
+            caplog.at_level("WARNING"),
+        ):
+            mock_clientor.return_value.fetch.return_value = {
+                1: {b"INTERNALDATE": datetime(2026, 4, 1, 10, 0, 0)}
+            }
+            results = client._search_emails_imap("from:alice", folder=None, limit=10)
+
+        # INBOX result returned; Broken folder skipped
+        assert len(results) == 1
+        assert results[0]["folder"] == "INBOX"
+        assert any("Broken" in m and "fetch failed" in m for m in caplog.messages)
+
+    def test_imap_search_includes_redacted_by_when_set(self):
+        """``redacted_by`` on the parsed Email carries through to the search
+        result so the model sees the redaction attribution alongside the
+        envelope."""
+        from datetime import datetime
+
+        client = self._make_client()
+        email_obj = self._make_email()
+        email_obj.redacted_by = "newsletter-rule"
+
+        with (
+            patch.object(client, "_build_search_spec", return_value="ALL"),
+            patch.object(client, "find_special_use_folder", return_value=None),
+            patch.object(client, "list_folders", return_value=["INBOX"]),
+            patch.object(client, "search", return_value=[42]),
+            patch.object(client, "select_folder"),
+            patch.object(client, "_client_or_raise") as mock_clientor,
+            patch.object(client, "fetch_emails", return_value={42: email_obj}),
+        ):
+            mock_clientor.return_value.fetch.return_value = {
+                42: {b"INTERNALDATE": datetime(2026, 4, 1, 10, 0, 0)}
+            }
+            results = client._search_emails_imap("from:alice", folder="INBOX", limit=10)
+
+        assert results[0]["redacted_by"] == "newsletter-rule"
+
+    def test_imap_search_global_top_n_across_folders(self):
+        """The two-pass pipeline keeps only the top-N candidates after sorting
+        across all folders, so a date-newer hit in folder B beats an older hit
+        in folder A regardless of folder iteration order."""
+        from datetime import datetime
+
+        client = self._make_client()
+        email_a = self._make_email("<a@example.com>")
+        email_a.uid = 10
+        email_b = self._make_email("<b@example.com>")
+        email_b.uid = 20
+
+        def search_side_effect(spec, folder=None):
+            return {"FolderA": [10], "FolderB": [20]}[folder]
+
+        def fetch_emails_side_effect(uids, folder="INBOX"):
+            return {10: email_a} if folder == "FolderA" else {20: email_b}
+
+        with (
+            patch.object(client, "_build_search_spec", return_value="ALL"),
+            patch.object(client, "find_special_use_folder", return_value=None),
+            patch.object(client, "list_folders", return_value=["FolderA", "FolderB"]),
+            patch.object(client, "search", side_effect=search_side_effect),
+            patch.object(client, "select_folder"),
+            patch.object(client, "_client_or_raise") as mock_clientor,
+            patch.object(client, "fetch_emails", side_effect=fetch_emails_side_effect),
+        ):
+            # FolderA's hit is older; FolderB's hit is newer. Limit=1 keeps B.
+            mock_clientor.return_value.fetch.side_effect = [
+                {10: {b"INTERNALDATE": datetime(2026, 1, 1, 10, 0, 0)}},
+                {20: {b"INTERNALDATE": datetime(2026, 4, 1, 10, 0, 0)}},
+            ]
+            results = client._search_emails_imap("from:alice", folder=None, limit=1)
+
+        assert len(results) == 1
+        assert results[0]["folder"] == "FolderB"
+
 
 class TestResolveSentFolder:
     """``resolve_sent_folder`` is the pre-send verification entry point.
