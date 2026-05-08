@@ -7,17 +7,17 @@ description: Search, read, and look up information from the user's IMAP mailboxe
 
 ## Process
 
-0. Before drafting, note today's date; whether this is a reply; and if so, how long the delay was.
+0. Note today's date, whether a reply, and if so the delay.
 1. Show from / identity, to, cc, bcc, subject, body for review.
 2. Wait for user approval.
 3. Send via `mailroom`.
-4. After sending, report `message_id_sent` from the JSON output.
+4. Report `message_id_sent` from the JSON output.
 
 Do not save a draft if told to send.
 
 ## One-shot principle
 
-Each mailroom invocation should be the final call - no pre-flight `list`, `config-check`, or `folders` before a send the user already approved. If the command needs context (which identity, which folder), ask the user, not mailroom. mailroom errors are explicit and name the exact corrective flag, so a wrong invocation surfaces what to fix without a probe phase.
+Each mailroom invocation is the final call — no pre-flight `list`, `config-check`, or `folders` before a send the user already approved. If the command needs context (which identity, which folder), ask the user, not mailroom. mailroom errors name the exact corrective flag; a wrong invocation self-corrects without a probe phase.
 
 Skip `mailroom config-check` unless the user reports config-related trouble. Skip `mailroom list` unless the user explicitly asks "what identities do I have".
 
@@ -36,7 +36,7 @@ mailroom refuses to send when no copy will be retained. A copy is retained iff F
 
 ## Identity-level bcc (send-only identities)
 
-`[identity.NAME]` may declare a `bcc = "self@x"` (string or list). On every send from this identity, those addresses are appended to BCC automatically. When `bcc` is set, the identity may omit `imap` entirely - it becomes send-only, and the self-BCC takes the place of FCC. Such identities cannot fetch, save drafts, or reply to a parent; they only do `compose --send`.
+`[identity.NAME]` may declare a `bcc = "self@x"` (string or list). On every send from this identity, those addresses are appended to BCC automatically. When `bcc` is set, the identity may omit `imap` entirely — send-only, self-BCC substitutes for FCC. Such identities cannot fetch, save drafts, or reply to a parent; they only do `compose --send`.
 
 ## New emails
 
@@ -48,9 +48,9 @@ mailroom compose \
   --send --identity NAME
 ```
 
-For HTML, add `--body-html "<p>...</p>"`. With both `--body` and `--body-html`, the message goes as `multipart/alternative`. Repeat `--attach <path>` for attachments. Repeat `--bcc <addr>` for envelope-only recipients.
+HTML: add `--body-html "<p>...</p>"`; both `--body` and `--body-html` → `multipart/alternative`. `--attach <path>` and `--bcc <addr>` are repeatable.
 
-The JSON output includes `message_id_sent` (recipient-visible Message-ID, differs from `message_id_local` when the smarthost rewrites it, e.g. SES) and `accepted_recipients`.
+JSON output includes `message_id_sent` (recipient-visible Message-ID; differs from `message_id_local` when the smarthost rewrites it, e.g. SES) and `accepted_recipients`.
 
 ## Replies
 
@@ -58,7 +58,7 @@ The JSON output includes `message_id_sent` (recipient-visible Message-ID, differ
 mailroom -i <imap> reply -f <folder> -u <uid> --body "..." --send --identity NAME
 ```
 
-Without `--identity`, mailroom matches the parent's recipients against the imap block's identities and uses the matching one. A miss errors rather than guessing. Threading headers (`In-Reply-To`, `References`) are filled from the parent automatically. `--reply-all`, `--cc`, `--body-html`, `--bcc`, `--attach` work the same as on `compose`. Drop `--send` to save a draft instead.
+Without `--identity`, mailroom matches the parent's recipients against the imap block's identities and uses the matching one. A miss errors rather than guessing. Threading headers set from parent automatically. `--reply-all`, `--cc`, `--body-html`, `--bcc`, `--attach` work the same as on `compose`. Drop `--send` to save a draft instead.
 
 ## Sending an existing draft
 
@@ -66,7 +66,7 @@ Without `--identity`, mailroom matches the parent's recipients against the imap 
 mailroom -i <imap> send-draft -f Drafts -u <uid>
 ```
 
-Reads the draft, parses its From, matches it against the imap block's identities, transmits, and removes the draft on success. `--keep-draft` retains it. `--dry-run` connects and authenticates without sending. `--bcc` adds envelope-time recipients without rewriting the draft body. `--identity NAME` overrides the draft's From with a configured identity; `--smtp NAME --from EMAIL` is mode B.
+Reads draft, matches From to an imap identity, transmits, removes on success. `--keep-draft` retains it. `--dry-run` authenticates without sending. `--bcc` adds envelope-time recipients without rewriting the draft body. `--identity NAME` overrides the draft's From; `--smtp NAME --from EMAIL` is mode B.
 
 ## Top-level flags
 
@@ -74,15 +74,15 @@ Reads the draft, parses its From, matches it against the imap block's identities
 - `-A, --all-imap`: query every imap block (search only).
 - `-c, --config PATH`: alternate config file.
 
-There is no `-a` flag. The old `-a <account>` is now `-i <imap>`. The old `[[identities]]` table is now `[identity.NAME]` blocks.
+Migration: `-a <account>` → `-i <imap>`; `[[identities]]` → `[identity.NAME]`.
 
 ## After a successful send
 
-mailroom FCCs (IMAP-APPENDs) the wire-form bytes to the identity's Sent folder, with `Bcc:` stripped and `Message-ID:` rewritten to match the recipient-visible form, so threading later works because the FCC bytes carry the same Message-ID the recipient sees. Configure the Sent folder per identity via `sent_folder = "..."`; without it, mailroom auto-detects via SPECIAL-USE `\Sent` and falls back to `Sent`. When the SMTP block has `save_sent = false` (or `"auto"` resolving to false on Gmail, where the server auto-files), the FCC step is skipped.
+mailroom FCCs wire-form bytes to the Sent folder with `Bcc:` stripped and `Message-ID:` rewritten to the recipient-visible form (threading depends on this match). Configure Sent folder per identity via `sent_folder = "..."`; without it, mailroom auto-detects via SPECIAL-USE `\Sent` and falls back to `Sent`. When the SMTP block has `save_sent = false` (or `"auto"` resolving to false on Gmail, where the server auto-files), the FCC step is skipped.
 
 ## Looking up a person by name
 
-When the user names a person to look up ("tell me about Alice Doe, from emails"), search by the name itself rather than constructing an address from it. AI often invents plausible-looking addresses such as `alicedoe@gmail.com` from the name; the actual address commonly has no surface relation to it, so a guessed address returns nothing. Issue a name-based query first, read a hit to learn the real address, then narrow.
+Search by name, not a constructed address. AI-guessed addresses (e.g. `alicedoe@gmail.com`) commonly miss; real addresses have no surface relation to the name. Issue a name-based query first, read a hit to learn the real address, then narrow.
 
 ## Lookups
 
@@ -92,9 +92,9 @@ Look up several keywords in one go by repeating the verb:
 mailroom -A search "sergio" search "panedas" search "sergiopanedas"
 ```
 
-Each keyword sits under its own outer key in the result, so a message comes labelled with the keyword that matched it. Output is JSON of shape `{op_key: {imap_name: {results: [...], provenance: {...}}}}`. With `[local_cache]` configured the queries run against a local index orders of magnitude faster than IMAP; without it the same calls hit IMAP. Each per-term response carries a `provenance` field reporting `source` (`"local"` or `"remote"`) and any fall-back reason.
+Each keyword sits under its own outer key in the result, so a message comes labelled with the keyword that matched it. Output is JSON of shape `{op_key: {imap_name: {results: [...], provenance: {...}}}}`. With `[local_cache]` configured the queries run against a local index orders of magnitude faster than IMAP; without it queries hit IMAP directly. Each per-term response carries a `provenance` field reporting `source` (`"local"` or `"remote"`) and any fall-back reason.
 
-`from:alice OR from:bob` is also a valid Gmail-style query. The server returns one mixed result set with no per-keyword attribution, which is fine when the union is what you want.
+`from:alice OR from:bob` sends one server query with no per-keyword attribution; prefer it when speed matters and attribution does not.
 
 `mailroom -A` queries every imap block; `-i NAME` (repeatable) selects specific blocks. Verbs mix freely: `mailroom search foo read -f INBOX -u 42` runs the search and the fetch over one connection per block.
 
