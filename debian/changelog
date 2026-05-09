@@ -1,3 +1,29 @@
+mailroom (1.1.8) unstable; urgency=medium
+
+  * `-i` is no longer a shorthand for `--imap`. Use `--imap NAME`
+    at the top level. `-i` is now exclusively `save --identifier`
+    (closes #36): previously `mailroom -i acct save -f INBOX -u 100
+    -i "Billete.pdf" -o out.pdf` failed because the argv
+    preprocessor consumed `save -i "Billete.pdf"` as a second
+    `--imap`. Removing the shorthand removes the collision at the
+    source. Migration: `mailroom -i NAME ...` →
+    `mailroom --imap NAME ...`.
+  * `-n/--limit` and `-f/--folder` are now chain-level: a trailing
+    `-n N` or `-f FOLDER` after the last verb applies to every
+    chained verb that doesn't set its own value (closes #34). So
+    `mailroom search a search b -f INBOX -n 5` runs both searches
+    against INBOX with limit 5 instead of leaving the trailing
+    flags attached to the last verb.
+  * MCP tool coverage: `search_emails`, `read`, and `folders` are
+    consistently exposed; thread matching uses strict-subject
+    semantics (closes #11).
+  * `install-claude-command` is now version-aware. It checks the
+    installed `mailroom.md` against the bundled one and prompts
+    before overwriting; the `--force` flag is removed. The status
+    nudge surfaces globally when registration is missing.
+
+ -- Weiwu Zhang <a@colourful.land>  Sun, 10 May 2026 12:00:00 +0000
+
 mailroom (1.1.7) unstable; urgency=medium
 
   * `search` and `read` repeat at the top level to run several

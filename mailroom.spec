@@ -1,5 +1,5 @@
 Name:           mailroom
-Version:        1.1.7
+Version:        1.1.8
 Release:        1%{?dist}
 Summary:        Email toolkit for AI assistants and command-line scripting
 License:        MIT
@@ -67,6 +67,25 @@ install -Dpm 644 debian/mailroom.1 %{buildroot}%{_mandir}/man1/mailroom.1
 %{_mandir}/man1/mailroom.1*
 
 %changelog
+* Sun May 10 2026 Weiwu Zhang <a@colourful.land> - 1.1.8-1
+- `-i` is no longer a shorthand for `--imap`. Use `--imap NAME` at the
+  top level. `-i` is now exclusively `save --identifier` (closes #36):
+  previously `mailroom -i acct save -f INBOX -u 100 -i "Billete.pdf"
+  -o out.pdf` failed because the argv preprocessor consumed
+  `save -i "Billete.pdf"` as a second `--imap`. Removing the shorthand
+  removes the collision at the source. Migration:
+  `mailroom -i NAME ...` → `mailroom --imap NAME ...`.
+- `-n/--limit` and `-f/--folder` are now chain-level: a trailing
+  `-n N` or `-f FOLDER` after the last verb applies to every chained
+  verb that doesn't set its own value (closes #34).
+- MCP tool coverage: `search_emails`, `read`, and `folders` are
+  consistently exposed; thread matching uses strict-subject semantics
+  (closes #11).
+- `install-claude-command` is now version-aware. It checks the
+  installed `mailroom.md` against the bundled one and prompts before
+  overwriting; the `--force` flag is removed. The status nudge
+  surfaces globally when registration is missing.
+
 * Wed May 06 2026 Weiwu Zhang <a@colourful.land> - 1.1.7-1
 - `search` and `read` repeat at the top level to run several operations
   in one invocation:
