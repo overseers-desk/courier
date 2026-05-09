@@ -1390,15 +1390,14 @@ def status() -> None:
 
 
 @app.command("install-claude-command")
-def install_claude_command(
-    force: bool = typer.Option(False, "--force", "-f", help="Overwrite without prompting."),
-) -> None:
+def install_claude_command() -> None:
     """Copy the Claude Code command file into ~/.claude/commands/mailroom.md.
 
     After running this command, Claude Code will recognise the ``mailroom``
     skill and route email-related requests through the mailroom CLI.
-    If a previous version is already installed, you will be asked to confirm
-    before it is replaced.
+    Overwrites any existing install; back the file up first if it has been
+    edited locally. ``mailroom status`` surfaces version drift between the
+    running mailroom and the installed command file.
     """
     from importlib.resources import files
 
@@ -1406,22 +1405,7 @@ def install_claude_command(
     dest = dest_dir / "mailroom.md"
     dest_dir.mkdir(parents=True, exist_ok=True)
 
-    if dest.exists() and not force:
-        installed = _installed_command_version()
-        installed_label = installed if installed else "unknown version"
-        if installed == __version__:
-            print(f"Already at {__version__}: {dest}")
-            return
-        confirmed = typer.confirm(
-            f"mailroom command already installed ({installed_label}). "
-            f"Replace with {__version__}?"
-        )
-        if not confirmed:
-            print("Aborted.")
-            raise typer.Exit(1)
-
     raw = files("mailroom.data").joinpath("claude-command.md").read_text()
-    # Stamp the current version into the frontmatter of the installed copy.
     if raw.startswith("---\n"):
         content = "---\nversion: " + __version__ + "\n" + raw[4:]
     else:
