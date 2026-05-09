@@ -122,6 +122,9 @@ def _global_options(
     _all_imap = all_imap
     level = logging.DEBUG if verbose else logging.WARNING
     logging.basicConfig(level=level, format="%(levelname)s %(name)s: %(message)s")
+    nudge = _claude_registration_status()
+    if nudge:
+        print(nudge, file=sys.stderr)
 
 
 def _resolve_imap_names() -> List[str]:
@@ -1346,8 +1349,10 @@ def _claude_registration_status() -> Optional[str]:
         return None
     if not command_file.exists():
         return (
-            "note: Claude Code config found but mailroom is not registered. "
-            "Run `mailroom install-claude-command` to add it."
+            "note: Claude Code config found at ~/.claude but mailroom is not "
+            "registered. Run `mailroom install-claude-command` to register the "
+            "mailroom command, so email-related user requests can be resolved "
+            "via mailroom."
         )
     installed = _installed_command_version()
     if installed != __version__:
@@ -1384,9 +1389,6 @@ def status() -> None:
     _print_status_table(rows)
     for w in cfg.warnings:
         print(f"warn: {w}", file=sys.stderr)
-    nudge = _claude_registration_status()
-    if nudge:
-        print(nudge, file=sys.stderr)
 
 
 @app.command("install-claude-command")
@@ -1395,9 +1397,8 @@ def install_claude_command() -> None:
 
     After running this command, Claude Code will recognise the ``mailroom``
     skill and route email-related requests through the mailroom CLI.
-    Overwrites any existing install; back the file up first if it has been
-    edited locally. ``mailroom status`` surfaces version drift between the
-    running mailroom and the installed command file.
+    If a previous version is already installed, you will be asked to confirm
+    before it is replaced.
     """
     from importlib.resources import files
 
@@ -1405,7 +1406,22 @@ def install_claude_command() -> None:
     dest = dest_dir / "mailroom.md"
     dest_dir.mkdir(parents=True, exist_ok=True)
 
+    if dest.exists():
+        installed = _installed_command_version()
+        installed_label = installed if installed else "unknown version"
+        if installed == __version__:
+            print(f"Already at {__version__}: {dest}")
+            return
+        confirmed = typer.confirm(
+            f"mailroom command already installed ({installed_label}). "
+            f"Replace with {__version__}?"
+        )
+        if not confirmed:
+            print("Aborted.")
+            raise typer.Exit(1)
+
     raw = files("mailroom.data").joinpath("claude-command.md").read_text()
+    # Stamp the current version into the frontmatter of the installed copy.
     if raw.startswith("---\n"):
         content = "---\nversion: " + __version__ + "\n" + raw[4:]
     else:
