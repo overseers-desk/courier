@@ -86,22 +86,50 @@ Search by name, not a constructed address. AI-guessed addresses (e.g. `alicedoe@
 
 ## Lookups
 
-Look up several keywords in one go by repeating the verb:
+`search` accepts Gmail-style queries: operators stack with implicit AND between space-separated tokens, OR clusters with the `OR` keyword. Write the JSON to a temp file and slice with `jq`; `head`/`tail` on JSON cuts mid-structure:
 
 ```bash
-mailroom -A search "sergio" search "panedas" search "sergiopanedas"
+RESULTS=$(mktemp /tmp/mailroom.XXXXXXXX)
+mailroom -A --format json \
+  search "from:@iberia.com OR 'Iberia Líneas Aéreas' OR 'Iberia Airlines'" > "$RESULTS"
+jq '[.[] | .[] | .results[] | {subject, from, date}]' "$RESULTS"
 ```
 
-Each keyword sits under its own outer key in the result, so a message comes labelled with the keyword that matched it. Output is JSON of shape `{op_key: {imap_name: {results: [...], provenance: {...}}}}`. With `[local_cache]` configured the queries run against a local index orders of magnitude faster than IMAP; without it queries hit IMAP directly. Each per-term response carries a `provenance` field reporting `source` (`"local"` or `"remote"`) and any fall-back reason.
+The same airline shows up under a domain (`iberia.com`), a Spanish trading name (`Iberia Líneas Aéreas`), and an English variant (`Iberia Airlines`). One composed OR returns the union under one result key; three chained `search` verbs would split the same union across three labelled keys, which is overhead when the terms refer to one entity. The example illustrates that domains and company names diverge, and that company names carry language variants. The same shape covers other entities whose self-references vary: an airline known by IATA code and full name (`'CZ' OR 'China Southern' OR 'from:@csair.com'`); a person known by first name, full name, and address (`'Alice' OR 'Alice Schmidt' OR 'alice@example.com'`).
 
-A term may itself be an OR clause: `mailroom -A search "from:@csair.com OR 'China Southern'" search "renfe"`. Each term still costs one server query and keeps its own result key. A bare `from:alice OR from:bob` with no chained terms returns one flat union with no per-key attribution.
-
-`mailroom -A` queries every imap block; `-i NAME` (repeatable) selects specific blocks. Verbs mix freely: `mailroom search foo read -f INBOX -u 42` runs the search and the fetch over one connection per block.
-
-Read, list and extract attachments, or export the verbatim `.eml` for a hit:
+A complex example joining a recipient OR-cluster with a topic OR-cluster:
 
 ```bash
-mailroom -i <imap> read -f <folder> -u <uid>
+mailroom -A --format json \
+  search "(from:bad@character.com OR to:bad@character.com OR cc:bad@character.com) (trespass OR threaten OR violent)" > "$RESULTS"
+```
+
+The query asks for messages where the address appears as sender or recipient AND the body mentions any of three topics. On Gmail accounts mailroom dispatches this through the `X-GM-RAW` extension (any token starting with `from:`/`to:`/`cc:`/`bcc:` triggers it, so the parser sees the un-prefixed `to:` and `cc:` tokens), and Gmail's web-UI grammar evaluates the parens. A non-Gmail backend without parens grouping needs the `imap:` raw escape for the same shape: `imap:OR OR FROM bad@character.com OR TO bad@character.com CC bad@character.com OR BODY trespass OR BODY threaten BODY violent`. The example illustrates that a question with two independent disjunctions (any of N recipient roles, any of M topic words) can be expressed as one composed search instead of N×M chained searches.
+
+`from:`, `to:`, `subject:`, `after:`, `before:`, `is:unread`, `is:read`, and bare body words all combine. With `[local_cache]` configured the queries run against a local index orders of magnitude faster than IMAP; without it queries hit IMAP directly. Each per-block response carries a `provenance` field reporting `source` (`"local"` or `"remote"`) and any fall-back reason.
+
+Output is JSON of shape `{op_key: {imap_name: {results: [...], provenance: {...}}}}`. The verb chains, so genuinely separate queries can run in one invocation, each under its own outer key. A chained `search` costs one server query per term; one composed query (OR included) returns a flat union under one key:
+
+```bash
+mailroom -A --format json \
+  search "from:alice@example.com subject:invoice" \
+  search "from:billing@example.org after:2026-03-01" \
+  > "$RESULTS"
+```
+
+`mailroom -A` queries every imap block; `-i NAME` (repeatable) selects specific blocks. Verbs mix freely: `mailroom search "from:alice@example.com is:unread" read -u 42 -f INBOX` runs the search and the fetch over one connection per block.
+
+Like `search`, `read` chains. Repeat the verb to fetch several UIDs over one IMAP session, instead of N parallel `mailroom read` processes paying N fresh logins (Gmail caps simultaneous IMAP connections per account). Trailing `-f FOLDER` peels off as a chain default, so each `read` reuses the folder:
+
+```bash
+RESULTS=$(mktemp /tmp/mailroom.XXXXXXXX)
+mailroom -i <imap> --format json read -u 100 read -u 200 read -u 300 -f INBOX > "$RESULTS"
+jq '[.[] | .[] | {uid, subject, from, date}]' "$RESULTS"
+```
+
+List and extract attachments, or export the verbatim `.eml`:
+
+```bash
 mailroom -i <imap> attachments -f <folder> -u <uid>
 mailroom -i <imap> save -f <folder> -u <uid> -i <name> -o <path>
 mailroom -i <imap> export -f <folder> -u <uid> --raw -o /tmp/msg.eml
