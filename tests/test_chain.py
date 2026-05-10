@@ -780,34 +780,38 @@ class TestApplyGlobalFlags:
 
 
 class TestRewriteArgv:
-    def test_save_dash_i_not_hoisted_as_imap(self):
-        # Regression: issue #36. `-i` after `save` is `--identifier`, not
-        # `--imap`; the hoist preprocessor must leave it alone.
+    def test_compose_dash_i_not_hoisted_as_imap(self):
+        # Regression: issue #36 (updated for v1.1.9 flag layout).
+        # `-i` after a subcommand is the subcommand's `--identity`,
+        # never the global `--imap`; the hoist preprocessor must
+        # leave it alone.
         out = _rewrite_argv(
             [
                 "--imap",
                 "acct",
-                "save",
-                "-f",
-                "INBOX",
-                "-u",
-                "100",
+                "compose",
+                "--to",
+                "alice@example.com",
+                "--subject",
+                "hi",
+                "--body",
+                "x",
                 "-i",
-                "Billete.pdf",
-                "-o",
-                "/tmp/out.pdf",
+                "partnerships",
+                "--send",
             ]
         )
-        save_idx = out.index("save")
-        assert out[save_idx + 1 :] == [
-            "-f",
-            "INBOX",
-            "-u",
-            "100",
+        compose_idx = out.index("compose")
+        assert out[compose_idx + 1 :] == [
+            "--to",
+            "alice@example.com",
+            "--subject",
+            "hi",
+            "--body",
+            "x",
             "-i",
-            "Billete.pdf",
-            "-o",
-            "/tmp/out.pdf",
+            "partnerships",
+            "--send",
         ]
 
     def test_long_imap_after_subcommand_still_hoisted(self):

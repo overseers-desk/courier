@@ -138,7 +138,7 @@ mailroom read -f INBOX -u 4523
 
 # List and download attachments
 mailroom attachments -f INBOX -u 4523
-mailroom save -f INBOX -u 4523 -i itinerary.pdf -o /tmp/itinerary.pdf
+mailroom save -f INBOX -u 4523 --attachment itinerary.pdf -o /tmp/itinerary.pdf
 
 # Export an HTML email as a standalone file (images embedded)
 mailroom export -f INBOX -u 4523 -o /tmp/email.html

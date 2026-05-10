@@ -443,7 +443,7 @@ def register_tools(mcp: FastMCP, imap_client: ImapClient) -> None:
     async def save(
         folder: str,
         uid: int,
-        identifier: str,
+        attachment: str,
         save_path: str,
         ctx: Context,
         imap: Optional[str] = None,
@@ -453,7 +453,7 @@ def register_tools(mcp: FastMCP, imap_client: ImapClient) -> None:
         Args:
             folder: Folder name
             uid: Email UID
-            identifier: Attachment filename or index (as string)
+            attachment: Attachment filename or index (as string)
             save_path: Path where to save the attachment
             ctx: MCP context
             imap: [imap.NAME] block name (None for default)
@@ -466,7 +466,7 @@ def register_tools(mcp: FastMCP, imap_client: ImapClient) -> None:
             email_obj = client.fetch_email(uid, folder)
             if not email_obj:
                 return f"Error: Email with UID {uid} not found in folder {folder}"
-            result = email_obj.save_attachment(identifier, save_path)
+            result = email_obj.save_attachment(attachment, save_path)
             logger.info(
                 f"Saved attachment '{result['filename']}' ({result['size']} bytes) to {result['saved']}"
             )

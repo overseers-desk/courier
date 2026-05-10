@@ -1896,8 +1896,8 @@ def attachments(
 def save(
     folder: str = typer.Option(..., "--folder", "-f", help="Folder name."),
     uid: int = typer.Option(..., "--uid", "-u", help="Email UID."),
-    identifier: str = typer.Option(
-        ..., "--identifier", "-i", help="Attachment filename or numeric index."
+    attachment: str = typer.Option(
+        ..., "--attachment", help="Attachment filename or numeric index."
     ),
     save_path: str = typer.Option(
         ..., "--save-path", "-o", help="Path to save the attachment."
@@ -1910,7 +1910,7 @@ def save(
         if not email_obj:
             typer.echo(f"Email UID {uid} not found in {folder}", err=True)
             raise typer.Exit(1)
-        result = email_obj.save_attachment(identifier, save_path)
+        result = email_obj.save_attachment(attachment, save_path)
         _out(result)
     except ValueError as e:
         typer.echo(str(e), err=True)
@@ -2075,6 +2075,7 @@ def compose(
     identity_name: Optional[str] = typer.Option(
         None,
         "--identity",
+        "-i",
         help=(
             "Send as the named [identity.NAME] block (resolves From, "
             "display name, IMAP block, SMTP, sent_folder). Required on "
@@ -2326,6 +2327,7 @@ def reply(
     identity_name: Optional[str] = typer.Option(
         None,
         "--identity",
+        "-i",
         help=(
             "Send as the named [identity.NAME] block. On --send, either "
             "this or --smtp/--from is required unless the parent's "
@@ -2593,6 +2595,7 @@ def send_draft(
     identity_name: Optional[str] = typer.Option(
         None,
         "--identity",
+        "-i",
         help=(
             "Override the draft's From with the named [identity.NAME] "
             "block (which also picks the SMTP route)."

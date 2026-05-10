@@ -495,33 +495,33 @@ class Email:
             summaries.append(info)
         return summaries
 
-    def save_attachment(self, identifier: str, save_path: str) -> Dict[str, Any]:
-        """Find an attachment by identifier, validate it, and save to disk.
+    def save_attachment(self, attachment: str, save_path: str) -> Dict[str, Any]:
+        """Find an attachment by name or index, validate it, and save to disk.
 
         Args:
-            identifier: Attachment filename or index (as string).
+            attachment: Attachment filename or index (as string).
             save_path: Destination path (path-traversal fragments are stripped).
 
         Returns:
             Dict with ``filename``, ``size``, and ``saved`` (sanitised path).
 
         Raises:
-            ValueError: If no attachments, identifier not found, or no content.
+            ValueError: If no attachments, attachment not found, or no content.
         """
         if not self.attachments:
             raise ValueError("Email has no attachments")
-        attachment = self.find_attachment(identifier)
-        if attachment is None:
+        att = self.find_attachment(attachment)
+        if att is None:
             raise ValueError(
-                f"Attachment '{identifier}' not found. "
+                f"Attachment '{attachment}' not found. "
                 f"Use filename or numeric index (0-{len(self.attachments) - 1})."
             )
-        if attachment.content is None:
-            raise ValueError(f"Attachment '{attachment.filename}' has no content")
-        saved = sanitize_and_save(attachment.content, save_path, mode="wb")
+        if att.content is None:
+            raise ValueError(f"Attachment '{att.filename}' has no content")
+        saved = sanitize_and_save(att.content, save_path, mode="wb")
         return {
-            "filename": attachment.filename,
-            "size": attachment.size,
+            "filename": att.filename,
+            "size": att.size,
             "saved": saved,
         }
 
@@ -543,20 +543,20 @@ class Email:
         saved = sanitize_and_save(html_content, save_path, mode="w")
         return {"saved": saved, "size": os.path.getsize(saved)}
 
-    def find_attachment(self, identifier: str) -> Optional["EmailAttachment"]:
+    def find_attachment(self, attachment: str) -> Optional["EmailAttachment"]:
         """Find an attachment by filename or numeric index.
 
         Args:
-            identifier: Attachment filename or index (as string).
+            attachment: Attachment filename or index (as string).
 
         Returns:
             The matching EmailAttachment, or None if not found.
         """
         for att in self.attachments:
-            if att.filename == identifier:
+            if att.filename == attachment:
                 return att
         try:
-            index = int(identifier)
+            index = int(attachment)
             if 0 <= index < len(self.attachments):
                 return self.attachments[index]
         except ValueError:

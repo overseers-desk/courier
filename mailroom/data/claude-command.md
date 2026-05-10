@@ -70,7 +70,7 @@ Reads draft, matches From to an imap identity, transmits, removes on success. `-
 
 ## Top-level flags
 
-- `--imap NAME`: select a configured `[imap.NAME]` block. Omit to use `default_imap`. Repeat with `search` to query multiple blocks.
+- `--imap NAME`: select a configured `[imap.NAME]` block. Omit to use `default_imap`. Repeats across a `search` chain to query multiple blocks.
 - `-A, --all-imap`: query every imap block (search only).
 - `-c, --config PATH`: alternate config file.
 
@@ -104,11 +104,11 @@ mailroom -A --format json \
   search "(from:bad@character.com OR to:bad@character.com OR cc:bad@character.com) (trespass OR threaten OR violent)" > "$RESULTS"
 ```
 
-The query asks for messages where the address appears as sender or recipient AND the body mentions any of three topics. On Gmail accounts mailroom dispatches this through the `X-GM-RAW` extension (any token starting with `from:`/`to:`/`cc:`/`bcc:` triggers it, so the parser sees the un-prefixed `to:` and `cc:` tokens), and Gmail's web-UI grammar evaluates the parens. A non-Gmail backend without parens grouping needs the `imap:` raw escape for the same shape: `imap:OR OR FROM bad@character.com OR TO bad@character.com CC bad@character.com OR BODY trespass OR BODY threaten BODY violent`. The example illustrates that a question with two independent disjunctions (any of N recipient roles, any of M topic words) can be expressed as one composed search instead of N×M chained searches.
+The query asks for messages where the address appears as sender or recipient AND the body mentions any of three topics. On Gmail accounts mailroom dispatches this through the `X-GM-RAW` extension (any token starting with `from:`/`to:`/`cc:`/`bcc:` triggers it, so the parser sees the un-prefixed `to:` and `cc:` tokens), and Gmail's web-UI grammar evaluates the parens. A non-Gmail backend without parens grouping needs the `imap:` raw escape for the same shape: `imap:OR OR FROM bad@character.com OR TO bad@character.com CC bad@character.com OR BODY trespass OR BODY threaten BODY violent`. The example illustrates that a question with two independent disjunctions (any of N recipient roles, any of M topic words) is one composed search; expanding the same intent into N×M chained searches multiplies server queries without changing the answer.
 
 `from:`, `to:`, `subject:`, `after:`, `before:`, `is:unread`, `is:read`, and bare body words all combine. With `[local_cache]` configured the queries run against a local index orders of magnitude faster than IMAP; without it queries hit IMAP directly. Each per-block response carries a `provenance` field reporting `source` (`"local"` or `"remote"`) and any fall-back reason.
 
-Output is JSON of shape `{op_key: {imap_name: {results: [...], provenance: {...}}}}`. The verb chains, so genuinely separate queries can run in one invocation, each under its own outer key. A chained `search` costs one server query per term; one composed query (OR included) returns a flat union under one key:
+Output is JSON of shape `{op_key: {imap_name: {results: [...], provenance: {...}}}}`. An invocation is a chain of verbs; each `search` repetition is one outer key in the result. Composed-OR and chained-search answer different questions: alternatives within one entity (the Iberia case above) sit inside one `search` via OR and return a flat union under one key; genuinely separate questions sit in separate `search` repetitions, each under its own key:
 
 ```bash
 mailroom -A --format json \
@@ -117,9 +117,9 @@ mailroom -A --format json \
   > "$RESULTS"
 ```
 
-`mailroom -A` queries every imap block; `--imap NAME` (repeatable) selects specific blocks. Verbs mix freely: `mailroom search "from:alice@example.com is:unread" read -u 42 -f INBOX` runs the search and the fetch over one connection per block.
+`mailroom -A` queries every imap block; `--imap NAME` repeats across the chain to select specific blocks. Different verbs share one chain: `mailroom search "from:alice@example.com is:unread" read -u 42 -f INBOX` runs the search and the fetch over one connection per block.
 
-Like `search`, `read` chains. Repeat the verb to fetch several UIDs over one IMAP session, instead of N parallel `mailroom read` processes paying N fresh logins (Gmail caps simultaneous IMAP connections per account). Trailing `-f FOLDER` peels off as a chain default, so each `read` reuses the folder:
+`read` takes the same shape. Repeat the verb to add UIDs to the chain; one IMAP session covers them all. Trailing `-f FOLDER` peels off as a chain default, so each `read` reuses the folder. Login dominates the per-fetch cost (Gmail caps simultaneous IMAP connections per account):
 
 ```bash
 RESULTS=$(mktemp /tmp/mailroom.XXXXXXXX)
@@ -131,7 +131,7 @@ List and extract attachments, or export the verbatim `.eml`:
 
 ```bash
 mailroom --imap <imap> attachments -f <folder> -u <uid>
-mailroom --imap <imap> save -f <folder> -u <uid> -i <name> -o <path>
+mailroom --imap <imap> save -f <folder> -u <uid> --attachment <name> -o <path>
 mailroom --imap <imap> export -f <folder> -u <uid> --raw -o /tmp/msg.eml
 ```
 

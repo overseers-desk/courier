@@ -281,7 +281,7 @@ class TestSave:
             result = await save_tool.fn(
                 folder="INBOX",
                 uid=123,
-                identifier="document.pdf",
+                attachment="document.pdf",
                 save_path=tmp_path,
                 ctx=mock_context,
             )
@@ -335,7 +335,7 @@ class TestSave:
             result = await save_tool.fn(
                 folder="INBOX",
                 uid=123,
-                identifier="1",
+                attachment="1",
                 save_path=tmp_path,
                 ctx=mock_context,
             )
@@ -387,7 +387,7 @@ class TestSave:
             result = await save_tool.fn(
                 folder="INBOX",
                 uid=123,
-                identifier="Life: A Test of Courage.pdf",
+                attachment="Life: A Test of Courage.pdf",
                 save_path=tmp_path,
                 ctx=mock_context,
             )
@@ -435,7 +435,7 @@ class TestSave:
             result = await save_tool.fn(
                 folder="INBOX",
                 uid=123,
-                identifier="document.pdf",
+                attachment="document.pdf",
                 save_path=malicious_path,
                 ctx=mock_context,
             )
@@ -474,7 +474,7 @@ class TestSave:
         result = await save_tool.fn(
             folder="INBOX",
             uid=999,
-            identifier="document.pdf",
+            attachment="document.pdf",
             save_path="/tmp/test.pdf",
             ctx=mock_context,
         )
@@ -511,7 +511,7 @@ class TestSave:
         result = await save_tool.fn(
             folder="INBOX",
             uid=456,
-            identifier="document.pdf",
+            attachment="document.pdf",
             save_path="/tmp/test.pdf",
             ctx=mock_context,
         )
@@ -521,10 +521,10 @@ class TestSave:
         assert "no attachments" in result.lower()
 
     @pytest.mark.asyncio
-    async def test_save_invalid_identifier(
+    async def test_save_unknown_attachment(
         self, mock_context, mock_imap_client, email_with_attachments
     ):
-        """Test downloading attachment with invalid identifier."""
+        """Test downloading attachment when the name does not match any."""
         # Setup
         mock_imap_client.fetch_email.return_value = email_with_attachments
         mock_context.app_state["imap_client"] = mock_imap_client
@@ -548,7 +548,7 @@ class TestSave:
         result = await save_tool.fn(
             folder="INBOX",
             uid=123,
-            identifier="nonexistent.txt",
+            attachment="nonexistent.txt",
             save_path="/tmp/test.txt",
             ctx=mock_context,
         )
@@ -585,7 +585,7 @@ class TestSave:
         result = await save_tool.fn(
             folder="INBOX",
             uid=123,
-            identifier="99",
+            attachment="99",
             save_path="/tmp/test.txt",
             ctx=mock_context,
         )
@@ -620,7 +620,7 @@ class TestSave:
         result = await save_tool.fn(
             folder="INBOX",
             uid=123,
-            identifier="document.pdf",
+            attachment="document.pdf",
             save_path="/tmp/test.pdf",
             ctx=mock_context,
         )
