@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mailroom"
-version = "1.1.8"
+version = "1.1.9"
 description = "Email toolkit for AI assistants and command-line scripting"
 readme = "README.md"
 requires-python = ">=3.11"

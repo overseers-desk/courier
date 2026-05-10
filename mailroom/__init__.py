@@ -1,3 +1,3 @@
 """Email toolkit for AI assistants and command-line scripting."""
 
-__version__ = "1.1.8"
+__version__ = "1.1.9"
