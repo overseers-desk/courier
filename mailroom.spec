@@ -1,5 +1,5 @@
 Name:           mailroom
-Version:        1.1.8
+Version:        1.1.9
 Release:        1%{?dist}
 Summary:        Email toolkit for AI assistants and command-line scripting
 License:        MIT
@@ -67,6 +67,19 @@ install -Dpm 644 debian/mailroom.1 %{buildroot}%{_mandir}/man1/mailroom.1
 %{_mandir}/man1/mailroom.1*
 
 %changelog
+* Sun May 10 2026 Weiwu Zhang <a@colourful.land> - 1.1.9-1
+- `-i` is now `--identity`, used by `compose`, `reply`, and `send-draft`.
+  The 1.1.8 assignment of `-i` to `save --identifier` did not match the
+  user-facing intent and is reverted.
+- `save --identifier` is renamed to `save --attachment` and has no short
+  form. "identifier" was ambiguous against the project's other
+  identifier-shaped fields (identity name, imap block name, smtp block
+  name, message-id, uid). `--attachment` says exactly what it picks.
+  Migration: `mailroom save -f INBOX -u 100 -i Billete.pdf -o out.pdf`
+  → `mailroom save -f INBOX -u 100 --attachment Billete.pdf -o out.pdf`.
+- `--imap` remains the only spelling for the global IMAP-block selector;
+  no short form.
+
 * Sun May 10 2026 Weiwu Zhang <a@colourful.land> - 1.1.8-1
 - `-i` is no longer a shorthand for `--imap`. Use `--imap NAME` at the
   top level. `-i` is now exclusively `save --identifier` (closes #36):
