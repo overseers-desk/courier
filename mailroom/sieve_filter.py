@@ -97,7 +97,9 @@ def compile_policy(path: str) -> Callable[[Email], bool]:
         tests.append(_compile_test(node.arguments["test"], path))
 
     if not tests:
-        raise ValueError(f"{path!r}: no `if ... {{ redact; }}` rules found. Given sieve is for fending of leakage to AI agents, cowardly refuse to continue.")
+        raise ValueError(
+            f"{path!r}: no `if ... {{ redact; }}` rules found. Given sieve is for fending of leakage to AI agents, cowardly refuse to continue."
+        )
 
     def evaluate(email: Email) -> bool:
         return any(t(email) for t in tests)

@@ -85,6 +85,22 @@ def pytest_addoption(parser):
     )
 
 
+@pytest.fixture(autouse=True)
+def _silence_claude_registration_nudge(monkeypatch):
+    """Pin the install-claude-command nudge to silent for all tests.
+
+    The CLI prints a stderr note when ``~/.claude/commands/mailroom.md``
+    exists at a different version than the source. Click's ``CliRunner``
+    defaults to ``mix_stderr=True``, so the note ends up concatenated into
+    ``result.output`` and breaks tests that parse stdout as JSON. Tests
+    must not depend on the developer's local ``~/.claude`` state.
+    """
+    monkeypatch.setattr(
+        "mailroom.__main__._claude_registration_status",
+        lambda: None,
+    )
+
+
 def pytest_configure(config):
     """Configure pytest with additional markers."""
     config.addinivalue_line(
