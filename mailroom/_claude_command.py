@@ -1,8 +1,21 @@
-# Failure modes the AI hint document is calibrated against
+"""Slash-command source for Claude Code, plus its calibration record.
 
-This file lives next to the slash-command source so a future editor of that source has the calibration record in line of sight. Each entry pairs a concrete failure case with the load-bearing element of the source that prevents it. Before shipping a rewrite, walk this list and verify the prevention is still intact.
+This module carries the body of the file emitted by
+``mailroom install-claude-command`` into the user's Claude Code commands
+directory, alongside the failure-modes registry the slash-command source
+is calibrated against. The two sit together so that any editor of the
+slash-command body has the calibration record in line of sight.
 
-The hint states facts and shows shapes; this file holds the problem record.
+Before editing ``SLASH_COMMAND``, walk ``RATIONALE`` and verify the
+load-bearing element of the source that prevents each listed failure is
+still intact.
+"""
+
+RATIONALE = r"""# Failure modes the AI hint document is calibrated against
+
+This block sits in the same module as the slash-command source so a future editor of that source has the calibration record in line of sight. Each entry pairs a concrete failure case with the load-bearing element of the source that prevents it. Before shipping a rewrite, walk this list and verify the prevention is still intact.
+
+The hint states facts and shows shapes; this block holds the problem record.
 
 ## Solutions are framing and examples, not rules
 
@@ -164,19 +177,19 @@ When a solution genuinely requires a rule (e.g. "avoid `2>&1` in examples"), the
 
 **Failure case.** In a case where an AI editor added prose like "this prevents the AI from guessing addresses" or "this section addresses the connection-cap problem" to the slash-command source, the doc became a problem-statement document instead of a hint. The next reader had to infer behaviour from a mix of facts and meta-commentary, lengthening the doc without sharpening it.
 
-**Solution.** The source states facts and shows shapes; the prevention is implicit in the choice of fact and shape. The problem record lives in this companion file.
+**Solution.** The source states facts and shows shapes; the prevention is implicit in the choice of fact and shape. The problem record lives in this companion block above.
 
 ### E6. Em-dashes
 
-**Failure case.** In a case where AI generation produced em-dashes by reflex (half-sentence, attach a thought, bridge with `—`), the doc accumulated them; downstream readers (AI and human) registered the AI authorship cue.
+**Failure case.** In a case where AI generation produced em-dashes by reflex (half-sentence, attach a thought, bridge with an em-dash), the doc accumulated them; downstream readers (AI and human) registered the AI authorship cue.
 
 **Solution.** The source uses comma, colon, parenthetical, full stop, or dependency-grammar recasting in place of em-dash.
 
 ### E7. Self-referential filenames or paths
 
-**Failure case.** In a case where doc body text referenced its own filename or full path ("see claude-command.md", "located at mailroom/data/..."), a later rename or move required editing not just the file but every self-mention.
+**Failure case.** In a case where doc body text referenced its own filename or storage location (e.g. "see hint.md", "located at packagename/somedir/..."), a later rename or move required editing not just the file but every self-mention.
 
-**Solution.** Body text refers to "the slash-command source", "this hint", or "the doc". Literal filenames and absolute paths stay outside the body.
+**Solution.** Body text refers to "the slash-command source", "this hint", or "the doc". Literal filenames and storage paths stay outside the body.
 
 ### E8. AI-fabricated example scenarios
 
@@ -211,3 +224,89 @@ When a solution genuinely requires a rule (e.g. "avoid `2>&1` in examples"), the
 **Failure case.** In a case where the doc explained `X-GM-RAW` dispatch on Gmail accounts and the `imap:` raw escape for parens grouping on non-Gmail backends, the AI for Gmail-only users absorbed reference material it never needed, and non-Gmail users hit a runtime error at the point it actually mattered with a more specific message than the doc's pre-explanation anyway.
 
 **Solution.** Dispatch internals live in `--help`. The Searches example uses parens; on Gmail it works through the dispatch; on non-Gmail backends the AI sees the runtime error and consults `--help` for the escape syntax.
+"""
+
+
+SLASH_COMMAND = r"""---
+name: mailroom
+description: Search, read, and look up information from the user's IMAP mailboxes via the mailroom CLI, and send mail when asked. Trigger when the user asks to find or look something up in their email, recall what someone has said in mail, summarise correspondence with a person, search the inbox for a topic, or check replies. Phrases like "tell me about X from emails", "what did X email me about", "find Y in my mail", "search my inbox for Z", or "show recent messages from W" all route here. Use this rather than guessing an email address from a name.
+---
+
+# mailroom
+
+mailroom searches, reads, and pulls attachments from the user's mailboxes via the mailroom CLI, and sends mail when asked, although most of the time it is not for sending. Each request is one invocation; chained verbs share one connection per IMAP block.
+
+## Searches
+
+```bash
+RESULTS=$(mktemp /tmp/mailroom.XXXXXXXX)
+mailroom -A --format json \
+  search "from:alice hotel booking" \
+  search "from:bob contract" \
+  -n 5 > "$RESULTS"
+jq '[.[] | .[] | .results[] | {uid, folder, subject, from, date}]' "$RESULTS"
+```
+
+Pack questions into one invocation: each `search` becomes one outer key in the result, sharing one connection per IMAP block. `search` accepts Gmail-style queries; tokens combine with implicit AND, `OR` clusters alternatives. Results sort newest-first; trailing `-n` peels off as a chain default (default 10) and applies to every `search` that doesn't set its own. Use the words from the user's request (a name they mentioned, a domain, a subject phrase); an AI-constructed address often misses, and a spoken nickname or short form (Tony for Antonio) may not match the form filed in headers. Read a hit to recover the actual surface from `from` or the body, then re-search if needed.
+
+`OR` inside one `search` returns a flat union under that one outer key, so the same entity's different surfaces (name, code, corporate domain, language variants) stay together rather than scatter across separate keys. Surfaces often share no letters; enumerate from what the user knows:
+
+```bash
+mailroom -A --format json \
+  search "from:@example.com OR 'Example Trading' OR 'Example Inc'" \
+  search "subject:invoice after:2026-01-01" \
+  > "$RESULTS"
+```
+
+Output shape: `{op_key: {imap_name: {results: [...], provenance: {...}}}}`. `mailroom -A` queries every IMAP block; `--imap NAME` (repeats across the chain) selects specific blocks. Slice the JSON with `jq` against a tempfile; `head`/`tail` cut mid-structure.
+
+## Reads
+
+```bash
+mailroom --imap <imap> --format json \
+  read -u 100 \
+  read -u 200 \
+  read -u 300 \
+  -f INBOX > "$RESULTS"
+jq '[.[] | .[] | {uid, subject, from, date, has_attachments}]' "$RESULTS"
+```
+
+UIDs from a prior search go into one chain over a single IMAP session; trailing `-f FOLDER` peels off as the chain default. Login dominates the per-fetch cost; Gmail caps simultaneous IMAP connections per account, so N parallel `read` processes hit that cap.
+
+## Attachments
+
+```bash
+mailroom --imap <imap> attachments -f <folder> -u <uid>
+mailroom --imap <imap> save -f <folder> -u <uid> --attachment <name> -o <path>
+mailroom --imap <imap> export -f <folder> -u <uid> --raw -o /tmp/msg.eml
+```
+
+`--attachment` accepts a filename or the numeric index reported by `attachments`.
+
+## Sending
+
+```bash
+mailroom compose --to recipient@example.com --subject "..." --body "..." --send -i NAME
+mailroom --imap <imap> reply -f <folder> -u <uid> --body "..." --send -i NAME
+mailroom --imap <imap> send-draft -f Drafts -u <uid>
+```
+
+`-i NAME` (= `--identity NAME`) picks a configured `[identity.NAME]` block; reply inherits the parent's threading headers. Drop `--send` to save as a draft. `mailroom list` returns the configured identity names under its `identity` key; `mailroom <verb> --help` carries flags for relay-style sends and other less-common paths.
+"""
+
+
+def render(version: str) -> str:
+    """Return the slash-command body with ``version:`` stamped into the frontmatter.
+
+    Args:
+        version: The mailroom version string to record in the installed copy.
+
+    Returns:
+        The text written to ``~/.claude/commands/mailroom.md``. The
+        ``version:`` line is inserted as the first field inside the YAML
+        frontmatter block when the body opens with ``---\\n``; otherwise
+        the body is returned unchanged.
+    """
+    if SLASH_COMMAND.startswith("---\n"):
+        return "---\nversion: " + version + "\n" + SLASH_COMMAND[4:]
+    return SLASH_COMMAND

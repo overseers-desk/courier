@@ -58,9 +58,6 @@ Author = "https://www.linkedin.com/in/weiwuzhang/"
 [tool.setuptools.packages.find]
 include = ["mailroom*"]
 
-[tool.setuptools.package-data]
-mailroom = ["data/*.md"]
-
 [tool.black]
 line-length = 88
 target-version = ["py311"]

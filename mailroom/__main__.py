@@ -1399,7 +1399,7 @@ def install_claude_command() -> None:
     If a previous version is already installed, you will be asked to confirm
     before it is replaced.
     """
-    from importlib.resources import files
+    from mailroom._claude_command import render
 
     dest_dir = Path.home() / ".claude" / "commands"
     dest = dest_dir / "mailroom.md"
@@ -1419,13 +1419,7 @@ def install_claude_command() -> None:
             print("Aborted.")
             raise typer.Exit(1)
 
-    raw = files("mailroom.data").joinpath("claude-command.md").read_text()
-    # Stamp the current version into the frontmatter of the installed copy.
-    if raw.startswith("---\n"):
-        content = "---\nversion: " + __version__ + "\n" + raw[4:]
-    else:
-        content = raw
-    dest.write_text(content)
+    dest.write_text(render(__version__))
     print(f"Installed {__version__}: {dest}")
 
 
