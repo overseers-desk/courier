@@ -12,14 +12,17 @@ from mailroom import __version__
 from mailroom.config import MailroomConfig, load_config
 from mailroom.imap_client import ImapClient
 from mailroom.local_cache import MuBackend
+from mailroom.logging_setup import setup_logging
 from mailroom.mcp_protocol import extend_server
 from mailroom.resources import register_resources
 from mailroom.tools import register_tools
 
-# Set up logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+# Set up logging: prefer the local syslog socket so MCP-server warnings
+# survive process restarts, with a timestamped stderr fallback when no
+# syslog daemon is reachable.
+setup_logging(
+    logging.INFO,
+    stderr_format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger("mailroom")
 

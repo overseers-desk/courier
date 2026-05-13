@@ -23,6 +23,7 @@ from mailroom.config import (
     load_config_with_warnings,
 )
 from mailroom.imap_client import ImapClient
+from mailroom.logging_setup import setup_logging
 from mailroom.models import extract_links_batch
 
 if TYPE_CHECKING:
@@ -120,7 +121,7 @@ def _global_options(
     _imap_names = list(imap_names)
     _all_imap = all_imap
     level = logging.DEBUG if verbose else logging.WARNING
-    logging.basicConfig(level=level, format="%(levelname)s %(name)s: %(message)s")
+    setup_logging(level)
     nudge = _claude_registration_status()
     if nudge:
         print(nudge, file=sys.stderr)
@@ -689,7 +690,7 @@ def _apply_global_flags(global_argv: List[str]) -> None:
     _imap_names = imap_names
     _all_imap = all_imap
     level = logging.DEBUG if verbose else logging.WARNING
-    logging.basicConfig(level=level, format="%(levelname)s %(name)s: %(message)s")
+    setup_logging(level)
 
 
 def _run_chain(
