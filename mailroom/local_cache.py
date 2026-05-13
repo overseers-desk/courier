@@ -313,18 +313,12 @@ class MuBackend:
             return base
 
         redacted = email_obj.redact("redacted")
-        return {
-            "message_id": base["message_id"],
-            "uid": uid,
-            "folder": folder,
-            "from": str(redacted.from_),
-            "to": [str(t) for t in redacted.to],
-            "subject": redacted.subject,
-            "date": base["date"],
-            "flags": list(flags),
-            "has_attachments": False,
-            "redacted_by": redacted.redacted_by,
-        }
+        return redacted.as_search_result(
+            folder=folder,
+            flags=list(flags),
+            date_iso=base["date"],
+            has_attachments=False,
+        )
 
     @staticmethod
     def _parse_uid_from_path(path: str) -> Optional[int]:

@@ -250,6 +250,47 @@ class Email:
             redacted_by=rule,
         )
 
+    def as_search_result(
+        self,
+        folder: str,
+        flags: List[Any],
+        date_iso: Optional[str],
+        has_attachments: bool,
+    ) -> Dict[str, Any]:
+        """Project this Email into the shape consumed by ``search`` callers.
+
+        The shape mirrors the IMAP search-result dict and is also
+        emitted by the local-cache backend when redact applies.
+        ``flags`` and ``date_iso`` are accepted rather than read off
+        the Email because callers often hold them pre-formatted in
+        their source vocabulary (IMAP RFC 3501 vs mu keyword flags;
+        upstream ISO date string vs ``datetime``).
+
+        Args:
+            folder: Folder name to attribute to this hit.
+            flags: Flag list, passed through verbatim.
+            date_iso: Pre-formatted ISO 8601 date string, or ``None``.
+            has_attachments: Whether the message carries attachments.
+
+        Returns:
+            Dict with the search-result fields plus ``redacted_by``
+            when the Email is redacted.
+        """
+        result: Dict[str, Any] = {
+            "uid": self.uid,
+            "folder": folder,
+            "from": str(self.from_),
+            "to": [str(t) for t in self.to],
+            "subject": self.subject,
+            "date": date_iso,
+            "flags": flags,
+            "has_attachments": has_attachments,
+            "message_id": self.message_id,
+        }
+        if self.redacted_by is not None:
+            result["redacted_by"] = self.redacted_by
+        return result
+
     @classmethod
     def from_message(
         cls, message: Message, uid: Optional[int] = None, folder: Optional[str] = None

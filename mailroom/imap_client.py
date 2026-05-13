@@ -422,6 +422,20 @@ class ImapClient:
         logger.debug(f"Search returned {len(results)} results")
         return list(results)
 
+    @staticmethod
+    def _email_from_bytes(raw: bytes, uid: int, folder: str, flags: List[str]) -> Email:
+        """Parse RFC 822 bytes into an :class:`Email` with the given flags.
+
+        Used by every fetch path (IMAP single, IMAP batch, disk-first):
+        each path produces its own ``flags`` list from a different
+        source (IMAP server response or maildir filename suffix) but
+        the message-bytes-to-Email pipeline is the same.
+        """
+        message = email.message_from_bytes(raw)
+        email_obj = Email.from_message(message, uid=uid, folder=folder)
+        email_obj.flags = flags
+        return email_obj
+
     def fetch_email(self, uid: int, folder: str = "INBOX") -> Optional[Email]:
         """Fetch a single email by UID.
 
@@ -468,13 +482,8 @@ class ImapClient:
         raw_message = message_data[b"BODY[]"]
         flags = message_data[b"FLAGS"]
 
-        # Convert flags to strings
         str_flags = [f.decode("utf-8") if isinstance(f, bytes) else f for f in flags]
-
-        # Parse email
-        message = email.message_from_bytes(raw_message)
-        email_obj = Email.from_message(message, uid=uid, folder=folder)
-        email_obj.flags = str_flags
+        email_obj = self._email_from_bytes(raw_message, uid, folder, str_flags)
 
         self._update_activity()
         return self._apply_redact(email_obj)
@@ -512,10 +521,9 @@ class ImapClient:
                     f"Could not read maildir file {path!r}: {e}; falling back to IMAP"
                 )
                 return None
-            message = email.message_from_bytes(raw)
-            email_obj = Email.from_message(message, uid=uid, folder=folder)
-            email_obj.flags = self._parse_maildir_flags(path)
-            return email_obj
+            return self._email_from_bytes(
+                raw, uid, folder, self._parse_maildir_flags(path)
+            )
         return None
 
     @staticmethod
@@ -591,9 +599,7 @@ class ImapClient:
             str_flags = [
                 f.decode("utf-8") if isinstance(f, bytes) else f for f in flags
             ]
-            message = email.message_from_bytes(raw_message)
-            email_obj = Email.from_message(message, uid=uid, folder=folder)
-            email_obj.flags = str_flags
+            email_obj = self._email_from_bytes(raw_message, uid, folder, str_flags)
             emails[uid] = self._apply_redact(email_obj)
 
         self._update_activity()
@@ -1351,23 +1357,17 @@ class ImapClient:
         for current_folder, uid_list in by_folder.items():
             try:
                 emails = self.fetch_emails(uid_list, folder=current_folder)
-                for uid, email_obj in emails.items():
-                    record: Dict[str, Any] = {
-                        "uid": uid,
-                        "folder": current_folder,
-                        "from": str(email_obj.from_),
-                        "to": [str(t) for t in email_obj.to],
-                        "subject": email_obj.subject,
-                        "date": (
-                            email_obj.date.isoformat() if email_obj.date else None
-                        ),
-                        "flags": email_obj.flags,
-                        "has_attachments": len(email_obj.attachments) > 0,
-                        "message_id": email_obj.message_id,
-                    }
-                    if email_obj.redacted_by is not None:
-                        record["redacted_by"] = email_obj.redacted_by
-                    results.append(record)
+                for email_obj in emails.values():
+                    results.append(
+                        email_obj.as_search_result(
+                            folder=current_folder,
+                            flags=email_obj.flags,
+                            date_iso=(
+                                email_obj.date.isoformat() if email_obj.date else None
+                            ),
+                            has_attachments=len(email_obj.attachments) > 0,
+                        )
+                    )
             except Exception as e:
                 logger.warning(f"Error fetching from folder {current_folder}: {e}")
 
