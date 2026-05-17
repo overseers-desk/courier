@@ -1368,7 +1368,9 @@ class ImapClient:
                     iso = dt.isoformat() if dt else "0"
                     candidates.append((iso, uid, current_folder))
             except Exception as e:
-                logger.warning(f"Error searching folder {current_folder}: {e}")
+                logger.warning(
+                    f"{self.block.label} Error searching folder {current_folder}: {e}"
+                )
 
         # Sort globally by date and keep only the top `limit`
         candidates.sort(key=lambda x: x[0], reverse=True)

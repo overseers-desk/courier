@@ -170,7 +170,9 @@ def register_resources(mcp: FastMCP, imap_client: ImapClient) -> None:
                             }
                         )
             except Exception as e:
-                logger.warning(f"Error searching folder {folder}: {e}")
+                logger.warning(
+                    f"{imap_client.block.label} Error searching folder {folder}: {e}"
+                )
 
         results.sort(key=lambda x: str(x.get("date") or "0"), reverse=True)
         return json.dumps(results, indent=2)

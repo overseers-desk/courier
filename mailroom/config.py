@@ -395,6 +395,10 @@ class ImapBlock:
             field, taking an ``Email`` and returning ``True`` when that
             message should be replaced with a placeholder before reaching
             the agent. ``None`` when no policy is configured.
+        name: TOML block name (the ``work`` in ``[imap.work]``). Empty
+            string when the block was constructed outside a named-block
+            context. Surfaced in runtime warnings so log readers can tell
+            which account a failure came from.
     """
 
     host: str
@@ -409,6 +413,12 @@ class ImapBlock:
     maildir: Optional[str] = None
     default_smtp: Optional[str] = None
     redact_policy: Optional[Any] = None
+    name: str = ""
+
+    @property
+    def label(self) -> str:
+        """Bracketed block label for log lines (``[imap.work]`` or ``[imap]``)."""
+        return f"[imap.{self.name}]" if self.name else "[imap]"
 
     @property
     def is_gmail(self) -> bool:
@@ -505,6 +515,7 @@ class ImapBlock:
             maildir=data.get("maildir"),
             default_smtp=default_smtp,
             redact_policy=redact_policy,
+            name=name,
         )
 
 
