@@ -283,11 +283,11 @@ def _build_op_key(subcmd: str, **kwargs: Any) -> str:
     parts = [subcmd]
     if subcmd == "search":
         folder = kwargs.get("folder")
-        limit = kwargs.get("limit", 10)
+        limit = kwargs.get("limit", 50)
         query = kwargs.get("query", "")
         if folder:
             parts += ["-f", folder]
-        if limit != 10:
+        if limit != 50:
             parts += ["--limit", str(limit)]
         if query:
             parts.append(query)
@@ -357,7 +357,7 @@ def _run_op(client: ImapClient, subcmd: str, kwargs: Dict[str, Any]) -> Dict[str
         return client.search_emails(
             kwargs["query"],
             folder=kwargs.get("folder"),
-            limit=kwargs.get("limit", 10),
+            limit=kwargs.get("limit", 50),
         )
     if subcmd == "read":
         return _fetch_email_result(client, kwargs["folder"], kwargs["uid"])
@@ -409,7 +409,7 @@ def _execute_chain(
 def _parse_search_args(
     tokens: List[str],
     default_folder: Optional[str] = None,
-    default_limit: int = 10,
+    default_limit: int = 50,
 ) -> Dict[str, Any]:
     """Parse tokenised search arguments into a kwargs dict.
 
@@ -715,7 +715,7 @@ def _run_chain(
             kwargs = _parse_search_args(
                 tokens,
                 default_folder=cd_folder,
-                default_limit=cd_limit if cd_limit is not None else 10,
+                default_limit=cd_limit if cd_limit is not None else 50,
             )
         elif verb == "read":
             try:
@@ -1544,7 +1544,7 @@ def search(
     folder: Optional[str] = typer.Option(
         None, "--folder", "-f", help="Folder to search (default: all)."
     ),
-    limit: int = typer.Option(10, "--limit", "-n", help="Maximum number of results."),
+    limit: int = typer.Option(50, "--limit", "-n", help="Maximum number of results."),
     output_format: str = typer.Option(
         "json",
         "--format",

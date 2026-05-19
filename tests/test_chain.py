@@ -49,7 +49,7 @@ class TestBuildOpKey:
         assert _build_op_key("search", query="x", folder="INBOX") == "search -f INBOX x"
 
     def test_search_default_limit_omitted(self):
-        key = _build_op_key("search", query="x", limit=10)
+        key = _build_op_key("search", query="x", limit=50)
         assert "--limit" not in key
 
     def test_search_non_default_limit_included(self):
@@ -94,7 +94,7 @@ class TestParseSearchArgs:
         r = _parse_search_args(["from:foo"])
         assert r["query"] == "from:foo"
         assert r["folder"] is None
-        assert r["limit"] == 10
+        assert r["limit"] == 50
 
     def test_folder_short(self):
         r = _parse_search_args(["-f", "INBOX", "from:foo"])

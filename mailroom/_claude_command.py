@@ -243,11 +243,11 @@ RESULTS=$(mktemp /tmp/mailroom.XXXXXXXX)
 mailroom -A --format json \
   search "from:alice hotel booking" \
   search "from:bob contract" \
-  -n 5 > "$RESULTS"
-jq '[.[] | .[] | .results[] | {uid, folder, subject, from, date}]' "$RESULTS"
+  > "$RESULTS"
+jq 'map_values(map_values(.results |= .[0:10]))' "$RESULTS"
 ```
 
-Pack questions into one invocation: each `search` becomes one outer key in the result, sharing one connection per IMAP block. `search` accepts Gmail-style queries; tokens combine with implicit AND, `OR` clusters alternatives. Results sort newest-first; trailing `-n` peels off as a chain default (default 10) and applies to every `search` that doesn't set its own. Use the words from the user's request (a name they mentioned, a domain, a subject phrase); an AI-constructed address often misses, and a spoken nickname or short form (Tony for Antonio) may not match the form filed in headers. Read a hit to recover the actual surface from `from` or the body, then re-search if needed.
+Pack questions into one invocation: each `search` becomes one outer key in the result, sharing one connection per IMAP block. `search` accepts Gmail-style queries; tokens combine with implicit AND, `OR` clusters alternatives. Results sort newest-first; trailing `-n` peels off as a chain default (default 50) and applies to every `search` that doesn't set its own. The `jq` step trims each block's `results` to 10 in place, keeping the `{op_key: {imap_name: ...}}` shape; the underlying tempfile holds all 50. To see more, widen the slice (e.g. `.[0:25]` or drop the `|= .[0:10]` step) rather than re-run `mailroom`. Use the words from the user's request (a name they mentioned, a domain, a subject phrase); an AI-constructed address often misses, and a spoken nickname or short form (Tony for Antonio) may not match the form filed in headers. Read a hit to recover the actual surface from `from` or the body, then re-search if needed.
 
 `OR` inside one `search` returns a flat union under that one outer key, so the same entity's different surfaces (name, code, corporate domain, language variants) stay together rather than scatter across separate keys. Surfaces often share no letters; enumerate from what the user knows:
 

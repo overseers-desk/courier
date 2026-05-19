@@ -239,7 +239,7 @@ class TestTools:
         mock_client.search_emails.assert_called_once_with(
             "test query",
             folder=None,
-            limit=10,
+            limit=50,
         )
 
         # Test with specific folder and Gmail-style query
@@ -248,7 +248,7 @@ class TestTools:
         mock_client.search_emails.assert_called_once_with(
             "from:sender@example.com",
             folder="INBOX",
-            limit=10,
+            limit=50,
         )
 
         # Test with invalid query — client.search_emails raises ValueError
@@ -267,7 +267,7 @@ class TestTools:
         mock_client.search_emails.assert_called_once_with(
             "69172700",
             folder="INBOX",
-            limit=10,
+            limit=50,
         )
 
     @pytest.mark.asyncio
@@ -303,7 +303,7 @@ class TestTools:
         mock_client.search_emails.assert_called_once_with(
             "imap:TEXT Edinburgh",
             folder="INBOX",
-            limit=10,
+            limit=50,
         )
 
     @pytest.mark.asyncio

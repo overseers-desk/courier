@@ -285,7 +285,7 @@ def register_tools(mcp: FastMCP, imap_client: ImapClient) -> None:
         query: Union[str, int] = "",
         ctx: Optional[Context] = None,
         folder: Optional[str] = None,
-        limit: int = 10,
+        limit: int = 50,
         imap: Optional[str] = None,
     ) -> str:
         """Search for emails using Gmail-style query syntax.
