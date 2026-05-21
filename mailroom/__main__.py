@@ -1187,30 +1187,34 @@ def _format_chain_text(result: Dict[str, Dict[str, Any]]) -> str:
     for op_key, blocks in result.items():
         lines: List[str] = [f"=== {op_key} ==="]
         for imap_name, value in blocks.items():
-            hits: List[Dict[str, Any]] = value.get("results", []) or []
-            provenance = value.get("provenance") or {}
             lines.append(f"== {imap_name} ==")
-            if "error" in value and not hits:
+            if "results" in value:
+                hits: List[Dict[str, Any]] = value.get("results") or []
+                lines.append(_format_provenance_line(value.get("provenance") or {}))
+            elif "error" in value:
                 lines.append(f"(error: {value['error']})")
+                continue
             else:
-                lines.append(_format_provenance_line(provenance))
-                if not hits:
-                    lines.append("(no results)")
-                else:
-                    for r in hits:
-                        date = str(r.get("date", ""))[:10]
-                        subject = r.get("subject", "")
-                        from_ = r.get("from", "")
-                        to_list = r.get("to") or [""]
-                        to = to_list[0]
-                        folder = r.get("folder", "")
-                        message_id = r.get("message_id", "")
-                        lines.append(f"{date}  {subject}")
-                        lines.append(f"            from: {from_}")
-                        lines.append(f"            to:   {to}")
-                        lines.append(f"            folder: {folder}")
-                        if message_id:
-                            lines.append(f"            id:     {message_id}")
+                # read: the per-block value is a single message object, not a
+                # {results, provenance} wrapper, so render it as one record.
+                hits = [value]
+            if not hits:
+                lines.append("(no results)")
+            else:
+                for r in hits:
+                    date = str(r.get("date", ""))[:10]
+                    subject = r.get("subject", "")
+                    from_ = r.get("from", "")
+                    to_list = r.get("to") or [""]
+                    to = to_list[0]
+                    folder = r.get("folder", "")
+                    message_id = r.get("message_id", "")
+                    lines.append(f"{date}  {subject}")
+                    lines.append(f"            from: {from_}")
+                    lines.append(f"            to:   {to}")
+                    lines.append(f"            folder: {folder}")
+                    if message_id:
+                        lines.append(f"            id:     {message_id}")
         sections.append("\n".join(lines))
     return "\n\n".join(sections)
 
@@ -1223,7 +1227,14 @@ def _format_chain_oneline(result: Dict[str, Dict[str, Any]]) -> str:
     lines: List[str] = []
     for op_key, blocks in result.items():
         for imap_name, value in blocks.items():
-            hits: List[Dict[str, Any]] = value.get("results", []) or []
+            if "results" in value:
+                hits: List[Dict[str, Any]] = value.get("results") or []
+            elif "error" in value:
+                lines.append(f"{op_key}\t{imap_name}\t(error: {value['error']})")
+                continue
+            else:
+                # read: the per-block value is the message object itself.
+                hits = [value]
             if not hits:
                 lines.append(f"{op_key}\t{imap_name}\t(no results)")
                 continue

@@ -37,6 +37,28 @@ def _wrap(hits: list, account: str = "acct1", op_key: str = "search q") -> dict:
     }
 
 
+def _read_message(message_id: str = "<r@example.com>") -> dict:
+    """A read's per-block value: the message object itself, no results wrapper."""
+    return {
+        "uid": 7,
+        "folder": "INBOX",
+        "from": "Carol <carol@example.com>",
+        "to": ["Dave <dave@example.com>"],
+        "subject": "Read me",
+        "date": "2026-05-01T09:00:00+00:00",
+        "flags": ["\\Seen"],
+        "message_id": message_id,
+        "content_type": "text/plain",
+        "body": "hello",
+    }
+
+
+def _read_wrap(
+    message: dict, account: str = "acct1", op_key: str = "read -f INBOX --uid 7"
+) -> dict:
+    return {op_key: {account: message}}
+
+
 class TestFormatChainText:
 
     def test_renders_message_id_when_present(self):
@@ -92,6 +114,17 @@ class TestFormatChainText:
         out = _format_chain_text(wrapped)
         assert "error: connection failed" in out
 
+    def test_read_message_renders(self):
+        out = _format_chain_text(_read_wrap(_read_message("<r1@example.com>")))
+        assert "Read me" in out
+        assert "<r1@example.com>" in out
+        assert "(no results)" not in out
+
+    def test_read_message_has_no_provenance_line(self):
+        # A read carries no provenance, so the "# source=..." line is omitted.
+        out = _format_chain_text(_read_wrap(_read_message()))
+        assert "source=" not in out
+
 
 class TestFormatChainOneline:
 
@@ -139,3 +172,23 @@ class TestFormatChainOneline:
         assert "(no results)" in out
         first = out.splitlines()[0]
         assert first.startswith("search from:x\tacct1\t")
+
+    def test_read_message_one_line(self):
+        out = _format_chain_oneline(_read_wrap(_read_message("<r2@example.com>")))
+        lines = out.splitlines()
+        assert len(lines) == 1
+        cols = lines[0].split("\t")
+        assert cols[0] == "read -f INBOX --uid 7"
+        assert cols[1] == "acct1"
+        assert cols[3] == "Read me"
+        assert cols[-1] == "<r2@example.com>"
+        assert "(no results)" not in out
+
+    def test_error_renders_error_column(self):
+        wrapped = {
+            "read -f INBOX --uid 9": {
+                "acct1": {"error": "Email UID 9 not found in INBOX"}
+            }
+        }
+        out = _format_chain_oneline(wrapped)
+        assert "(error: Email UID 9 not found in INBOX)" in out
