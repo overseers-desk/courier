@@ -436,19 +436,46 @@ class ImapClient:
         email_obj.flags = flags
         return email_obj
 
-    def fetch_email(self, uid: int, folder: str = "INBOX") -> Optional[Email]:
+    def _disk_cache_eligible(self, no_cache: bool = False) -> bool:
+        """Whether a read-shaped call may be served from the local maildir.
+
+        The single gate shared by :meth:`fetch_email` and
+        :meth:`fetch_emails`, mirroring the search policy: the block is
+        opted into the local cache (a ``local_cache`` backend and a
+        ``maildir``), ``no_cache`` is not set, and the index passes
+        :meth:`MuBackend.is_eligible` (mu present, index present and
+        within the staleness window).  A stale index sends reads to
+        IMAP so flags reflect the server rather than the last sync.
+
+        Args:
+            no_cache: When ``True``, the cache is declined unconditionally.
+
+        Returns:
+            ``True`` when the maildir may serve this call.
+        """
+        if no_cache or self.local_cache is None or not self.block.maildir:
+            return False
+        return self.local_cache.is_eligible(self.block).eligible
+
+    def fetch_email(
+        self, uid: int, folder: str = "INBOX", no_cache: bool = False
+    ) -> Optional[Email]:
         """Fetch a single email by UID.
 
-        When the block carries a ``maildir`` configuration the call is
-        served from the local mbsync-synced file at
+        When the block is opted into the local cache and the index is
+        eligible (see :meth:`_disk_cache_eligible`), the call is served
+        from the local synced file at
         ``<maildir>/<folder>/{cur,new}/*,U=<uid>,*`` and IMAP is not
         contacted; on disk miss (file not yet synced) the call falls
-        back to IMAP.  Redact policy is applied to the resulting
-        ``Email`` regardless of source.
+        back to IMAP.  When the index is stale, ``no_cache`` is set, or
+        the block is not opted in, the call goes to live IMAP.  Redact
+        policy is applied to the resulting ``Email`` regardless of source.
 
         Args:
             uid: Email UID
             folder: Folder to fetch from
+            no_cache: When ``True``, bypass the local cache and read from
+                live IMAP.
 
         Returns:
             Email object or None if not found. When this block has a
@@ -461,7 +488,7 @@ class ImapClient:
         Raises:
             ConnectionError: If not connected and connection fails
         """
-        if self.block.maildir:
+        if self._disk_cache_eligible(no_cache):
             disk_email = self._fetch_email_disk(uid, folder)
             if disk_email is not None:
                 return self._apply_redact(disk_email)
@@ -507,8 +534,14 @@ class ImapClient:
         """
         if not self.block.maildir:
             return None
+        # Escape the folder segment: maildir names carry glob
+        # metacharacters (e.g. ``[Gmail]/Sent Mail``) that would
+        # otherwise be read as character classes and never match.
+        folder_glob = glob.escape(folder)
         for subdir in ("cur", "new"):
-            pattern = os.path.join(self.block.maildir, folder, subdir, f"*,U={uid},*")
+            pattern = os.path.join(
+                self.block.maildir, folder_glob, subdir, f"*,U={uid},*"
+            )
             matches = glob.glob(pattern)
             if not matches:
                 continue
@@ -551,17 +584,23 @@ class ImapClient:
         uids: List[int],
         folder: str = "INBOX",
         limit: Optional[int] = None,
+        no_cache: bool = False,
     ) -> Dict[int, Email]:
         """Fetch multiple emails by UIDs.
 
-        When the block carries a ``maildir`` configuration each UID is
-        resolved from the local mbsync-synced file first; UIDs whose
-        file is not yet on disk are fetched in a single IMAP batch.
+        When the block is opted into the local cache and the index is
+        eligible (see :meth:`_disk_cache_eligible`), each UID is resolved
+        from the local synced file first; UIDs whose file is not yet on
+        disk are fetched in a single IMAP batch.  When the index is
+        stale, ``no_cache`` is set, or the block is not opted in, every
+        UID is fetched from live IMAP.
 
         Args:
             uids: List of email UIDs
             folder: Folder to fetch from
             limit: Maximum number of emails to fetch
+            no_cache: When ``True``, bypass the local cache and read from
+                live IMAP.
 
         Returns:
             Dictionary mapping UIDs to Email objects
@@ -576,7 +615,7 @@ class ImapClient:
 
         emails: Dict[int, Email] = {}
         missing: List[int] = []
-        if self.block.maildir:
+        if self._disk_cache_eligible(no_cache):
             for uid in uids:
                 disk_email = self._fetch_email_disk(uid, folder)
                 if disk_email is not None:
@@ -1192,6 +1231,7 @@ class ImapClient:
         query: str,
         folder: Optional[str] = None,
         limit: int = 10,
+        no_cache: bool = False,
     ) -> Dict[str, Any]:
         """High-level email search across one or all folders.
 
@@ -1213,13 +1253,15 @@ class ImapClient:
 
         When the client was constructed with a ``local_cache`` backend
         and an opted-in ``account_cfg``, eligible calls are served from
-        the local mu index instead of IMAP.  Folder-scoped searches
-        always go to IMAP (see ``fell_back_reason="folder_scope"``).
+        the local mu index instead of IMAP, whether or not a ``folder``
+        is given.  ``no_cache`` forces the call to live IMAP.
 
         Args:
             query: Gmail-style search query string.
             folder: Folder to search (``None`` searches all folders).
             limit: Maximum number of results.
+            no_cache: When ``True``, bypass the local cache and query
+                live IMAP regardless of eligibility.
 
         Returns:
             A dict ``{"results": [...], "provenance": {...}}``.  Each
@@ -1229,14 +1271,14 @@ class ImapClient:
             ``has_attachments``.  ``provenance`` carries ``source``
             (``"local"`` or ``"remote"``), ``indexed_at`` (ISO 8601 or
             ``None``), and ``fell_back_reason`` (``None`` or one of
-            ``"folder_scope"``, ``"mu_missing"``, ``"db_missing"``,
+            ``"no_cache"``, ``"mu_missing"``, ``"db_missing"``,
             ``"stale"``, ``"untranslatable"``, ``"exception"``).
 
         Raises:
             ValueError: On malformed queries.
         """
         local_results, fell_back_reason = self._try_local_cache_search(
-            query, folder, limit
+            query, folder, limit, no_cache
         )
         if local_results is not None:
             return {
@@ -1252,7 +1294,7 @@ class ImapClient:
                 },
             }
         return {
-            "results": self._search_emails_imap(query, folder, limit),
+            "results": self._search_emails_imap(query, folder, limit, no_cache),
             "provenance": {
                 "source": "remote",
                 "indexed_at": None,
@@ -1261,9 +1303,20 @@ class ImapClient:
         }
 
     def _try_local_cache_search(
-        self, query: str, folder: Optional[str], limit: int
+        self,
+        query: str,
+        folder: Optional[str],
+        limit: int,
+        no_cache: bool = False,
     ) -> Tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
         """Attempt to serve a search from the local cache.
+
+        Args:
+            query: Gmail-style search query string.
+            folder: Folder to search (``None`` searches all folders).
+            limit: Maximum number of results.
+            no_cache: When ``True``, decline the cache and report
+                ``"no_cache"`` so the caller goes to live IMAP.
 
         Returns:
             ``(results, None)`` on a successful local-cache hit, or
@@ -1279,13 +1332,13 @@ class ImapClient:
 
         if self.local_cache is None or not self.block.maildir:
             return None, None
-        if folder is not None:
-            return None, "folder_scope"
+        if no_cache:
+            return None, "no_cache"
         eligibility = self.local_cache.is_eligible(self.block)
         if not eligibility.eligible:
             return None, eligibility.reason
         try:
-            results = self.local_cache.search(self.block, query, limit)
+            results = self.local_cache.search(self.block, query, limit, folder)
         except UntranslatableQuery:
             return None, "untranslatable"
         except (MuFailure, ValueError) as e:
@@ -1298,6 +1351,7 @@ class ImapClient:
         query: str,
         folder: Optional[str] = None,
         limit: int = 10,
+        no_cache: bool = False,
     ) -> List[Dict[str, Any]]:
         """Run a search against the IMAP server (no local-cache attempt).
 
@@ -1305,6 +1359,9 @@ class ImapClient:
             query: Gmail-style search query string.
             folder: Folder to search (``None`` searches all folders).
             limit: Maximum number of results.
+            no_cache: Forwarded to :meth:`fetch_emails` so message
+                bodies are read from live IMAP rather than the maildir
+                when the caller forced ``--no-cache``.
 
         Returns:
             List of result dicts sorted by date descending, each with
@@ -1385,7 +1442,9 @@ class ImapClient:
         results: List[Dict[str, Any]] = []
         for current_folder, uid_list in by_folder.items():
             try:
-                emails = self.fetch_emails(uid_list, folder=current_folder)
+                emails = self.fetch_emails(
+                    uid_list, folder=current_folder, no_cache=no_cache
+                )
                 for email_obj in emails.values():
                     results.append(
                         email_obj.as_search_result(

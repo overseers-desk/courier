@@ -495,3 +495,39 @@ class TestMuBackendSearch:
         assert rec["subject"] == "keep me"
         assert rec["path"] == str(maildir_file)
         assert rec["uid"] == 43
+
+
+class TestScopeQuery:
+    """_scope_query maps a folder to an exact, quoted maildir predicate."""
+
+    def test_no_folder_scopes_whole_block_recursively(self):
+        """Without a folder the predicate matches the block recursively
+        (trailing slash) and ANDs the translated query."""
+        assert (
+            MuBackend._scope_query("/var/local/mail/work", "from:alice")
+            == "(from:alice) AND maildir:/work/"
+        )
+
+    def test_inbox_matches_root_and_inbox_subdir(self):
+        """INBOX is matched both at the block root and at an INBOX subdir,
+        mirroring the two cases _derive_folder collapses to INBOX."""
+        assert (
+            MuBackend._scope_query("/var/local/mail/work", "", "INBOX")
+            == '(maildir:"/work" OR maildir:"/work/INBOX")'
+        )
+
+    def test_subfolder_is_exact_no_trailing_slash(self):
+        """A named subfolder is matched exactly (no trailing slash) so
+        its own subfolders are not swept in."""
+        assert (
+            MuBackend._scope_query("/var/local/mail/work", "from:alice", "Work Done")
+            == '(from:alice) AND maildir:"/work/Work Done"'
+        )
+
+    def test_special_char_folder_is_quoted(self):
+        """A folder carrying Xapian metacharacters ([Gmail]/Sent Mail) is
+        quoted so it survives query parsing intact."""
+        assert (
+            MuBackend._scope_query("/var/local/mail/acct", "", "[Gmail]/Sent Mail")
+            == 'maildir:"/acct/[Gmail]/Sent Mail"'
+        )

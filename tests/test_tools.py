@@ -240,6 +240,7 @@ class TestTools:
             "test query",
             folder=None,
             limit=50,
+            no_cache=False,
         )
 
         # Test with specific folder and Gmail-style query
@@ -249,6 +250,7 @@ class TestTools:
             "from:sender@example.com",
             folder="INBOX",
             limit=50,
+            no_cache=False,
         )
 
         # Test with invalid query — client.search_emails raises ValueError
@@ -268,6 +270,7 @@ class TestTools:
             "69172700",
             folder="INBOX",
             limit=50,
+            no_cache=False,
         )
 
     @pytest.mark.asyncio
@@ -304,6 +307,7 @@ class TestTools:
             "imap:TEXT Edinburgh",
             folder="INBOX",
             limit=50,
+            no_cache=False,
         )
 
     @pytest.mark.asyncio
@@ -412,7 +416,7 @@ class TestTools:
         read = tools["read"]
         # mock_email has both html and text content; html should win
         result = await read("INBOX", 1, mock_context)
-        mock_client.fetch_email.assert_called_with(1, "INBOX")
+        mock_client.fetch_email.assert_called_with(1, "INBOX", no_cache=False)
         data = json.loads(result)
         assert data["uid"] == 1
         assert data["folder"] == "INBOX"
@@ -425,6 +429,33 @@ class TestTools:
         # cc and attachments are absent on this fixture
         assert "cc" not in data
         assert "attachments" not in data
+
+    @pytest.mark.asyncio
+    async def test_read_no_cache_forwarded(self, tools, mock_client, mock_context):
+        """The read tool forwards ``no_cache`` to the client."""
+        read = tools["read"]
+        await read("INBOX", 1, mock_context, no_cache=True)
+        mock_client.fetch_email.assert_called_with(1, "INBOX", no_cache=True)
+
+    @pytest.mark.asyncio
+    async def test_search_no_cache_forwarded(self, tools, mock_client, mock_context):
+        """The search tool forwards ``no_cache`` to the client."""
+        search = tools["search"]
+        mock_client.search_emails.return_value = {
+            "results": [],
+            "provenance": {
+                "source": "remote",
+                "indexed_at": None,
+                "fell_back_reason": "no_cache",
+            },
+        }
+        await search("from:alice", mock_context, no_cache=True)
+        mock_client.search_emails.assert_called_once_with(
+            "from:alice",
+            folder=None,
+            limit=50,
+            no_cache=True,
+        )
 
     @pytest.mark.asyncio
     async def test_read_email_not_found(self, tools, mock_client, mock_context):

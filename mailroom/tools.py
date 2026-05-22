@@ -287,6 +287,7 @@ def register_tools(mcp: FastMCP, imap_client: ImapClient) -> None:
         folder: Optional[str] = None,
         limit: int = 50,
         imap: Optional[str] = None,
+        no_cache: bool = False,
     ) -> str:
         """Search for emails using Gmail-style query syntax.
 
@@ -304,6 +305,7 @@ def register_tools(mcp: FastMCP, imap_client: ImapClient) -> None:
             limit: Maximum number of results
             ctx: MCP context
             imap: [imap.NAME] block name (None for default)
+            no_cache: Bypass the local cache and query live IMAP.
 
         Returns:
             JSON-formatted dict ``{"results": [...], "provenance": {...}}``.
@@ -311,7 +313,7 @@ def register_tools(mcp: FastMCP, imap_client: ImapClient) -> None:
             from a local mu cache and ``"remote"`` when it went to IMAP;
             ``provenance.indexed_at`` carries the local index mtime when
             applicable; ``provenance.fell_back_reason`` names the
-            condition that forced an IMAP fallback (``"folder_scope"``,
+            condition that forced an IMAP fallback (``"no_cache"``,
             ``"mu_missing"``, ``"db_missing"``, ``"stale"``,
             ``"untranslatable"``, ``"exception"``) or is ``null``.
         """
@@ -325,6 +327,7 @@ def register_tools(mcp: FastMCP, imap_client: ImapClient) -> None:
                     str(query),
                     folder=folder,
                     limit=limit,
+                    no_cache=no_cache,
                 ),
                 timeout=30.0,
             )
@@ -634,6 +637,7 @@ def register_tools(mcp: FastMCP, imap_client: ImapClient) -> None:
         uid: int,
         ctx: Context,
         imap: Optional[str] = None,
+        no_cache: bool = False,
     ) -> str:
         """Read an email's content by folder and UID.
 
@@ -642,13 +646,14 @@ def register_tools(mcp: FastMCP, imap_client: ImapClient) -> None:
             uid: Email UID
             ctx: MCP context
             imap: [imap.NAME] block name (None for default)
+            no_cache: Bypass the local cache and read from live IMAP.
 
         Returns:
             JSON-formatted email with headers, content, and attachment list
         """
         client = get_client_from_context(ctx, imap)
         try:
-            email_obj = client.fetch_email(uid, folder)
+            email_obj = client.fetch_email(uid, folder, no_cache=no_cache)
             if not email_obj:
                 return json.dumps(
                     {"error": f"Email with UID {uid} not found in folder {folder}"}

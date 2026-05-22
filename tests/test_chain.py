@@ -620,7 +620,7 @@ class TestRunChain:
         def factory(name):
             client = MagicMock()
 
-            def fake_search(query, folder=None, limit=10):
+            def fake_search(query, folder=None, limit=10, no_cache=False):
                 seen_limits.append(limit)
                 return _fake_search_result(query)
 
@@ -646,7 +646,7 @@ class TestRunChain:
         def factory(name):
             client = MagicMock()
 
-            def fake_search(query, folder=None, limit=10):
+            def fake_search(query, folder=None, limit=10, no_cache=False):
                 seen_limits.append(limit)
                 return _fake_search_result(query)
 
@@ -672,7 +672,7 @@ class TestRunChain:
         def factory(name):
             client = MagicMock()
 
-            def fake_search(query, folder=None, limit=10):
+            def fake_search(query, folder=None, limit=10, no_cache=False):
                 seen_folders.append(folder)
                 return _fake_search_result(query)
 
@@ -755,6 +755,26 @@ class TestSingleOpUnchanged:
         with _patch_config(), _patch_search_client(empty):
             result = runner.invoke(app, ["search", "from:nobody"])
         assert result.exit_code == 1
+
+    def test_search_no_cache_forwarded_to_client(self):
+        captured = {}
+
+        def factory(name):
+            client = MagicMock()
+            client.search_emails.return_value = _fake_search_result()
+            captured["client"] = client
+            return client
+
+        with (
+            _patch_config(),
+            patch("mailroom.__main__._make_client_soft", side_effect=factory),
+        ):
+            result = runner.invoke(app, ["search", "from:alice", "--no-cache"])
+
+        assert result.exit_code == 0
+        captured["client"].search_emails.assert_called_once_with(
+            "from:alice", folder=None, limit=50, no_cache=True
+        )
 
 
 # ---------------------------------------------------------------------------

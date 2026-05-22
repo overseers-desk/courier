@@ -130,3 +130,20 @@ class TestReadCLIThreadingHeaders:
         out = self._read_inner(result.output)
         assert "in_reply_to" not in out
         assert "references" not in out
+
+    def test_no_cache_forwarded_to_client(self):
+        client = MagicMock()
+        client.fetch_email.return_value = _make_email("<solo@example.com>")
+
+        runner = CliRunner()
+        with (
+            patch("mailroom.__main__._make_client", return_value=client),
+            _patch_config(),
+        ):
+            result = runner.invoke(
+                app,
+                ["read", "-f", "INBOX", "-u", "42", "--no-cache"],
+            )
+
+        assert result.exit_code == 0
+        client.fetch_email.assert_called_once_with(42, "INBOX", no_cache=True)

@@ -183,6 +183,7 @@ class MuBackend:
         imap_block: ImapBlock,
         query: str,
         limit: int,
+        folder: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Run a search against the local mu store, scoped to the block.
 
@@ -191,6 +192,9 @@ class MuBackend:
                 search scope.  Must have ``maildir`` configured.
             query: User query string in mailroom syntax.
             limit: Maximum number of results to return.
+            folder: When given, narrow the search to that one IMAP folder
+                (exact, non-recursive); when ``None``, search the whole
+                block.
 
         Returns:
             A list of result dicts mirroring the IMAP search shape minus
@@ -212,7 +216,7 @@ class MuBackend:
             raise MuFailure("muhome could not be resolved")
 
         translated = parse_query_to_mu(query)
-        scoped = self._scope_query(imap_block.maildir, translated)
+        scoped = self._scope_query(imap_block.maildir, translated, folder)
 
         # ``--muhome`` is parsed by ``mu find`` (the subcommand), not the
         # outer ``mu`` driver, so it must follow ``find`` in the argv.
@@ -253,10 +257,38 @@ class MuBackend:
         return [self._format_result(imap_block, rec) for rec in raw]
 
     @staticmethod
-    def _scope_query(maildir: str, translated: str) -> str:
-        """Wrap a translated query with a per-block maildir predicate."""
+    def _scope_query(
+        maildir: str, translated: str, folder: Optional[str] = None
+    ) -> str:
+        """Wrap a translated query with a maildir predicate scoping the search.
+
+        With ``folder`` unset the predicate matches the whole block
+        recursively (``maildir:/<basename>/``).  With ``folder`` set it
+        matches that one IMAP folder exactly: mu's ``maildir:`` term is
+        an exact match when the trailing slash is omitted, so subfolders
+        are not swept in.  ``"INBOX"`` is matched both at the block root
+        and at an ``INBOX`` subdir, mirroring the two cases
+        :meth:`_derive_folder` collapses to ``"INBOX"``.  The folder
+        value is quoted so spaces and Xapian metacharacters (``[``,
+        ``&``, ``+``) survive query parsing.
+
+        Args:
+            maildir: The block's configured maildir path.
+            translated: The query already translated to mu syntax.
+            folder: IMAP folder name to scope to, or ``None`` for the
+                whole block.
+
+        Returns:
+            A mu query string combining the translated query with the
+            maildir scope predicate.
+        """
         basename = os.path.basename(maildir.rstrip("/"))
-        scope = f"maildir:/{basename}/"
+        if folder is None:
+            scope = f"maildir:/{basename}/"
+        elif folder == "INBOX":
+            scope = f'(maildir:"/{basename}" OR maildir:"/{basename}/INBOX")'
+        else:
+            scope = f'maildir:"/{basename}/{folder}"'
         if translated:
             return f"({translated}) AND {scope}"
         return scope

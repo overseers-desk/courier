@@ -58,6 +58,19 @@ def _make_block_with_maildir(maildir: str, redact_policy=None) -> ImapBlock:
     )
 
 
+def _eligible_mu() -> MagicMock:
+    """A local-cache backend that reports the block as eligible.
+
+    Disk-served reads now require the block to be opted into the local
+    cache and the index to pass ``is_eligible`` (the one-policy gate), so
+    disk tests must supply a backend rather than rely on ``maildir``
+    alone.
+    """
+    mu = MagicMock()
+    mu.is_eligible.return_value = EligibilityResult(True)
+    return mu
+
+
 class TestImapClient:
     """Test the IMAP client."""
 
@@ -751,7 +764,7 @@ class TestImapClient:
         path serves the fetch and the IMAP client is never touched."""
         root = _make_maildir_root(tmp_path)
         _write_maildir_message(root, "INBOX", uid=691, subject="From disk")
-        client = ImapClient(_make_block_with_maildir(root))
+        client = ImapClient(_make_block_with_maildir(root), local_cache=_eligible_mu())
 
         with patch("imapclient.IMAPClient") as mock_cls:
             mock_imap = MagicMock()
@@ -773,7 +786,7 @@ class TestImapClient:
         _write_maildir_message(
             root, "INBOX", uid=42, subdir="new", subject="Fresh", flag_suffix=""
         )
-        client = ImapClient(_make_block_with_maildir(root))
+        client = ImapClient(_make_block_with_maildir(root), local_cache=_eligible_mu())
 
         with patch("imapclient.IMAPClient") as mock_cls:
             mock_imap = MagicMock()
@@ -791,7 +804,7 @@ class TestImapClient:
         the last mbsync sync)."""
         root = _make_maildir_root(tmp_path)
         # No file written for uid 12345.
-        client = ImapClient(_make_block_with_maildir(root))
+        client = ImapClient(_make_block_with_maildir(root), local_cache=_eligible_mu())
 
         with patch("imapclient.IMAPClient") as mock_cls:
             mock_cls.return_value = mock_imap_client
@@ -837,7 +850,7 @@ class TestImapClient:
         root = _make_maildir_root(tmp_path)
         _write_maildir_message(root, "INBOX", uid=1, subject="one")
         _write_maildir_message(root, "INBOX", uid=2, subject="two")
-        client = ImapClient(_make_block_with_maildir(root))
+        client = ImapClient(_make_block_with_maildir(root), local_cache=_eligible_mu())
 
         with patch("imapclient.IMAPClient") as mock_cls:
             mock_imap = MagicMock()
@@ -856,7 +869,7 @@ class TestImapClient:
         to IMAP; the merged result is keyed by UID."""
         root = _make_maildir_root(tmp_path)
         _write_maildir_message(root, "INBOX", uid=1, subject="from disk")
-        client = ImapClient(_make_block_with_maildir(root))
+        client = ImapClient(_make_block_with_maildir(root), local_cache=_eligible_mu())
 
         with patch("imapclient.IMAPClient") as mock_cls:
             mock_cls.return_value = mock_imap_client
@@ -872,6 +885,92 @@ class TestImapClient:
         fetched_uids = mock_imap_client.fetch.call_args.args[0]
         assert 2 in fetched_uids
         assert 1 not in fetched_uids
+
+    def test_fetch_email_stale_index_uses_imap(
+        self, tmp_path, mock_imap_client, test_email_response_data
+    ):
+        """A stale index sends a read to IMAP even though the file is on
+        disk: under one policy, read obeys the same staleness gate as
+        search so flags reflect the server."""
+        root = _make_maildir_root(tmp_path)
+        _write_maildir_message(root, "INBOX", uid=12345, subject="On disk")
+        mu = MagicMock()
+        mu.is_eligible.return_value = EligibilityResult(False, "stale")
+        client = ImapClient(_make_block_with_maildir(root), local_cache=mu)
+
+        with patch("imapclient.IMAPClient") as mock_cls:
+            mock_cls.return_value = mock_imap_client
+            mock_imap_client.select_folder.return_value = {b"EXISTS": 10}
+            mock_imap_client.fetch.return_value = {12345: test_email_response_data}
+            client.connect()
+            email_obj = client.fetch_email(12345, folder="INBOX")
+
+        assert email_obj is not None
+        mock_imap_client.fetch.assert_called_once_with(
+            [12345], ["BODY.PEEK[]", "FLAGS"]
+        )
+
+    def test_fetch_email_no_cache_skips_disk(
+        self, tmp_path, mock_imap_client, test_email_response_data
+    ):
+        """``no_cache`` reads from live IMAP even when the file is on disk
+        and the index is eligible."""
+        root = _make_maildir_root(tmp_path)
+        _write_maildir_message(root, "INBOX", uid=12345, subject="On disk")
+        client = ImapClient(_make_block_with_maildir(root), local_cache=_eligible_mu())
+
+        with patch("imapclient.IMAPClient") as mock_cls:
+            mock_cls.return_value = mock_imap_client
+            mock_imap_client.select_folder.return_value = {b"EXISTS": 10}
+            mock_imap_client.fetch.return_value = {12345: test_email_response_data}
+            client.connect()
+            email_obj = client.fetch_email(12345, folder="INBOX", no_cache=True)
+
+        assert email_obj is not None
+        mock_imap_client.fetch.assert_called_once_with(
+            [12345], ["BODY.PEEK[]", "FLAGS"]
+        )
+
+    def test_fetch_emails_no_cache_skips_disk(
+        self, tmp_path, mock_imap_client, make_test_email_response_data
+    ):
+        """The batch path honours ``no_cache`` too: every UID is fetched
+        from IMAP even when files are on disk."""
+        root = _make_maildir_root(tmp_path)
+        _write_maildir_message(root, "INBOX", uid=1, subject="from disk")
+        client = ImapClient(_make_block_with_maildir(root), local_cache=_eligible_mu())
+
+        with patch("imapclient.IMAPClient") as mock_cls:
+            mock_cls.return_value = mock_imap_client
+            mock_imap_client.select_folder.return_value = {b"EXISTS": 10}
+            mock_imap_client.fetch.return_value = {
+                1: make_test_email_response_data(uid=1)
+            }
+            client.connect()
+            emails = client.fetch_emails([1], folder="INBOX", no_cache=True)
+
+        assert set(emails.keys()) == {1}
+        mock_imap_client.fetch.assert_called_once_with([1], ["BODY.PEEK[]", "FLAGS"])
+
+    def test_fetch_email_disk_serves_glob_metachar_folder(self, tmp_path):
+        """A folder whose name carries glob metacharacters
+        (``[Gmail]/Sent Mail``) is escaped so the literal directory matches
+        and the read is disk-served rather than silently falling to IMAP."""
+        root = str(tmp_path / "maildir")
+        folder = "[Gmail]/Sent Mail"
+        (Path(root) / folder / "cur").mkdir(parents=True)
+        (Path(root) / folder / "new").mkdir(parents=True)
+        _write_maildir_message(root, folder, uid=55, subject="Sent from disk")
+        client = ImapClient(_make_block_with_maildir(root), local_cache=_eligible_mu())
+
+        with patch("imapclient.IMAPClient") as mock_cls:
+            mock_imap = MagicMock()
+            mock_cls.return_value = mock_imap
+            email_obj = client.fetch_email(55, folder=folder)
+
+        assert email_obj is not None
+        assert email_obj.subject == "Sent from disk"
+        mock_imap.fetch.assert_not_called()
 
     def test_mark_email(self, mock_imap_client):
         """Test marking an email with a flag."""
@@ -1322,7 +1421,7 @@ class TestSearchEmailsDispatch:
         with patch.object(client, "_search_emails_imap", return_value=[]) as mock_imap:
             result = client.search_emails("from:alice")
 
-        mock_imap.assert_called_once_with("from:alice", None, 10)
+        mock_imap.assert_called_once_with("from:alice", None, 10, False)
         assert result == {
             "results": [],
             "provenance": {
@@ -1360,7 +1459,7 @@ class TestSearchEmailsDispatch:
             result = client.search_emails("from:alice")
 
         mock_imap.assert_not_called()
-        mu.search.assert_called_once_with(block, "from:alice", 10)
+        mu.search.assert_called_once_with(block, "from:alice", 10, None)
         assert result["results"] == canned
         assert result["provenance"]["source"] == "local"
         assert result["provenance"]["indexed_at"] == "2025-04-01T12:00:00+00:00"
@@ -1379,7 +1478,7 @@ class TestSearchEmailsDispatch:
         with patch.object(client, "_search_emails_imap", return_value=[]) as mock_imap:
             result = client.search_emails("from:alice")
 
-        mock_imap.assert_called_once_with("from:alice", None, 10)
+        mock_imap.assert_called_once_with("from:alice", None, 10, False)
         assert result["provenance"]["source"] == "remote"
         assert result["provenance"]["fell_back_reason"] == "exception"
 
@@ -1400,8 +1499,28 @@ class TestSearchEmailsDispatch:
         assert result["provenance"]["source"] == "remote"
         assert result["provenance"]["fell_back_reason"] == "untranslatable"
 
-    def test_search_emails_folder_scope_forces_imap(self):
-        """A non-None folder argument always routes to IMAP."""
+    def test_search_emails_with_folder_uses_cache(self):
+        """A folder-scoped search is served from the cache, passing the
+        folder through to the backend for an exact maildir scope."""
+        block = self._make_block_with_maildir()
+
+        mu = MagicMock()
+        mu.is_eligible.return_value = EligibilityResult(True)
+        mu.search.return_value = []
+        mu.index_mtime_iso.return_value = "2025-04-01T12:00:00+00:00"
+
+        client = ImapClient(block, local_cache=mu)
+
+        with patch.object(client, "_search_emails_imap", return_value=[]) as mock_imap:
+            result = client.search_emails("from:alice", folder="INBOX")
+
+        mock_imap.assert_not_called()
+        mu.search.assert_called_once_with(block, "from:alice", 10, "INBOX")
+        assert result["provenance"]["source"] == "local"
+        assert result["provenance"]["fell_back_reason"] is None
+
+    def test_search_emails_no_cache_forces_imap(self):
+        """``no_cache`` bypasses an eligible cache and reports the reason."""
         block = self._make_block_with_maildir()
 
         mu = MagicMock()
@@ -1410,13 +1529,13 @@ class TestSearchEmailsDispatch:
         client = ImapClient(block, local_cache=mu)
 
         with patch.object(client, "_search_emails_imap", return_value=[]) as mock_imap:
-            result = client.search_emails("from:alice", folder="INBOX")
+            result = client.search_emails("from:alice", no_cache=True)
 
-        mock_imap.assert_called_once_with("from:alice", "INBOX", 10)
-        # mu.search must not have been invoked because folder_scope precedes
-        # eligibility/search.
+        mock_imap.assert_called_once_with("from:alice", None, 10, True)
         mu.search.assert_not_called()
-        assert result["provenance"]["fell_back_reason"] == "folder_scope"
+        mu.is_eligible.assert_not_called()
+        assert result["provenance"]["source"] == "remote"
+        assert result["provenance"]["fell_back_reason"] == "no_cache"
 
     def test_search_emails_falls_back_on_mu_missing(self):
         """is_eligible returning ``mu_missing`` forces an IMAP fallback."""
@@ -1646,7 +1765,7 @@ class TestSearchEmailsImapResultShape:
 
         client = self._make_client()
 
-        def fetch_emails_side_effect(uids, folder="INBOX"):
+        def fetch_emails_side_effect(uids, folder="INBOX", no_cache=False):
             if folder == "Broken":
                 raise RuntimeError("fetch failed")
             return {uids[0]: self._make_email()}
@@ -1712,7 +1831,7 @@ class TestSearchEmailsImapResultShape:
         def search_side_effect(spec, folder=None):
             return {"FolderA": [10], "FolderB": [20]}[folder]
 
-        def fetch_emails_side_effect(uids, folder="INBOX"):
+        def fetch_emails_side_effect(uids, folder="INBOX", no_cache=False):
             return {10: email_a} if folder == "FolderA" else {20: email_b}
 
         with (
@@ -1913,7 +2032,7 @@ class TestRedactOnFetch:
         root = _make_maildir_root(tmp_path)
         _write_maildir_message(root, "INBOX", uid=7, subject="confidential")
         block = _make_block_with_maildir(root, redact_policy=lambda e: True)
-        client = ImapClient(block)
+        client = ImapClient(block, local_cache=_eligible_mu())
 
         with patch("imapclient.IMAPClient") as mock_cls:
             mock_imap = MagicMock()

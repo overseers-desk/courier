@@ -298,13 +298,15 @@ def _build_op_key(subcmd: str, **kwargs: Any) -> str:
     return " ".join(parts)
 
 
-def _fetch_email_result(client: ImapClient, folder: str, uid: int) -> Dict[str, Any]:
+def _fetch_email_result(
+    client: ImapClient, folder: str, uid: int, no_cache: bool = False
+) -> Dict[str, Any]:
     """Fetch one email and return its JSON representation, or ``{"error": ...}``.
 
     Extracted so both the standalone ``read`` command and the chain executor
     share identical output structure.
     """
-    email_obj = client.fetch_email(uid, folder)
+    email_obj = client.fetch_email(uid, folder, no_cache=no_cache)
     if not email_obj:
         return {"error": f"Email UID {uid} not found in {folder}"}
     result: Dict[str, Any] = {
@@ -358,9 +360,15 @@ def _run_op(client: ImapClient, subcmd: str, kwargs: Dict[str, Any]) -> Dict[str
             kwargs["query"],
             folder=kwargs.get("folder"),
             limit=kwargs.get("limit", 50),
+            no_cache=kwargs.get("no_cache", False),
         )
     if subcmd == "read":
-        return _fetch_email_result(client, kwargs["folder"], kwargs["uid"])
+        return _fetch_email_result(
+            client,
+            kwargs["folder"],
+            kwargs["uid"],
+            no_cache=kwargs.get("no_cache", False),
+        )
     return {"error": f"unknown subcommand '{subcmd}'"}
 
 
@@ -1642,6 +1650,11 @@ def search(
         None, "--folder", "-f", help="Folder to search (default: all)."
     ),
     limit: int = typer.Option(50, "--limit", "-n", help="Maximum number of results."),
+    no_cache: bool = typer.Option(
+        False,
+        "--no-cache",
+        help="Bypass the local cache and query live IMAP.",
+    ),
     output_format: str = typer.Option(
         "json",
         "--format",
@@ -1678,7 +1691,12 @@ def search(
                 (
                     op_key,
                     "search",
-                    {"query": effective, "folder": folder, "limit": limit},
+                    {
+                        "query": effective,
+                        "folder": folder,
+                        "limit": limit,
+                        "no_cache": no_cache,
+                    },
                 )
             ],
             names,
@@ -1717,6 +1735,11 @@ def search(
 def read(
     folder: str = typer.Option(..., "--folder", "-f", help="Folder name."),
     uid: int = typer.Option(..., "--uid", "-u", help="Email UID."),
+    no_cache: bool = typer.Option(
+        False,
+        "--no-cache",
+        help="Bypass the local cache and read from live IMAP.",
+    ),
 ) -> None:
     """Read an email's content.
 
@@ -1726,7 +1749,7 @@ def read(
     name = _resolve_single_imap_name()
     client = _make_client()
     try:
-        result = _fetch_email_result(client, folder, uid)
+        result = _fetch_email_result(client, folder, uid, no_cache=no_cache)
         if "error" in result:
             typer.echo(result["error"], err=True)
             raise typer.Exit(1)
