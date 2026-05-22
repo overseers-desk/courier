@@ -9,12 +9,15 @@ servers.
 from unittest.mock import MagicMock, patch
 
 from mailroom.__main__ import (
+    _format_age,
     _print_status_table,
     _probe_all,
+    _probe_cache,
     _probe_imap,
     _probe_smtp,
 )
-from mailroom.config import ImapBlock, MailroomConfig, SmtpConfig
+from mailroom.config import ImapBlock, LocalCacheConfig, MailroomConfig, SmtpConfig
+from mailroom.local_cache import EligibilityResult
 
 
 def _imap_block(name: str = "acc") -> ImapBlock:
@@ -146,8 +149,8 @@ class TestPrintStatusTable:
 
     def test_renders_aligned_columns(self, capsys):
         rows = [
-            ("acc1", "imap", "imap.example.com:993", "ok"),
-            ("acc-with-long-name", "imap", "imap.example.com:993", "FAIL: x"),
+            ("acc1", "imap", "imap.example.com:993", "ok", "ok (12m old)"),
+            ("acc-with-long-name", "imap", "imap.example.com:993", "FAIL: x", "-"),
         ]
         _print_status_table(rows)
         out = capsys.readouterr().out.splitlines()
@@ -167,3 +170,98 @@ class TestPrintStatusTable:
         _print_status_table([])
         out = capsys.readouterr().out
         assert "no [imap.*] or [smtp.*] blocks configured" in out
+
+
+class TestFormatAge:
+    """`_format_age` picks the largest whole unit and clamps negatives."""
+
+    def test_units(self):
+        assert _format_age(45) == "45s"
+        assert _format_age(90) == "1m"
+        assert _format_age(750) == "12m"
+        assert _format_age(7200) == "2h"
+        assert _format_age(200000) == "2d"
+
+    def test_negative_clamps_to_zero(self):
+        assert _format_age(-5) == "0s"
+
+
+def _opted_in_block() -> ImapBlock:
+    """An [imap.NAME] block carrying a maildir, i.e. opted into the cache."""
+    return ImapBlock(
+        host="imap.example.com",
+        port=993,
+        username="user@example.com",
+        password="p",
+        use_ssl=True,
+        maildir="/tmp/maildir",
+    )
+
+
+def _cache_cfg(block: ImapBlock, max_staleness_seconds: int = 4000) -> MailroomConfig:
+    """A config whose [local_cache] table opts the given block in."""
+    return MailroomConfig(
+        imap_blocks={"a": block},
+        smtp_blocks={},
+        local_cache=LocalCacheConfig(max_staleness_seconds=max_staleness_seconds),
+    )
+
+
+class TestProbeCache:
+    """`_probe_cache` renders the CACHE cell from backend eligibility.
+
+    A block not opted into the cache renders ``"-"``; an opted-in block
+    renders freshness ('ok'), staleness ('STALE' with age and budget),
+    or the backend-unavailable reasons ('mu not found' / 'no index').
+    """
+
+    def test_dash_when_no_local_cache_configured(self):
+        cfg = MailroomConfig(imap_blocks={"a": _opted_in_block()}, smtp_blocks={})
+        assert _probe_cache(cfg, cfg.imap_blocks["a"]) == "-"
+
+    def test_dash_when_block_has_no_maildir(self):
+        cfg = _cache_cfg(_imap_block())  # _imap_block() carries no maildir
+        assert _probe_cache(cfg, cfg.imap_blocks["a"]) == "-"
+
+    def test_ok_when_index_fresh(self):
+        from datetime import datetime, timezone
+
+        block = _opted_in_block()
+        cfg = _cache_cfg(block)
+        backend = MagicMock()
+        backend.is_eligible.return_value = EligibilityResult(True)
+        backend.index_mtime_iso.return_value = datetime.now(timezone.utc).isoformat(
+            timespec="seconds"
+        )
+        with patch("mailroom.__main__._get_mu_backend", return_value=backend):
+            cell = _probe_cache(cfg, block)
+        assert cell.startswith("ok (") and cell.endswith("old)")
+
+    def test_stale_reports_age_and_budget(self):
+        from datetime import datetime, timedelta, timezone
+
+        block = _opted_in_block()
+        cfg = _cache_cfg(block, max_staleness_seconds=3600)
+        backend = MagicMock()
+        backend.is_eligible.return_value = EligibilityResult(False, "stale")
+        old = datetime.now(timezone.utc) - timedelta(days=2)
+        backend.index_mtime_iso.return_value = old.isoformat(timespec="seconds")
+        with patch("mailroom.__main__._get_mu_backend", return_value=backend):
+            cell = _probe_cache(cfg, block)
+        assert cell.startswith("STALE (") and "max 1h" in cell
+
+    def test_mu_missing_reason(self):
+        block = _opted_in_block()
+        cfg = _cache_cfg(block)
+        backend = MagicMock()
+        backend.is_eligible.return_value = EligibilityResult(False, "mu_missing")
+        with patch("mailroom.__main__._get_mu_backend", return_value=backend):
+            assert _probe_cache(cfg, block) == "mu not found"
+
+    def test_db_missing_reason(self):
+        block = _opted_in_block()
+        cfg = _cache_cfg(block)
+        backend = MagicMock()
+        backend.is_eligible.return_value = EligibilityResult(False, "db_missing")
+        with patch("mailroom.__main__._get_mu_backend", return_value=backend):
+            assert _probe_cache(cfg, block) == "no index"

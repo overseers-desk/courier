@@ -1400,6 +1400,12 @@ def status() -> None:
     rather than the slowest), but a status check is interactive and
     paid once.
 
+    Each [imap.NAME] block opted into the local cache (a [local_cache]
+    table plus a per-block ``maildir``) also gets a CACHE cell reporting
+    index freshness and whether it has fallen past the staleness budget,
+    so a silently stale index is visible here rather than only as a
+    fallback reason in search provenance.
+
     Use ``list`` for the JSON inventory; ``status`` is a short
     operational view answering "which servers are reachable right
     now".
@@ -1444,21 +1450,30 @@ def install_claude_command() -> None:
     print(f"Installed {__version__}: {dest}")
 
 
-def _probe_all(cfg: MailroomConfig) -> List[Tuple[str, str, str, str]]:
+def _probe_all(cfg: MailroomConfig) -> List[Tuple[str, str, str, str, str]]:
     """Probe every configured IMAP and SMTP block sequentially.
 
-    Returns rows as (name, kind, endpoint, status). Order: IMAP blocks
-    in config order, then SMTP blocks in config order. Connection
-    failures surface in the status column; the function never raises.
-    Probes are serial so a self-hosted server behind a per-IP
-    rate-limit (fail2ban etc.) does not see a burst of concurrent
-    auth attempts from this command.
+    Returns rows as (name, kind, endpoint, status, cache). Order: IMAP
+    blocks in config order, then SMTP blocks in config order. Connection
+    failures surface in the status column; local-cache health surfaces in
+    the cache column (``"-"`` for SMTP blocks and for IMAP blocks not
+    opted into the cache); the function never raises. Probes are serial
+    so a self-hosted server behind a per-IP rate-limit (fail2ban etc.)
+    does not see a burst of concurrent auth attempts from this command.
     """
-    rows: List[Tuple[str, str, str, str]] = []
+    rows: List[Tuple[str, str, str, str, str]] = []
     for name, block in cfg.imap_blocks.items():
-        rows.append((name, "imap", f"{block.host}:{block.port}", _probe_imap(block)))
+        rows.append(
+            (
+                name,
+                "imap",
+                f"{block.host}:{block.port}",
+                _probe_imap(block),
+                _probe_cache(cfg, block),
+            )
+        )
     for name, smtp in cfg.smtp_blocks.items():
-        rows.append((name, "smtp", f"{smtp.host}:{smtp.port}", _probe_smtp(smtp)))
+        rows.append((name, "smtp", f"{smtp.host}:{smtp.port}", _probe_smtp(smtp), "-"))
     return rows
 
 
@@ -1512,14 +1527,76 @@ def _probe_smtp(smtp: SmtpConfig) -> str:
             pass
 
 
-def _print_status_table(rows: List[Tuple[str, str, str, str]]) -> None:
+def _probe_cache(cfg: MailroomConfig, block: ImapBlock) -> str:
+    """Report local-cache health for one [imap.NAME] block.
+
+    Produces the status table's CACHE cell. A block is "opted in" when
+    the global [local_cache] table is configured and the block carries a
+    ``maildir``; otherwise the cell is ``"-"``. For an opted-in block the
+    cell reflects the mu index: ``"ok (<age> old)"`` when fresh,
+    ``"STALE (<age> old, max <budget>)"`` when past the staleness budget,
+    or ``"mu not found"`` / ``"no index"`` when the backend cannot run.
+
+    Args:
+        cfg: The loaded mailroom configuration.
+        block: The [imap.NAME] block to report on.
+
+    Returns:
+        A short cell string for the CACHE column.
+    """
+    if cfg.local_cache is None or not block.maildir:
+        return "-"
+    backend = _get_mu_backend(cfg)
+    if backend is None:
+        return "-"
+    eligibility = backend.is_eligible(block)
+    if eligibility.reason == "mu_missing":
+        return "mu not found"
+    if eligibility.reason == "db_missing":
+        return "no index"
+    mtime_iso = backend.index_mtime_iso()
+    age = "?"
+    if mtime_iso is not None:
+        from datetime import datetime, timezone
+
+        delta = datetime.now(timezone.utc) - datetime.fromisoformat(mtime_iso)
+        age = _format_age(delta.total_seconds())
+    if eligibility.reason == "stale":
+        budget = _format_age(cfg.local_cache.max_staleness_seconds)
+        return f"STALE ({age} old, max {budget})"
+    if eligibility.eligible:
+        return f"ok ({age} old)"
+    return eligibility.reason or "unavailable"
+
+
+def _format_age(seconds: float) -> str:
+    """Render an elapsed time in seconds as a compact s/m/h/d cell.
+
+    Args:
+        seconds: Elapsed seconds; negative inputs clamp to zero.
+
+    Returns:
+        The largest whole unit that fits, e.g. ``"45s"``, ``"12m"``,
+        ``"3h"``, ``"2d"``.
+    """
+    secs = max(0, int(seconds))
+    if secs < 60:
+        return f"{secs}s"
+    if secs < 3600:
+        return f"{secs // 60}m"
+    if secs < 86400:
+        return f"{secs // 3600}h"
+    return f"{secs // 86400}d"
+
+
+def _print_status_table(rows: List[Tuple[str, str, str, str, str]]) -> None:
     """Print the status rows as an aligned plain-text table to stdout."""
     print(f"mailroom {__version__}")
     if not rows:
         print("(no [imap.*] or [smtp.*] blocks configured)")
         return
-    headers = ("NAME", "KIND", "HOST:PORT", "STATUS")
-    widths = [max(len(headers[i]), max(len(r[i]) for r in rows)) for i in range(4)]
+    headers = ("NAME", "KIND", "HOST:PORT", "STATUS", "CACHE")
+    widths = [max(len(headers[i]), max(len(r[i]) for r in rows)) for i in range(5)]
     fmt = "  ".join(f"{{:<{w}}}" for w in widths)
     print(fmt.format(*headers))
     for row in rows:
