@@ -1,5 +1,5 @@
 Name:           mailroom
-Version:        1.1.11
+Version:        1.1.12
 Release:        1%{?dist}
 Summary:        Email toolkit for AI assistants and command-line scripting
 License:        MIT
@@ -67,6 +67,17 @@ install -Dpm 644 debian/mailroom.1 %{buildroot}%{_mandir}/man1/mailroom.1
 %{_mandir}/man1/mailroom.1*
 
 %changelog
+* Fri May 22 2026 Weiwu Zhang <a@colourful.land> - 1.1.12-1
+- Folder-scoped search is now served from the local mu cache under the same
+  eligibility check as whole-mailbox search, instead of always going to IMAP.
+- read, links, and attachments are served from the local cache under that
+  same gate, so a fresh index answers them without contacting IMAP and a
+  stale index sends them to live IMAP.
+- New --no-cache flag on search and read forces a live IMAP query for a
+  single call.
+- Messages in folders whose names contain glob characters such as
+  [Gmail]/Sent Mail are now read from the local cache correctly.
+
 * Tue May 20 2026 Weiwu Zhang <a@colourful.land> - 1.1.11-1
 - Reply now honours Reply-To over From per RFC 5322 §3.6.2. Reply-all with
   Reply-To moves the diverted From to Cc. Fixes replies looping back into
