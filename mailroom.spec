@@ -1,5 +1,5 @@
 Name:           mailroom
-Version:        1.1.12
+Version:        1.1.13
 Release:        1%{?dist}
 Summary:        Email toolkit for AI assistants and command-line scripting
 License:        MIT
@@ -67,6 +67,11 @@ install -Dpm 644 debian/mailroom.1 %{buildroot}%{_mandir}/man1/mailroom.1
 %{_mandir}/man1/mailroom.1*
 
 %changelog
+* Sun May 25 2026 Weiwu Zhang <a@colourful.land> - 1.1.13-1
+- install-claude-command no longer emits the unregistered/dated nudge when
+  it is the subcommand being run; nudge is suppressed for that subcommand.
+- Nudge messages phrased as agent directives for stderr-as-prompt-injection.
+
 * Fri May 22 2026 Weiwu Zhang <a@colourful.land> - 1.1.12-1
 - Folder-scoped search is now served from the local mu cache under the same
   eligibility check as whole-mailbox search, instead of always going to IMAP.

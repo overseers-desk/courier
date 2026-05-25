@@ -1,3 +1,14 @@
+mailroom (1.1.13) unstable; urgency=medium
+
+  * install-claude-command no longer warns about the command being unregistered
+    or dated when it is the subcommand being run; the nudge is suppressed for
+    that one subcommand because it would be circular.
+  * Nudge messages for unregistered or dated Claude command file are now
+    phrased as agent directives (telling the agent to run install-claude-command
+    then continue), matching stderr-as-prompt-injection intent.
+
+ -- Weiwu Zhang <a@colourful.land>  Sun, 25 May 2026 00:00:00 +0000
+
 mailroom (1.1.12) unstable; urgency=medium
 
   * Folder-scoped search is now served from the local mu cache under the
