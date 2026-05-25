@@ -593,13 +593,6 @@ class TestIdentity:
         )
         assert ident.fcc == "Archive/Sent"
 
-    def test_fcc_true_kept(self):
-        ident = Identity.from_dict(
-            "alice",
-            {"imap": "work", "address": "x@y.com", "fcc": True},
-        )
-        assert ident.fcc is True
-
     def test_fcc_false_with_self_bcc_ok(self):
         ident = Identity.from_dict(
             "alice",

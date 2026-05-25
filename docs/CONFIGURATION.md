@@ -78,10 +78,9 @@ Two independent settings decide how an identity keeps a record of what it sends.
 
 - omitted: file into the `[imap.*]` block's Sent folder, following the host convention (Gmail auto-files, so mailroom skips its own copy);
 - `fcc = "Folder Name"`: file into that folder explicitly;
-- `fcc = true`: file into the default Sent folder even on a host that auto-files;
 - `fcc = false`: do not file a Sent copy.
 
-`bcc` adds recipients to every send (a string or a list of addresses). It is independent of `fcc`: an identity may keep a Sent copy and also BCC an address. Setting `bcc` no longer suppresses the Sent copy.
+`bcc` adds recipients to every send, as a string `bcc = "x@y.com"` or a list `bcc = ["x@y.com", "audit@y.com"]`. It is independent of `fcc`: an identity may keep a Sent copy and also BCC an address. Setting `bcc` no longer suppresses the Sent copy.
 
 Every identity must retain a copy of its sent mail. That is satisfied by `fcc` (an `imap` block with `fcc` not set to `false`) or by a `bcc` that includes the identity's own address. When `fcc = false`, a self-inclusive `bcc` is required, and the config is rejected otherwise.
 

@@ -112,15 +112,6 @@ imap = "director"
 address = "alias-host@gmail.com"
 # no name, no smtp override (inherits "gmail"), no fcc (Gmail auto-files).
 
-# A shared sending address that is itself a distribution list: BCC the list so
-# the whole team keeps the record, and fcc = false so the sender gets no
-# duplicate Sent copy. fcc = false requires a bcc that includes this address.
-# [identity.marketing]
-# imap    = "company"
-# address = "marketing@example.org"
-# bcc     = "marketing@example.org"
-# fcc     = false
-
 # ----- Optional global blocks --------------------------------------------
 
 # [local_cache]

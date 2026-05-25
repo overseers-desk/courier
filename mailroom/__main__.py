@@ -833,17 +833,16 @@ def _will_fcc(
     """Decide whether the FCC step should run at all.
 
     Precedence: an explicit ``--save-sent``/``--no-save-sent`` wins; then
-    the identity's own ``fcc`` (``False`` off, a folder string or ``True``
-    on); then the SMTP block's host convention. BCC plays no part here:
-    FCC and BCC are independent axes, so an identity can keep a Sent copy
-    *and* BCC a list, and turning FCC off is done explicitly via
+    the identity's own ``fcc`` (``False`` off, a folder string on); then
+    the SMTP block's host convention. BCC plays no part here: FCC and BCC
+    are independent axes, so turning FCC off is done explicitly via
     ``fcc = false``, never as a side effect of setting ``bcc``.
     """
     if save_sent_override is not None:
         return save_sent_override
     if identity_fcc is False:
         return False
-    if identity_fcc is True or isinstance(identity_fcc, str):
+    if isinstance(identity_fcc, str):
         return True
     return smtp.resolve_save_sent()
 

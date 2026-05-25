@@ -270,40 +270,23 @@ class Identity:
     header used on transmit. A block with no identities pointing at it
     is read-only; sending is rejected at send time with ``SendDisabled``.
 
-    FCC (filing a Sent copy via IMAP APPEND) and BCC are two independent
-    axes. ``fcc`` decides whether and where a Sent copy is kept; ``bcc``
-    adds recipients on every send. An identity may do both (keep a Sent
-    copy *and* BCC a list), either, or — with care — neither.
-
-    Every identity must retain a copy of what it sends. That holds
-    automatically when ``imap`` is set and ``fcc`` is not ``False`` (the
-    Sent copy is the record). When ``fcc = False`` switches FCC off, or
-    when no ``imap`` block exists to APPEND into, the copy must come from
-    a ``bcc`` that includes this identity's own ``address``. A config
-    that retains no copy at all is rejected at parse time.
-
-    An identity with no ``imap`` block is send-only: it cannot fetch, save
-    drafts, or reply to a parent, and relies on its self-inclusive ``bcc``
-    for the record.
+    FCC (filing a Sent copy via IMAP APPEND) and BCC are independent: an
+    identity may keep a Sent copy and also BCC a list. ``from_dict``
+    enforces the copy-retention rule and explains it in the raised error.
 
     Attributes:
         imap: Name of the [imap.NAME] block this identity belongs to.
-            Optional iff a self-inclusive ``bcc`` provides the copy.
+            When absent the identity is send-only (no fetch, drafts, or
+            reply-to-parent).
         address: The bare email address used in the ``From`` header.
         name: Display name. Empty string for bare-address From.
         smtp: Name of an ``[smtp.NAME]`` block. When None, falls back to
             ``imap_block.default_smtp`` then to the lone SMTP block if
             exactly one is defined.
-        fcc: Where/whether to file the Sent copy, mirroring the tri-state
-            of ``SmtpConfig.save_sent``: ``None`` (absent) defers to the
-            SMTP host convention and files into the block's resolved Sent
-            folder; a folder-name string files there explicitly; ``True``
-            forces FCC into the default Sent folder even on auto-filing
-            hosts; ``False`` disables FCC (then a self-inclusive ``bcc``
-            is required). A string or ``True`` needs an ``imap`` block.
-        bcc: Addresses automatically added as BCC on every send from
-            this identity. Include the identity's own address to keep a
-            self-copy when FCC is off or unavailable.
+        fcc: ``None`` files into the block's resolved Sent folder per the
+            SMTP host convention; a folder-name string files there
+            explicitly; ``False`` disables FCC.
+        bcc: Addresses BCC'd on every send (string or list of strings).
     """
 
     address: str
@@ -370,9 +353,7 @@ class Identity:
             )
         fcc_raw = data.get("fcc")
         fcc: Union[bool, str, None]
-        if fcc_raw is None:
-            fcc = None
-        elif isinstance(fcc_raw, bool):
+        if fcc_raw is None or fcc_raw is False:
             fcc = fcc_raw
         elif isinstance(fcc_raw, str):
             if not fcc_raw:
@@ -380,9 +361,10 @@ class Identity:
             fcc = fcc_raw
         else:
             raise ValueError(
-                f"{where}: 'fcc' must be a folder name (string), true, or false"
+                f"{where}: 'fcc' must be a folder name (string) or false; "
+                f"omit it for the default Sent folder"
             )
-        if (fcc is True or isinstance(fcc, str)) and imap is None:
+        if isinstance(fcc, str) and imap is None:
             raise ValueError(
                 f"{where}: 'fcc' selects an IMAP Sent folder but no 'imap' "
                 f"block is set to APPEND into; add 'imap', or drop 'fcc'"
