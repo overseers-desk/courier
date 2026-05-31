@@ -1,5 +1,5 @@
 Name:           mailroom
-Version:        1.1.13
+Version:        1.1.14
 Release:        1%{?dist}
 Summary:        Email toolkit for AI assistants and command-line scripting
 License:        MIT
@@ -67,6 +67,9 @@ install -Dpm 644 debian/mailroom.1 %{buildroot}%{_mandir}/man1/mailroom.1
 %{_mandir}/man1/mailroom.1*
 
 %changelog
+* Sun May 31 2026 Weiwu Zhang <a@colourful.land> - 1.1.14-1
+- reply defaults to reply-all; --no-thread flag replaces --reply-all opt-in.
+
 * Sun May 25 2026 Weiwu Zhang <a@colourful.land> - 1.1.13-1
 - install-claude-command no longer emits the unregistered/dated nudge when
   it is the subcommand being run; nudge is suppressed for that subcommand.

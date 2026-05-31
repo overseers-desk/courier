@@ -1,3 +1,9 @@
+mailroom (1.1.14) unstable; urgency=medium
+
+  * reply now defaults to reply-all; use --no-thread to reply to sender only.
+
+ -- Weiwu Zhang <a@colourful.land>  Sun, 31 May 2026 00:00:00 +0000
+
 mailroom (1.1.13) unstable; urgency=medium
 
   * install-claude-command no longer warns about the command being unregistered
