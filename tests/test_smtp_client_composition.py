@@ -36,7 +36,11 @@ class TestCreateReplyMime:
         body = "This is a reply."
 
         mime_message = create_mime(
-            original_email=sample_email, from_addr=reply_to, subject=subject, body=body
+            original_email=sample_email,
+            from_addr=reply_to,
+            subject=subject,
+            body=body,
+            reply_all=False,
         )
 
         # Check basic properties

@@ -89,7 +89,7 @@ def register_tools(mcp: FastMCP, imap_client: ImapClient) -> None:
         uid: int,
         reply_body: str,
         ctx: Context,
-        reply_all: bool = False,
+        reply_all: bool = True,
         cc: Optional[List[str]] = None,
         bcc: Optional[List[str]] = None,
         body_html: Optional[str] = None,

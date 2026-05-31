@@ -2412,8 +2412,8 @@ def reply(
     ),
     uid: int = typer.Option(..., "--uid", "-u", help="Email UID to reply to."),
     body: str = typer.Option(..., "--body", "-b", help="Reply body text."),
-    reply_all: bool = typer.Option(
-        False, "--reply-all", help="Reply to all recipients."
+    no_thread: bool = typer.Option(
+        False, "--no-thread", help="Reply to sender only, without carrying original thread recipients."
     ),
     cc: Optional[List[str]] = typer.Option(None, "--cc", help="CC recipients."),
     bcc: Optional[List[str]] = typer.Option(
@@ -2654,7 +2654,7 @@ def reply(
             original_email=email_obj,
             from_addr=from_addr,
             body=body,
-            reply_all=reply_all,
+            reply_all=not no_thread,
             cc=cc_addresses,
             bcc=bcc_addresses,
             html_body=body_html,

@@ -215,7 +215,7 @@ When a solution genuinely requires a rule (e.g. "avoid `2>&1` in examples"), the
 
 ### F2. Reproducing send-flag inventory
 
-**Failure case.** In a case where the doc listed `--bcc`, `--cc`, `--attach`, `--body-html`, `--reply-all`, `--allow-no-copy`, `--keep-draft`, `--dry-run`, `--fcc IMAP:FOLDER` in the Sending section, the AI for a routine reply scanned the list and guessed a wrong flag combination instead of consulting `mailroom reply --help` for the specific case.
+**Failure case.** In a case where the doc listed `--bcc`, `--cc`, `--attach`, `--body-html`, `--no-thread`, `--allow-no-copy`, `--keep-draft`, `--dry-run`, `--fcc IMAP:FOLDER` in the Sending section, the AI for a routine reply scanned the list and guessed a wrong flag combination instead of consulting `mailroom reply --help` for the specific case.
 
 **Solution.** The Sending section names only the verbs (`compose`, `reply`, `send-draft`) and the load-bearing flag (`-i NAME`). Other flags live in `mailroom <verb> --help`.
 

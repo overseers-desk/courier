@@ -103,7 +103,7 @@ def create_mime(
     html_body: Optional[str] = None,
     attachments: Optional[List[str]] = None,
     original_email: Optional[Email] = None,
-    reply_all: bool = False,
+    reply_all: bool = True,
 ) -> Union[EmailMessage, MIMEMultipart]:
     """Create an RFC 822 MIME message.
 
@@ -287,7 +287,7 @@ def compose_and_save_reply_draft(
     folder: str,
     uid: int,
     reply_body: str,
-    reply_all: bool = False,
+    reply_all: bool = True,
     cc: Optional[List[str]] = None,
     bcc: Optional[List[str]] = None,
     body_html: Optional[str] = None,
