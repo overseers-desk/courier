@@ -3,7 +3,7 @@
 ## Versioning and Packaging
 - Version is defined in `pyproject.toml` (single source of truth) and mirrored in `mailroom/__init__.py`, `mailroom/__main__.py`, and `mailroom/mcp_server.py`. Do not hardcode version numbers in documentation — use generic references like "latest" or `<version>` placeholders.
 - Do not bump the version unless the user asks for it.
-- Packaging: `debian/` for .deb, `mailroom.spec` for .rpm. The Homebrew formula lives in the `SmartLayer/homebrew-ot` tap repo at `Formula/mailroom.rb`; it points at this repo's release tarball and sha256.
+- Packaging: `debian/` for .deb, `mailroom.spec` for .rpm. The Homebrew formula lives in the `overseers-desk/homebrew-ot` tap repo at `Formula/mailroom.rb`; it points at this repo's release tarball and sha256.
 
 ## What "release" means in this project
 When the user asks to "do the release", "release X.Y.Z", or "release now", they mean the **complete** end-to-end publication, not source-side prep. Do all of the following without asking for confirmation between steps; ask only if a step actually fails:
@@ -16,7 +16,7 @@ When the user asks to "do the release", "release X.Y.Z", or "release now", they 
    - `.deb`: from project root, `dpkg-buildpackage -us -uc -b` → artifact lands at `../mailroom_X.Y.Z_all.deb`.
    - `.rpm`: download the GitHub tarball to `~/rpmbuild/SOURCES/mailroom-X.Y.Z.tar.gz`, then `rpmbuild -bb mailroom.spec` → artifact lands at `~/rpmbuild/RPMS/noarch/mailroom-X.Y.Z-1.noarch.rpm`.
 6. **Upload BOTH artifacts** to the GitHub release: `gh release upload vX.Y.Z <deb> <rpm>`. Verify with `gh release view vX.Y.Z --json assets --jq '[.assets[].name]'` — both filenames must be present before considering the release done.
-7. **Bump the Homebrew formula** in the `SmartLayer/homebrew-ot` tap repo. Once this repo's GitHub release is published, compute the sha256 of the release tarball (`curl -sL <url> | sha256sum`) and update the `url` and `sha256` fields in `Formula/mailroom.rb` over in the `SmartLayer/homebrew-ot` repo, then commit and push there. The formula is not part of this repo.
+7. **Bump the Homebrew formula** in the `overseers-desk/homebrew-ot` tap repo. Once this repo's GitHub release is published, compute the sha256 of the release tarball (`curl -sL <url> | sha256sum`) and update the `url` and `sha256` fields in `Formula/mailroom.rb` over in the `overseers-desk/homebrew-ot` repo, then commit and push there. The formula is not part of this repo.
 8. **Sanity-check** the prior release for parity: `gh release view v<previous> --json assets` — the new release should have at least the same asset types (deb + rpm at minimum) the previous one had. If the new release is missing an asset type, it is incomplete.
 
 Do **not** report the release as done if any of the above is missing. Do not stop at "the .deb is built, want me to upload?" — the user explicitly does not want that hand-off; the upload is part of the release.

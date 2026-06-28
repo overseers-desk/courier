@@ -30,7 +30,7 @@ pipx install "git+https://github.com/SmartLayer/mailroom"
 ### Homebrew (all features, macOS and Linux)
 
 ```bash
-brew tap SmartLayer/ot
+brew tap overseers-desk/ot
 brew install mailroom
 ```
 
@@ -78,7 +78,7 @@ brew update
 brew upgrade mailroom
 ```
 
-`brew upgrade mailroom` alone reports "already installed and up-to-date" because Homebrew's auto-update does not pull third-party taps. Run `brew update` first so the `SmartLayer/ot` tap fetches the new formula.
+`brew upgrade mailroom` alone reports "already installed and up-to-date" because Homebrew's auto-update does not pull third-party taps. Run `brew update` first so the `overseers-desk/ot` tap fetches the new formula.
 
 ### Debian / Ubuntu
 
