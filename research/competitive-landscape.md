@@ -8,7 +8,7 @@ Re-snapshot when the field changes meaningfully (new top-10 server, an existing 
 
 | Server | Lang | Stars | Last active | Tools | Auth | Multi-acct | Search DSL | Threading hdr | Draft save | Attachment DL | Sieve/Redact | Local cache | Gmail X-GM-RAW | Multi-acct simultaneous | Verb-chain |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| **mailroom** (SmartLayer) | Python | 43 | May 2026 | ~15 CLI plus MCP | App pwd, OAuth2 (Gmail) | Yes (-A, -i) | Gmail-style DSL plus `imap:` escape | Yes plus draft | Yes | Yes | Yes (`sieve_filter.py`) | Yes (mu / offlineimap) | Yes (via `imap:` escape) | Yes (parallel per block) | Yes (verb-chain CLI) |
+| **mailroom** (overseers-desk) | Python | 43 | May 2026 | ~15 CLI plus MCP | App pwd, OAuth2 (Gmail) | Yes (-A, -i) | Gmail-style DSL plus `imap:` escape | Yes plus draft | Yes | Yes | Yes (`sieve_filter.py`) | Yes (mu / offlineimap) | Yes (via `imap:` escape) | Yes (parallel per block) | Yes (verb-chain CLI) |
 | GongRzhe/Gmail-MCP-Server | JS/TS | 1100 | Mar 2026 (archived) | 18 | OAuth2 Gmail | No | Gmail operators | No | Yes (drafts) | Yes | No | No | No (Gmail API only) | No | No |
 | codefuturist/email-mcp | TypeScript | 41 | Feb 2026 | 47 | App pwd, OAuth2 (experimental) | Yes | Keyword | Yes | Yes | Yes (5 MB cap) | No | No | No | Undocumented | No |
 | ai-zerolab/mcp-email-server | Python | 230 | May 2026 | ~10 | App pwd | Yes (multi-account TOML) | Not documented | Yes | No | Yes (disabled by default) | No | No | No | No | No |
