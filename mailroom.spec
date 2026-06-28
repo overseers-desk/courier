@@ -67,7 +67,7 @@ install -Dpm 644 debian/mailroom.1 %{buildroot}%{_mandir}/man1/mailroom.1
 %{_mandir}/man1/mailroom.1*
 
 %changelog
-* Wed Jun 25 2026 Weiwu Zhang <a@colourful.land> - 1.1.15-1
+* Thu Jun 25 2026 Weiwu Zhang <a@colourful.land> - 1.1.15-1
 - compose --to is now optional, enabling Bcc-only sends.
 - free-form --smtp send refuses when no copy can be filed.
 - slash-command: non-ASCII body and subject sent verbatim; failure-mode D4 added.
@@ -76,7 +76,7 @@ install -Dpm 644 debian/mailroom.1 %{buildroot}%{_mandir}/man1/mailroom.1
 * Sun May 31 2026 Weiwu Zhang <a@colourful.land> - 1.1.14-1
 - reply defaults to reply-all; --no-thread flag replaces --reply-all opt-in.
 
-* Sun May 25 2026 Weiwu Zhang <a@colourful.land> - 1.1.13-1
+* Mon May 25 2026 Weiwu Zhang <a@colourful.land> - 1.1.13-1
 - install-claude-command no longer emits the unregistered/dated nudge when
   it is the subcommand being run; nudge is suppressed for that subcommand.
 - Nudge messages phrased as agent directives for stderr-as-prompt-injection.
@@ -92,7 +92,7 @@ install -Dpm 644 debian/mailroom.1 %{buildroot}%{_mandir}/man1/mailroom.1
 - Messages in folders whose names contain glob characters such as
   [Gmail]/Sent Mail are now read from the local cache correctly.
 
-* Tue May 20 2026 Weiwu Zhang <a@colourful.land> - 1.1.11-1
+* Wed May 20 2026 Weiwu Zhang <a@colourful.land> - 1.1.11-1
 - Reply now honours Reply-To over From per RFC 5322 §3.6.2. Reply-all with
   Reply-To moves the diverted From to Cc. Fixes replies looping back into
   the sender's mailbox when messages arrive via forwarders or alias services.
@@ -194,7 +194,7 @@ install -Dpm 644 debian/mailroom.1 %{buildroot}%{_mandir}/man1/mailroom.1
   blocks (no own creds) stop at STARTTLS and are marked. Scripts
   that parsed status JSON should switch to `mailroom list`. Closes #29.
 
-* Tue May 06 2026 Weiwu Zhang <a@colourful.land> - 1.1.4-1
+* Wed May 06 2026 Weiwu Zhang <a@colourful.land> - 1.1.4-1
 - New per-account redact policy. An optional `redact = "rules.sieve"`
   field on [imap.NAME] points at a Sieve script; messages matching any
   rule are replaced with a placeholder Email before reaching the agent
