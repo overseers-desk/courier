@@ -7,6 +7,15 @@
 
 ## Installation Methods
 
+### PyPI (pip or pipx, any platform)
+
+```bash
+pip install courier            # CLI only
+pip install "courier[mcp]"     # CLI plus MCP server mode
+```
+
+For an isolated install that does not touch your system or project environment, use pipx: `pipx install courier` (or `pipx install "courier[mcp]"` for MCP mode).
+
 ### uv (any platform, no install step)
 
 ```bash
@@ -15,7 +24,9 @@ uvx courier search "subject:invoice"
 
 To install permanently: `uv tool install courier`
 
-### pipx from GitHub (all features, all platforms)
+### pipx from GitHub (latest unreleased build)
+
+To track the development version ahead of the latest PyPI release, install straight from the repository:
 
 ```bash
 pipx install "courier[mcp] @ git+https://github.com/overseers-desk/courier"
@@ -96,11 +107,12 @@ Same shape as install: dnf upgrades when the file's version is higher than the i
 sudo dnf install ./courier-<version>-1.noarch.rpm
 ```
 
-### pipx / uv
+### pip / pipx / uv
 
 ```bash
-pipx upgrade courier        # if installed via pipx
-uv tool upgrade courier     # if installed via uv tool install
+pip install --upgrade courier   # if installed via pip
+pipx upgrade courier            # if installed via pipx
+uv tool upgrade courier         # if installed via uv tool install
 ```
 
 ## Configuration

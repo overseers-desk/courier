@@ -41,6 +41,15 @@ Commandline users, script authors, and AI assistants can search, read, download,
 
 ## Installation
 
+The simplest cross-platform install is from PyPI:
+
+```bash
+pip install courier          # CLI only
+pip install "courier[mcp]"   # CLI plus the MCP server
+```
+
+With uv, `uvx courier ...` runs it without installing and `uv tool install courier` installs it permanently.
+
 See [INSTALLATION.md](docs/INSTALLATION.md) for Homebrew, Debian/Ubuntu (.deb), Fedora/RHEL (.rpm), and source installs.
 
 ## Configuration
