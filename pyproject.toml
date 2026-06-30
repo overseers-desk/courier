@@ -58,6 +58,9 @@ Author = "https://www.linkedin.com/in/weiwuzhang/"
 [tool.setuptools.packages.find]
 include = ["courier*"]
 
+[tool.setuptools.package-data]
+courier = ["config.sample.toml"]
+
 [tool.black]
 line-length = 88
 target-version = ["py311"]

@@ -1,6 +1,6 @@
 """Tests for identity and SMTP resolution.
 
-Covers the rules documented in examples/config.sample.toml: identities
+Covers the rules documented in courier/config.sample.toml: identities
 filtered by their [imap.NAME] back-reference, the SendDisabled error
 when no identities point at a block, explicit --from matching, the
 hard-error path for unknown From (the AI-safety win), and the SMTP

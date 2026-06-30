@@ -117,11 +117,11 @@ uv tool upgrade courier         # if installed via uv tool install
 
 ## Configuration
 
-Copy the sample configuration and edit with your credentials:
+Write the sample configuration and edit with your credentials:
 
 ```bash
 mkdir -p ~/.config/courier
-cp examples/config.sample.toml ~/.config/courier/config.toml
+courier config-sample > ~/.config/courier/config.toml
 ```
 
 Example configuration:

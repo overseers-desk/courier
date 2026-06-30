@@ -54,10 +54,11 @@ See [INSTALLATION.md](docs/INSTALLATION.md) for Homebrew, Debian/Ubuntu (.deb), 
 
 ## Configuration
 
-Copy the sample and fill in your credentials:
+Write the sample config and fill in your credentials:
 
 ```bash
-cp examples/config.sample.toml ~/.config/courier/config.toml
+mkdir -p ~/.config/courier
+courier config-sample > ~/.config/courier/config.toml
 ```
 
 A small config has three top-level named-entity tables: an `[imap.NAME]` mailbox, an `[smtp.NAME]` outgoing endpoint, and an `[identity.NAME]` describing one sendable address pointing at the IMAP block:

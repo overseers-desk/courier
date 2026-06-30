@@ -123,7 +123,7 @@ def _global_options(
     _all_imap = all_imap
     level = logging.DEBUG if verbose else logging.WARNING
     setup_logging(level)
-    if ctx.invoked_subcommand != "install-claude-command":
+    if ctx.invoked_subcommand not in ("install-claude-command", "config-sample"):
         nudge = _claude_registration_status()
         if nudge:
             print(nudge, file=sys.stderr)
@@ -1486,6 +1486,28 @@ def install_claude_command(
 
     dest.write_text(render(__version__))
     print(f"Installed {__version__}: {dest}")
+
+
+@app.command("config-sample")
+def config_sample() -> None:
+    """Print a sample configuration file to stdout.
+
+    The template documents the ``[imap.NAME]``, ``[smtp.NAME]``, and
+    ``[identity.NAME]`` tables with worked examples. It writes nothing to
+    disk and needs no existing config, so pip, pipx, and Homebrew users
+    (who have no repository checkout) can bootstrap one by redirecting it::
+
+        courier config-sample > ~/.config/courier/config.toml
+
+    Returns:
+        None. The bundled sample is written verbatim to stdout.
+    """
+    from importlib.resources import files
+
+    content = (
+        files("courier").joinpath("config.sample.toml").read_text(encoding="utf-8")
+    )
+    sys.stdout.write(content)
 
 
 def _probe_all(cfg: CourierConfig) -> List[Tuple[str, str, str, str, str]]:

@@ -1,6 +1,6 @@
 """Identity resolution: which From identity to use, and which SMTP route it takes.
 
-Resolution rules are documented in examples/config.sample.toml. This module
+Resolution rules are documented in courier/config.sample.toml. This module
 turns a parsed ``CourierConfig`` plus context (an explicit From, a parent
 email being replied to, etc.) into the concrete ``Identity`` and
 ``SmtpConfig`` that the SMTP transport will use.
