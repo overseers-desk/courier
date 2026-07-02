@@ -41,7 +41,7 @@ pipx install "git+https://github.com/overseers-desk/courier"
 ### Homebrew (all features, macOS and Linux)
 
 ```bash
-brew tap overseers-desk/ot
+brew tap overseers-desk/od
 brew install courier
 ```
 
@@ -89,7 +89,7 @@ brew update
 brew upgrade courier
 ```
 
-`brew upgrade courier` alone reports "already installed and up-to-date" because Homebrew's auto-update does not pull third-party taps. Run `brew update` first so the `overseers-desk/ot` tap fetches the new formula.
+`brew upgrade courier` alone reports "already installed and up-to-date" because Homebrew's auto-update does not pull third-party taps. Run `brew update` first so the `overseers-desk/od` tap fetches the new formula.
 
 ### Debian / Ubuntu
 
