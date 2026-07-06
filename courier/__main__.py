@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import sys
+from dataclasses import asdict
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, NoReturn, Optional, Tuple, Union
 
@@ -26,6 +27,7 @@ from courier.errors import CourierError, FccUnresolved, TransientError
 from courier.imap_client import ImapClient
 from courier.logging_setup import setup_logging
 from courier.models import extract_links_batch
+from courier.watch import watch as watch_folder
 
 if TYPE_CHECKING:
     from courier.local_cache import MuBackend
@@ -1693,6 +1695,36 @@ def folders() -> None:
         _out(folder_list)
     finally:
         client.disconnect()
+
+
+# ---------------------------------------------------------------------------
+# watch
+# ---------------------------------------------------------------------------
+
+
+@app.command("watch")
+def watch_cmd(
+    folder: str = typer.Option("INBOX", "--folder", "-f", help="Folder to watch."),
+) -> None:
+    """Watch a folder via IMAP IDLE, printing one JSON line per event.
+
+    Runs until interrupted (Ctrl-C). Each line is one WatchEvent:
+    {"kind": ..., "folder": ..., "uidvalidity": ..., "count": ...,
+    "raw": ...} where kind is started, exists, expunge, flags, or
+    reconnected. Transient failures reconnect internally; exits 1 when
+    the server lacks IDLE or answers NO/BAD.
+    """
+    name = _resolve_single_imap_name()
+    cfg = load_config(_config_path)
+    block = cfg.imap_blocks[name]
+    try:
+        for event in watch_folder(block, folder):
+            print(json.dumps(asdict(event)), flush=True)
+    except KeyboardInterrupt:
+        raise typer.Exit(0)
+    except CourierError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1)
 
 
 # ---------------------------------------------------------------------------

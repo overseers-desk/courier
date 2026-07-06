@@ -37,6 +37,7 @@ from courier.query_parser import UntranslatableQuery, parse_query
 from courier.sending import send_with_fcc
 from courier.smtp_client import create_mime
 from courier.smtp_transport import send as smtp_send
+from courier.watch import WatchEvent, watch
 
 __version__ = "1.1.16"
 
@@ -65,6 +66,9 @@ __all__ = [
     # imap
     "ImapClient",
     "AppendResult",
+    # watch
+    "watch",
+    "WatchEvent",
     # models
     "Email",
     "EmailAddress",
