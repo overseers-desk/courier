@@ -10,6 +10,7 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, Optional
 
+from courier.errors import CourierError
 from courier.models import EmailAddress
 from courier.smtp_client import create_mime
 from courier.workflows.calendar_mock import check_mock_availability
@@ -243,9 +244,14 @@ def process_meeting_invite_workflow(
             reply_all=False,
         )
 
-        draft_uid = client.save_draft_mime(mime_message)
+        # ponytail: CourierError shim keeps today's failure text; C2 owns
+        # the redesign.
+        try:
+            draft_uid = client.save_draft_mime(mime_message).uid
+        except CourierError:
+            draft_uid = None
         if draft_uid:
-            drafts_folder = client._get_drafts_folder()
+            drafts_folder = client.resolve_drafts_folder()
             result["status"] = "success"
             result["message"] = f"Draft reply created: {reply_content['reply_type']}"
             result["draft_uid"] = draft_uid

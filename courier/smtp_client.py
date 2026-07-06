@@ -12,6 +12,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Any, Dict, List, Optional, Union
 
+from courier.errors import CourierError
 from courier.markdown_render import needs_html, render_html
 from courier.models import Email, EmailAddress
 
@@ -348,9 +349,14 @@ def compose_and_save_reply_draft(
             attachments=attachments,
         )
 
-        draft_uid = client.save_draft_mime(mime_message)
+        # ponytail: CourierError shim keeps today's failure text; C2 owns
+        # the redesign.
+        try:
+            draft_uid = client.save_draft_mime(mime_message).uid
+        except CourierError:
+            draft_uid = None
         if draft_uid:
-            drafts_folder = client._get_drafts_folder()
+            drafts_folder = client.resolve_drafts_folder()
             result["status"] = "success"
             result["message"] = "Draft reply saved"
             result["draft_uid"] = draft_uid
@@ -421,9 +427,14 @@ def compose_and_save_draft(
             attachments=attachments,
         )
 
-        draft_uid = client.save_draft_mime(mime_message)
+        # ponytail: CourierError shim keeps today's failure text; C2 owns
+        # the redesign.
+        try:
+            draft_uid = client.save_draft_mime(mime_message).uid
+        except CourierError:
+            draft_uid = None
         if draft_uid:
-            drafts_folder = client._get_drafts_folder()
+            drafts_folder = client.resolve_drafts_folder()
             result["status"] = "success"
             result["message"] = "Draft saved"
             result["draft_uid"] = draft_uid

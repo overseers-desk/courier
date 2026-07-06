@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from mcp.server.fastmcp import Context, FastMCP
 
+from courier.imap_client import AppendResult
 from courier.models import Email, EmailAddress, EmailContent
 from courier.tools import register_tools
 from tests.conftest import patch_default_cli_config
@@ -78,8 +79,10 @@ class TestDraftReplyTool:
         with patch("courier.tools.get_client_from_context") as gc:
             gc.return_value = imap_client
             imap_client.fetch_email.return_value = mock_email
-            imap_client.save_draft_mime.return_value = 100
-            imap_client._get_drafts_folder.return_value = "Drafts"
+            imap_client.save_draft_mime.return_value = AppendResult(
+                uid=100, uidvalidity=1
+            )
+            imap_client.resolve_drafts_folder.return_value = "Drafts"
 
             with patch("courier.smtp_client.create_mime") as mock_create:
                 mime_msg = MagicMock()
@@ -107,8 +110,10 @@ class TestDraftReplyTool:
         with patch("courier.tools.get_client_from_context") as gc:
             gc.return_value = imap_client
             imap_client.fetch_email.return_value = mock_email
-            imap_client.save_draft_mime.return_value = 101
-            imap_client._get_drafts_folder.return_value = "Drafts"
+            imap_client.save_draft_mime.return_value = AppendResult(
+                uid=101, uidvalidity=1
+            )
+            imap_client.resolve_drafts_folder.return_value = "Drafts"
 
             with patch("courier.smtp_client.create_mime") as mock_create:
                 mock_create.return_value = MagicMock()
@@ -137,8 +142,10 @@ class TestDraftReplyTool:
         with patch("courier.tools.get_client_from_context") as gc:
             gc.return_value = imap_client
             imap_client.fetch_email.return_value = mock_email
-            imap_client.save_draft_mime.return_value = 102
-            imap_client._get_drafts_folder.return_value = "Drafts"
+            imap_client.save_draft_mime.return_value = AppendResult(
+                uid=102, uidvalidity=1
+            )
+            imap_client.resolve_drafts_folder.return_value = "Drafts"
 
             with patch("courier.smtp_client.create_mime") as mock_create:
                 mock_create.return_value = MagicMock()
@@ -163,8 +170,10 @@ class TestDraftReplyTool:
         with patch("courier.tools.get_client_from_context") as gc:
             gc.return_value = imap_client
             imap_client.fetch_email.return_value = mock_email
-            imap_client.save_draft_mime.return_value = 103
-            imap_client._get_drafts_folder.return_value = "Drafts"
+            imap_client.save_draft_mime.return_value = AppendResult(
+                uid=103, uidvalidity=1
+            )
+            imap_client.resolve_drafts_folder.return_value = "Drafts"
 
             result = await draft_reply(
                 folder="INBOX",
@@ -205,7 +214,9 @@ class TestDraftReplyTool:
         with patch("courier.tools.get_client_from_context") as gc:
             gc.return_value = imap_client
             imap_client.fetch_email.return_value = mock_email
-            imap_client.save_draft_mime.return_value = None
+            imap_client.save_draft_mime.return_value = AppendResult(
+                uid=None, uidvalidity=None
+            )
 
             with patch("courier.smtp_client.create_mime") as mock_create:
                 mock_create.return_value = MagicMock()
@@ -233,8 +244,8 @@ class TestDraftReplyCLI:
         client = MagicMock()
         client.fetch_email.return_value = mock_email
         client.block.username = "recipient@example.com"
-        client.save_draft_mime.return_value = 200
-        client._get_drafts_folder.return_value = "Drafts"
+        client.save_draft_mime.return_value = AppendResult(uid=200, uidvalidity=1)
+        client.resolve_drafts_folder.return_value = "Drafts"
         return client
 
     def test_default_saves_draft(self, mock_client, mock_email, capsys):

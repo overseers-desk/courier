@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from courier.config import ImapBlock
+from courier.errors import CourierError, PermanentError, TransientError
 from courier.imap_client import ImapClient
 from courier.local_cache import EligibilityResult, MuFailure
 from courier.models import Email
@@ -992,8 +993,8 @@ class TestImapClient:
             # Connect first
             client.connect()
 
-            # Mark email as seen
-            result = client.mark_email(12345, folder="INBOX", flag=r"\Seen", value=True)
+            # Mark email as seen (returns None; failure raises)
+            client.mark_email(12345, folder="INBOX", flag=r"\Seen", value=True)
 
             # Verify select_folder was called with readonly=False for modifying flags
             mock_imap_client.select_folder.assert_called_once_with(
@@ -1003,17 +1004,12 @@ class TestImapClient:
             # Verify add_flags was called with correct parameters
             mock_imap_client.add_flags.assert_called_once_with([12345], r"\Seen")
 
-            # Verify result is success
-            assert result is True
-
             # Reset mocks
             mock_imap_client.select_folder.reset_mock()
             mock_imap_client.add_flags.reset_mock()
 
             # Mark email as not seen
-            result = client.mark_email(
-                12345, folder="INBOX", flag=r"\Seen", value=False
-            )
+            client.mark_email(12345, folder="INBOX", flag=r"\Seen", value=False)
 
             # Verify select_folder was called with readonly=False
             mock_imap_client.select_folder.assert_called_once_with(
@@ -1022,9 +1018,6 @@ class TestImapClient:
 
             # Verify remove_flags was called with correct parameters
             mock_imap_client.remove_flags.assert_called_once_with([12345], r"\Seen")
-
-            # Verify result is success
-            assert result is True
 
     def test_mark_email_failure(self, mock_imap_client):
         """Test marking an email with a flag when operation fails."""
@@ -1047,8 +1040,9 @@ class TestImapClient:
             # Connect first
             client.connect()
 
-            # Mark email should fail but not raise exception
-            result = client.mark_email(12345, folder="INBOX", flag=r"\Seen", value=True)
+            # Mark email failure raises a typed error
+            with pytest.raises(CourierError):
+                client.mark_email(12345, folder="INBOX", flag=r"\Seen", value=True)
 
             # Verify select_folder was called with readonly=False
             mock_imap_client.select_folder.assert_called_once_with(
@@ -1057,9 +1051,6 @@ class TestImapClient:
 
             # Verify add_flags was called with correct parameters
             mock_imap_client.add_flags.assert_called_once_with([12345], r"\Seen")
-
-            # Verify result is failure
-            assert result is False
 
     def test_move_email(self, mock_imap_client):
         """Test moving an email to another folder."""
@@ -1077,14 +1068,14 @@ class TestImapClient:
 
             # Set up mock responses
             mock_imap_client.select_folder.return_value = {b"EXISTS": 10}
+            # Legacy server: no MOVE, no UIDPLUS (the copy+expunge path)
+            mock_imap_client.has_capability.return_value = False
 
             # Connect first
             client.connect()
 
-            # Move email
-            result = client.move_email(
-                12345, source_folder="INBOX", target_folder="Archive"
-            )
+            # Move email (returns None; failure raises)
+            client.move_email(12345, source_folder="INBOX", target_folder="Archive")
 
             # Verify select_folder was called with readonly=False for modifying emails
             mock_imap_client.select_folder.assert_called_once_with(
@@ -1099,9 +1090,6 @@ class TestImapClient:
 
             # Verify expunge was called
             mock_imap_client.expunge.assert_called_once()
-
-            # Verify result is success
-            assert result is True
 
     def test_move_email_with_allowed_folders(self, mock_imap_client):
         """Test moving an email with allowed folders restriction."""
@@ -1120,23 +1108,19 @@ class TestImapClient:
 
             # Set up mock responses
             mock_imap_client.select_folder.return_value = {b"EXISTS": 10}
+            mock_imap_client.has_capability.return_value = False
 
             # Connect first
             client.connect()
 
             # Move email between allowed folders should succeed
-            result = client.move_email(
-                12345, source_folder="INBOX", target_folder="Archive"
-            )
+            client.move_email(12345, source_folder="INBOX", target_folder="Archive")
 
             # Verify operations were called
             mock_imap_client.select_folder.assert_called_once_with(
                 "INBOX", readonly=False
             )
             mock_imap_client.copy.assert_called_once()
-
-            # Verify result is success
-            assert result is True
 
             # Reset mocks
             mock_imap_client.select_folder.reset_mock()
@@ -1169,15 +1153,15 @@ class TestImapClient:
 
             # Set up mock responses
             mock_imap_client.select_folder.return_value = {b"EXISTS": 10}
+            mock_imap_client.has_capability.return_value = False
             mock_imap_client.copy.side_effect = Exception("Failed to copy email")
 
             # Connect first
             client.connect()
 
-            # Move email should fail but not raise exception
-            result = client.move_email(
-                12345, source_folder="INBOX", target_folder="Archive"
-            )
+            # Move email failure raises a typed error
+            with pytest.raises(CourierError):
+                client.move_email(12345, source_folder="INBOX", target_folder="Archive")
 
             # Verify select_folder was called with readonly=False
             mock_imap_client.select_folder.assert_called_once_with(
@@ -1186,9 +1170,6 @@ class TestImapClient:
 
             # Verify copy was called with correct parameters
             mock_imap_client.copy.assert_called_once_with([12345], "Archive")
-
-            # Verify result is failure
-            assert result is False
 
     def test_delete_email(self, mock_imap_client):
         """Test deleting an email."""
@@ -1206,12 +1187,13 @@ class TestImapClient:
 
             # Set up mock responses
             mock_imap_client.select_folder.return_value = {b"EXISTS": 10}
+            mock_imap_client.has_capability.return_value = False
 
             # Connect first
             client.connect()
 
-            # Delete email
-            result = client.delete_email(12345, folder="INBOX")
+            # Delete email (returns None; failure raises)
+            client.delete_email(12345, folder="INBOX")
 
             # Verify select_folder was called with readonly=False
             mock_imap_client.select_folder.assert_called_once_with(
@@ -1223,9 +1205,6 @@ class TestImapClient:
 
             # Verify expunge was called
             mock_imap_client.expunge.assert_called_once()
-
-            # Verify result is success
-            assert result is True
 
     def test_delete_email_failure(self, mock_imap_client):
         """Test deleting an email when operation fails."""
@@ -1248,8 +1227,9 @@ class TestImapClient:
             # Connect first
             client.connect()
 
-            # Delete email should fail but not raise exception
-            result = client.delete_email(12345, folder="INBOX")
+            # Delete email failure raises a typed error
+            with pytest.raises(CourierError):
+                client.delete_email(12345, folder="INBOX")
 
             # Verify select_folder was called with readonly=False
             mock_imap_client.select_folder.assert_called_once_with(
@@ -1259,8 +1239,103 @@ class TestImapClient:
             # Verify add_flags was called
             mock_imap_client.add_flags.assert_called_once_with([12345], r"\Deleted")
 
-            # Verify result is failure
-            assert result is False
+
+class TestMutationTypedErrors:
+    """Typed-error mapping, capability ladder, and multi-UID batches."""
+
+    def _connected_client(self, mock_imap_client) -> ImapClient:
+        config = ImapBlock(
+            host="imap.example.com",
+            port=993,
+            username="test@example.com",
+            password="password",
+            use_ssl=True,
+        )
+        client = ImapClient(config)
+        with patch("imapclient.IMAPClient") as mock_client_class:
+            mock_client_class.return_value = mock_imap_client
+            client.connect()
+        return client
+
+    def test_abort_error_maps_to_transient(self, mock_imap_client):
+        from imapclient.exceptions import IMAPClientAbortError
+
+        mock_imap_client.add_flags.side_effect = IMAPClientAbortError(
+            "socket error: EOF"
+        )
+        client = self._connected_client(mock_imap_client)
+        with pytest.raises(TransientError):
+            client.mark_email(1, "INBOX", r"\Seen")
+
+    def test_no_bad_error_maps_to_permanent(self, mock_imap_client):
+        from imapclient.exceptions import IMAPClientError
+
+        mock_imap_client.add_flags.side_effect = IMAPClientError(
+            "STORE command error: BAD"
+        )
+        client = self._connected_client(mock_imap_client)
+        with pytest.raises(PermanentError):
+            client.mark_email(1, "INBOX", r"\Seen")
+
+    @pytest.mark.parametrize(
+        "caps",
+        [
+            {"MOVE": True, "UIDPLUS": True},
+            {"MOVE": False, "UIDPLUS": True},
+            {"MOVE": False, "UIDPLUS": False},
+        ],
+        ids=["move", "uidplus-only", "neither"],
+    )
+    def test_move_capability_ladder(self, mock_imap_client, caps):
+        mock_imap_client.has_capability.side_effect = lambda cap: caps[cap]
+        client = self._connected_client(mock_imap_client)
+
+        client.move_email([7, 9], source_folder="INBOX", target_folder="Archive")
+
+        if caps["MOVE"]:
+            mock_imap_client.move.assert_called_once_with([7, 9], "Archive")
+            mock_imap_client.copy.assert_not_called()
+            mock_imap_client.expunge.assert_not_called()
+        else:
+            mock_imap_client.move.assert_not_called()
+            mock_imap_client.copy.assert_called_once_with([7, 9], "Archive")
+            mock_imap_client.add_flags.assert_called_once_with([7, 9], r"\Deleted")
+            if caps["UIDPLUS"]:
+                # UID EXPUNGE: only our UIDs, not the whole folder
+                mock_imap_client.expunge.assert_called_once_with([7, 9])
+            else:
+                mock_imap_client.expunge.assert_called_once_with()
+
+    @pytest.mark.parametrize("uidplus", [True, False], ids=["uidplus", "legacy"])
+    def test_delete_expunge_ladder(self, mock_imap_client, uidplus):
+        mock_imap_client.has_capability.return_value = uidplus
+        client = self._connected_client(mock_imap_client)
+
+        client.delete_email([4, 5], folder="INBOX")
+
+        mock_imap_client.add_flags.assert_called_once_with([4, 5], r"\Deleted")
+        if uidplus:
+            mock_imap_client.expunge.assert_called_once_with([4, 5])
+        else:
+            mock_imap_client.expunge.assert_called_once_with()
+
+    def test_mark_email_batch(self, mock_imap_client):
+        client = self._connected_client(mock_imap_client)
+        client.mark_email([1, 2, 3], "INBOX", r"\Seen", value=True)
+        mock_imap_client.add_flags.assert_called_once_with([1, 2, 3], r"\Seen")
+
+        client.mark_email([1, 2, 3], "INBOX", r"\Seen", value=False)
+        mock_imap_client.remove_flags.assert_called_once_with([1, 2, 3], r"\Seen")
+
+    def test_trash_email_batch_returns_resolved_folder(self, mock_imap_client):
+        client = self._connected_client(mock_imap_client)
+        with (
+            patch.object(client, "resolve_trash_folder", return_value="Trash"),
+            patch.object(client, "move_email") as mock_move,
+        ):
+            result = client.trash_email([10, 11], "INBOX")
+        assert result == "Trash"
+        mock_move.assert_called_once_with([10, 11], "INBOX", "Trash")
 
 
 class TestGmailSearchDispatch:

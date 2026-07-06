@@ -7,11 +7,22 @@ import os
 import re
 import shlex
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Dict,
+    List,
+    NamedTuple,
+    Optional,
+    Sequence,
+    Tuple,
+    Union,
+)
 
 import imapclient  # type: ignore[import-untyped]
 
 from courier.config import ImapBlock
+from courier.errors import FolderNotFound, as_courier_error
 from courier.models import Email
 from courier.oauth2 import get_access_token
 from courier.query_parser import parse_query
@@ -49,6 +60,29 @@ SENT_FOLDER_CANDIDATES = (
     "Sent Messages",
     "[Gmail]/Sent Mail",
 )
+
+
+class AppendResult(NamedTuple):
+    """Outcome of an IMAP APPEND: both halves of the APPENDUID response.
+
+    ``uid``/``uidvalidity`` are ``None`` when the server does not
+    advertise UIDPLUS (no APPENDUID in the response).
+    """
+
+    uid: Optional[int]
+    uidvalidity: Optional[int]
+
+
+# APPENDUID <uidvalidity> <uid> (RFC 4315). Both groups are kept: the UID
+# alone is ambiguous across mailbox re-creations.
+_APPENDUID_RE = re.compile(rb"APPENDUID\s+(\d+)\s+(\d+)")
+
+
+def _as_uid_list(uid: Union[int, Sequence[int]]) -> List[int]:
+    """Normalize a single UID or a sequence of UIDs to a list."""
+    if isinstance(uid, int):
+        return [uid]
+    return list(uid)
 
 
 class ImapClient:
@@ -774,59 +808,93 @@ class ImapClient:
         self._update_activity()
         return sorted_emails
 
+    def has_capability(self, cap: str) -> bool:
+        """Whether the server advertises the given capability (e.g. "MOVE")."""
+        self.ensure_connected()
+        return bool(self._client_or_raise().has_capability(cap))
+
+    def _expunge_uids(self, uids: List[int]) -> None:
+        """Expunge only *uids* when the server allows it, else folder-wide.
+
+        With UIDPLUS (RFC 4315) this issues UID EXPUNGE for exactly the
+        given messages. imapclient's ``expunge(messages)`` sends UID
+        EXPUNGE only under ``use_uid=True`` — courier never changes that
+        constructor default, so the UIDs here are message UIDs as required.
+        """
+        client = self._client_or_raise()
+        if self.has_capability("UIDPLUS"):
+            client.expunge(uids)
+            return
+        # ponytail: bare EXPUNGE purges every \Deleted message in the
+        # folder, not just ours. Mainstream servers all advertise UIDPLUS,
+        # so this leg only fires on legacy/appliance servers.
+        logger.warning(
+            "Server lacks UIDPLUS; falling back to folder-wide EXPUNGE, "
+            "which purges every \\Deleted message in the folder"
+        )
+        client.expunge()
+
     def mark_email(
         self,
-        uid: int,
+        uid: Union[int, Sequence[int]],
         folder: str,
         flag: str,
         value: bool = True,
-    ) -> bool:
-        """Mark email with flag.
+    ) -> None:
+        """Mark one or more emails with a flag.
 
         Args:
-            uid: Email UID
-            folder: Folder containing the email
+            uid: Email UID or sequence of UIDs
+            folder: Folder containing the email(s)
             flag: Flag to set or remove
             value: True to set, False to remove
 
-        Returns:
-            True if successful
-
         Raises:
             ConnectionError: If not connected and connection fails
+            TransientError: On connection-layer failure (retryable)
+            PermanentError: When the server answers NO/BAD
         """
+        uids = _as_uid_list(uid)
         self.ensure_connected()
         self.select_folder(folder)
 
         try:
             client = self._client_or_raise()
             if value:
-                client.add_flags([uid], flag)
-                logger.debug(f"Added flag {flag} to message {uid}")
+                client.add_flags(uids, flag)
+                logger.debug(f"Added flag {flag} to messages {uids}")
             else:
-                client.remove_flags([uid], flag)
-                logger.debug(f"Removed flag {flag} from message {uid}")
-            self._update_activity()
-            return True
+                client.remove_flags(uids, flag)
+                logger.debug(f"Removed flag {flag} from messages {uids}")
         except Exception as e:
             logger.error(f"Failed to mark email: {e}")
-            return False
+            raise as_courier_error(e) from e
+        self._update_activity()
 
-    def move_email(self, uid: int, source_folder: str, target_folder: str) -> bool:
-        """Move email to another folder.
+    def move_email(
+        self,
+        uid: Union[int, Sequence[int]],
+        source_folder: str,
+        target_folder: str,
+    ) -> None:
+        """Move one or more emails to another folder.
+
+        Uses the server's MOVE capability (RFC 6851) when advertised;
+        otherwise falls back to copy + \\Deleted + expunge (UID EXPUNGE
+        under UIDPLUS, folder-wide as a last resort).
 
         Args:
-            uid: Email UID
+            uid: Email UID or sequence of UIDs
             source_folder: Source folder
             target_folder: Target folder
-
-        Returns:
-            True if successful
 
         Raises:
             ConnectionError: If not connected and connection fails
             ValueError: If folder is not allowed
+            TransientError: On connection-layer failure (retryable)
+            PermanentError: When the server answers NO/BAD
         """
+        uids = _as_uid_list(uid)
         self.ensure_connected()
 
         # Check if folders are allowed
@@ -840,17 +908,20 @@ class ImapClient:
         self.select_folder(source_folder)
 
         try:
-            # Move email (copy + delete)
             client = self._client_or_raise()
-            client.copy([uid], target_folder)
-            client.add_flags([uid], r"\Deleted")
-            client.expunge()
-            self._update_activity()
-            logger.debug(f"Moved message {uid} from {source_folder} to {target_folder}")
-            return True
+            if self.has_capability("MOVE"):
+                client.move(uids, target_folder)
+            else:
+                client.copy(uids, target_folder)
+                client.add_flags(uids, r"\Deleted")
+                self._expunge_uids(uids)
+            logger.debug(
+                f"Moved messages {uids} from {source_folder} to {target_folder}"
+            )
         except Exception as e:
             logger.error(f"Failed to move email: {e}")
-            return False
+            raise as_courier_error(e) from e
+        self._update_activity()
 
     # Trash/Bin folder names to try when the server does not advertise the
     # \Trash SPECIAL-USE role. Gmail localises the Bin: en-GB/en-AU accounts
@@ -877,8 +948,8 @@ class ImapClient:
                 return name
         return None
 
-    def trash_email(self, uid: int, folder: str) -> bool:
-        """Move an email to the server's Trash/Bin (recoverable removal).
+    def trash_email(self, uid: Union[int, Sequence[int]], folder: str) -> str:
+        """Move one or more emails to the server's Trash/Bin.
 
         The recommended removal path. A plain EXPUNGE in the source folder
         does not delete the message on Gmail (it only removes the folder
@@ -888,55 +959,58 @@ class ImapClient:
         expunged in place.
 
         Args:
-            uid: Email UID
-            folder: Folder containing the email
+            uid: Email UID or sequence of UIDs
+            folder: Folder containing the email(s)
 
         Returns:
-            True if successful
+            The resolved Trash/Bin folder name.
 
         Raises:
             ConnectionError: If not connected and connection fails
-            ValueError: If no Trash/Bin folder can be resolved on the server
+            FolderNotFound: If no Trash/Bin folder can be resolved
+            TransientError: On connection-layer failure (retryable)
+            PermanentError: When the server answers NO/BAD
         """
         self.ensure_connected()
         trash = self.resolve_trash_folder()
         if trash is None:
-            raise ValueError(
+            raise FolderNotFound(
                 "No Trash/Bin folder found on the server (no \\Trash "
                 "SPECIAL-USE and no [Gmail]/Bin, [Gmail]/Trash, or Trash "
                 "folder). Use `move -t <folder>` to a known folder, or "
                 "`delete` to expunge in place."
             )
         if trash == folder:
-            return self.delete_email(uid, folder)
-        return self.move_email(uid, folder, trash)
+            self.delete_email(uid, folder)
+        else:
+            self.move_email(uid, folder, trash)
+        return trash
 
-    def delete_email(self, uid: int, folder: str) -> bool:
-        """Delete email.
+    def delete_email(self, uid: Union[int, Sequence[int]], folder: str) -> None:
+        """Delete one or more emails (\\Deleted + expunge, in place).
 
         Args:
-            uid: Email UID
-            folder: Folder containing the email
-
-        Returns:
-            True if successful
+            uid: Email UID or sequence of UIDs
+            folder: Folder containing the email(s)
 
         Raises:
             ConnectionError: If not connected and connection fails
+            TransientError: On connection-layer failure (retryable)
+            PermanentError: When the server answers NO/BAD
         """
+        uids = _as_uid_list(uid)
         self.ensure_connected()
         self.select_folder(folder)
 
         try:
             client = self._client_or_raise()
-            client.add_flags([uid], r"\Deleted")
-            client.expunge()
-            self._update_activity()
-            logger.debug(f"Deleted message {uid} from {folder}")
-            return True
+            client.add_flags(uids, r"\Deleted")
+            self._expunge_uids(uids)
+            logger.debug(f"Deleted messages {uids} from {folder}")
         except Exception as e:
             logger.error(f"Failed to delete email: {e}")
-            return False
+            raise as_courier_error(e) from e
+        self._update_activity()
 
     def process_email_action(
         self,
@@ -1031,14 +1105,33 @@ class ImapClient:
 
         return None
 
-    def _get_drafts_folder(self) -> str:
-        """Get the drafts folder name for the current server.
+    # Standard drafts folder names, checked case-insensitively when the
+    # server does not advertise the \Drafts SPECIAL-USE role.
+    _DRAFTS_FALLBACK_NAMES = (
+        "Drafts",
+        "Draft",
+        "Brouillons",
+        "Borradores",
+        "Entwürfe",
+    )
+
+    def resolve_drafts_folder(self) -> str:
+        """Resolve the drafts folder for the current server.
+
+        Prefers the RFC 6154 SPECIAL-USE ``\\Drafts`` role (the same
+        machinery as sent/trash resolution); falls back to Gmail's
+        ``*/Drafts`` naming, then common localized names, then INBOX.
 
         Returns:
-            The name of the drafts folder, or "INBOX" as fallback
+            The name of the drafts folder, or "INBOX" as a last resort.
         """
         self.ensure_connected()
         folders = self.list_folders(refresh=True)
+
+        special = self.find_special_use_folder(b"\\Drafts")
+        if special is not None:
+            logger.debug(f"Using SPECIAL-USE drafts folder: {special}")
+            return special
 
         # Check for Gmail's special folders structure
         if self.block.host and "gmail" in self.block.host.lower():
@@ -1048,15 +1141,8 @@ class ImapClient:
                 return gmail_drafts[0]
 
         # Look for standard drafts folder names (case-insensitive)
-        drafts_folder_names = [
-            "Drafts",
-            "Draft",
-            "Brouillons",
-            "Borradores",
-            "Entwürfe",
-        ]
         for folder in folders:
-            if folder.lower() in [name.lower() for name in drafts_folder_names]:
+            if folder.lower() in [n.lower() for n in self._DRAFTS_FALLBACK_NAMES]:
                 logger.debug(f"Using drafts folder: {folder}")
                 return folder
 
@@ -1064,22 +1150,70 @@ class ImapClient:
         logger.warning("No drafts folder found, using INBOX as fallback")
         return "INBOX"
 
-    def save_draft_mime(self, message: Any) -> Optional[int]:
+    @staticmethod
+    def _parse_append_response(response: Any, folder: str) -> AppendResult:
+        """Extract APPENDUID (uidvalidity, uid) from an APPEND response."""
+        if isinstance(response, bytes):
+            match = _APPENDUID_RE.search(response)
+            if match:
+                result = AppendResult(
+                    uid=int(match.group(2)), uidvalidity=int(match.group(1))
+                )
+                logger.debug(
+                    f"Message appended to {folder} with UID {result.uid} "
+                    f"(UIDVALIDITY {result.uidvalidity})"
+                )
+                return result
+        logger.warning(f"Could not extract UID from append response: {response}")
+        return AppendResult(uid=None, uidvalidity=None)
+
+    def folder_status(self, folder: str) -> Dict[str, int]:
+        """UIDVALIDITY, UIDNEXT, and MESSAGES for a folder (no SELECT).
+
+        Args:
+            folder: Folder to query.
+
+        Returns:
+            Dict with str keys "UIDVALIDITY", "UIDNEXT", "MESSAGES".
+
+        Raises:
+            ConnectionError: If not connected and connection fails
+            TransientError: On connection-layer failure (retryable)
+            PermanentError: When the server answers NO/BAD
+        """
+        self.ensure_connected()
+        try:
+            raw = self._client_or_raise().folder_status(
+                folder, ["UIDVALIDITY", "UIDNEXT", "MESSAGES"]
+            )
+        except Exception as e:
+            logger.error(f"folder_status failed for {folder}: {e}")
+            raise as_courier_error(e) from e
+        self._update_activity()
+        return {
+            (k.decode("ascii") if isinstance(k, bytes) else str(k)): int(v)
+            for k, v in raw.items()
+        }
+
+    def save_draft_mime(self, message: Any) -> AppendResult:
         """Save a MIME message as a draft.
 
         Args:
             message: email.message.Message object to save as draft
 
         Returns:
-            UID of the saved draft if available, None otherwise
+            AppendResult with the draft's UID/UIDVALIDITY (fields are None
+            when the server response carries no APPENDUID).
 
         Raises:
             ConnectionError: If not connected and connection fails
+            TransientError: On connection-layer failure (retryable)
+            PermanentError: When the server answers NO/BAD
         """
         self.ensure_connected()
 
         # Get the drafts folder
-        drafts_folder = self._get_drafts_folder()
+        drafts_folder = self.resolve_drafts_folder()
 
         try:
             # Convert message to bytes if it's not already
@@ -1092,31 +1226,13 @@ class ImapClient:
             response = self._client_or_raise().append(
                 drafts_folder, message_bytes, flags=(r"\Draft",)
             )
-
-            # Try to extract the UID from the response
-            uid = None
-            if isinstance(response, bytes) and b"APPENDUID" in response:
-                # Parse the APPENDUID response (format: [APPENDUID <uidvalidity> <uid>])
-                try:
-                    # Use a more robust parsing approach
-                    match = re.search(rb"APPENDUID\s+\d+\s+(\d+)", response)
-                    if match:
-                        uid = int(match.group(1))
-                        logger.debug(f"Draft saved with UID: {uid}")
-                except (IndexError, ValueError) as e:
-                    logger.warning(f"Could not parse UID from response: {e}")
-
-            if uid is None:
-                logger.warning(
-                    f"Could not extract UID from append response: {response}"
-                )
-
-            self._update_activity()
-            return uid
-
         except Exception as e:
             logger.error(f"Failed to save draft: {e}")
-            return None
+            raise as_courier_error(e) from e
+
+        result = self._parse_append_response(response, drafts_folder)
+        self._update_activity()
+        return result
 
     def fetch_raw(
         self,
@@ -1180,7 +1296,7 @@ class ImapClient:
         raw_message: bytes,
         flags: tuple = (),
         msg_time: Optional[datetime] = None,
-    ) -> Optional[int]:
+    ) -> AppendResult:
         """Append raw RFC 822 bytes to a folder.
 
         Args:
@@ -1191,8 +1307,13 @@ class ImapClient:
                 current time.
 
         Returns:
-            UID of the appended message if server supports APPENDUID,
-            else None.
+            AppendResult with the new message's UID/UIDVALIDITY (fields
+            are None when the server response carries no APPENDUID).
+
+        Raises:
+            ConnectionError: If not connected and connection fails
+            TransientError: On connection-layer failure (retryable)
+            PermanentError: When the server answers NO/BAD
         """
         self.ensure_connected()
 
@@ -1200,28 +1321,13 @@ class ImapClient:
             response = self._client_or_raise().append(
                 folder, raw_message, flags=flags, msg_time=msg_time
             )
-
-            uid = None
-            if isinstance(response, bytes) and b"APPENDUID" in response:
-                try:
-                    match = re.search(rb"APPENDUID\s+\d+\s+(\d+)", response)
-                    if match:
-                        uid = int(match.group(1))
-                        logger.debug(f"Message appended to {folder} with UID: {uid}")
-                except (IndexError, ValueError) as e:
-                    logger.warning(f"Could not parse UID from response: {e}")
-
-            if uid is None:
-                logger.warning(
-                    f"Could not extract UID from append response: {response}"
-                )
-
-            self._update_activity()
-            return uid
-
         except Exception as e:
             logger.error(f"Failed to append message to {folder}: {e}")
-            raise
+            raise as_courier_error(e) from e
+
+        result = self._parse_append_response(response, folder)
+        self._update_activity()
+        return result
 
     # Header search prefixes whose presence triggers the Gmail X-GM-RAW
     # dispatch.  Standard IMAP SEARCH FROM/TO/CC/BCC against Gmail's All
@@ -1541,7 +1647,9 @@ def copy_email_between_imap_blocks(
     Fetches the raw RFC 822 message from *source*, applies optional flag
     filtering, and APPENDs it to *dest*.  The original INTERNALDATE is
     always preserved.  If *move* is True the source message is deleted
-    after a successful append.
+    after a successful append; a failed source-delete after a successful
+    append is reported in the result (``moved`` False, ``error`` set)
+    rather than propagated, so the caller knows the copy itself landed.
 
     Args:
         source: IMAP client connected to the source account.
@@ -1576,20 +1684,27 @@ def copy_email_between_imap_blocks(
             if f not in (b"\\Recent", "\\Recent")
         )
 
-    new_uid = dest.append_raw(
+    append_result = dest.append_raw(
         to_folder,
         raw_data["raw"],
         flags=flags,
         msg_time=raw_data["date"],
     )
 
+    moved = False
+    error: Optional[str] = None
     if move:
-        source.delete_email(uid, from_folder)
+        try:
+            source.delete_email(uid, from_folder)
+            moved = True
+        except Exception as e:
+            logger.warning(f"Copied but failed to delete source message: {e}")
+            error = f"copied, but failed to delete source message: {e}"
 
     return {
         "success": True,
         "subject": raw_data["subject"],
-        "new_uid": new_uid,
-        "moved": move,
-        "error": None,
+        "new_uid": append_result.uid,
+        "moved": moved,
+        "error": error,
     }

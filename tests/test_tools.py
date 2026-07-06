@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from mcp.server.fastmcp import Context, FastMCP
 
+from courier.errors import CourierError
 from courier.imap_client import ImapClient
 from courier.models import Email, EmailAddress, EmailContent
 from courier.query_parser import parse_query
@@ -47,10 +48,11 @@ class TestTools:
     def mock_client(self, mock_email):
         """Create a mock IMAP client."""
         client = MagicMock(spec=ImapClient)
-        # Configure default return values
-        client.move_email.return_value = True
-        client.mark_email.return_value = True
-        client.delete_email.return_value = True
+        # Configure default return values (mutations return None, raise on
+        # failure)
+        client.move_email.return_value = None
+        client.mark_email.return_value = None
+        client.delete_email.return_value = None
         client.list_folders.return_value = ["INBOX", "Sent", "Archive", "Trash"]
         client.search.return_value = [1, 2, 3]
         client.fetch_emails.return_value = {1: mock_email, 2: mock_email, 3: mock_email}
@@ -123,10 +125,11 @@ class TestTools:
         # Check the result
         assert "Email marked as read" in result
 
-        # Test failure case
-        mock_client.mark_email.return_value = False
+        # Test failure case: typed errors map to the failure message
+        mock_client.mark_email.side_effect = CourierError("NO STORE failed")
         result = await mark_read("INBOX", 123, mock_context)
         assert "Failed to mark email as read" in result
+        mock_client.mark_email.side_effect = None
 
     @pytest.mark.asyncio
     async def test_mark_unread(self, tools, mock_client, mock_context):
@@ -136,7 +139,7 @@ class TestTools:
 
         # Reset mock for this test
         mock_client.mark_email.reset_mock()
-        mock_client.mark_email.return_value = True
+        mock_client.mark_email.side_effect = None
 
         # Call the function
         result = await mark_unread("INBOX", 123, mock_context)
@@ -160,7 +163,7 @@ class TestTools:
 
         # Reset mock for this test
         mock_client.mark_email.reset_mock()
-        mock_client.mark_email.return_value = True
+        mock_client.mark_email.side_effect = None
 
         # Test flagging
         result = await flag("INBOX", 123, mock_context, True)
@@ -190,8 +193,8 @@ class TestTools:
         # Check the result
         assert "Email deleted" in result
 
-        # Test failure case
-        mock_client.delete_email.return_value = False
+        # Test failure case: typed errors map to the failure message
+        mock_client.delete_email.side_effect = CourierError("NO EXPUNGE failed")
         result = await delete("INBOX", 123, mock_context)
         assert "Failed to delete" in result
 

@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from mcp.server.fastmcp import Context, FastMCP
 
+from courier.imap_client import AppendResult
 from courier.models import Email, EmailAddress, EmailContent
 from courier.smtp_client import (
     compose_and_save_draft,
@@ -139,8 +140,10 @@ class TestComposeAndSaveDraft:
         client = MagicMock()
         client.config = MagicMock()
         client.block.username = "me@example.com"
-        client.save_draft_mime = MagicMock(return_value=55)
-        client._get_drafts_folder = MagicMock(return_value="Drafts")
+        client.save_draft_mime = MagicMock(
+            return_value=AppendResult(uid=55, uidvalidity=1)
+        )
+        client.resolve_drafts_folder = MagicMock(return_value="Drafts")
         return client
 
     def test_success(self, mock_client):
@@ -167,7 +170,9 @@ class TestComposeAndSaveDraft:
         mock_client.save_draft_mime.assert_not_called()
 
     def test_save_draft_failure(self, mock_client):
-        mock_client.save_draft_mime.return_value = None
+        mock_client.save_draft_mime.return_value = AppendResult(
+            uid=None, uidvalidity=None
+        )
         result = compose_and_save_draft(
             mock_client,
             to=["r@example.com"],
@@ -203,8 +208,8 @@ class TestComposeCLI:
     def mock_client(self):
         client = MagicMock()
         client.block.username = "me@example.com"
-        client.save_draft_mime.return_value = 77
-        client._get_drafts_folder.return_value = "Drafts"
+        client.save_draft_mime.return_value = AppendResult(uid=77, uidvalidity=1)
+        client.resolve_drafts_folder.return_value = "Drafts"
         return client
 
     def test_default_saves_draft(self, mock_client):

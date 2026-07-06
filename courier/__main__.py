@@ -22,6 +22,7 @@ from courier.config import (
     load_config,
     load_config_with_warnings,
 )
+from courier.errors import CourierError, FolderNotFound
 from courier.imap_client import ImapClient
 from courier.logging_setup import setup_logging
 from courier.models import extract_links_batch
@@ -965,7 +966,7 @@ def _perform_send(
     fcc_uid: Optional[int] = None
     if client is not None and fcc_target is not None:
         try:
-            fcc_uid = client.append_raw(fcc_target, fcc_bytes, flags=(r"\Seen",))
+            fcc_uid = client.append_raw(fcc_target, fcc_bytes, flags=(r"\Seen",)).uid
         except Exception as exc:
             typer.echo(f"warning: FCC to {fcc_target} failed: {exc}", err=True)
 
@@ -1825,17 +1826,14 @@ def move(
     """Move an email to another folder."""
     client = _make_client()
     try:
-        success = client.move_email(uid, folder, target)
-        _out(
-            {
-                "success": success,
-                "message": (
-                    f"Moved from {folder} to {target}"
-                    if success
-                    else "Failed to move email"
-                ),
-            }
-        )
+        # ponytail: CourierError shim keeps today's success=false JSON and
+        # exit 0; stage C2 replaces it with typed exit codes.
+        try:
+            client.move_email(uid, folder, target)
+        except CourierError:
+            _out({"success": False, "message": "Failed to move email"})
+        else:
+            _out({"success": True, "message": f"Moved from {folder} to {target}"})
     finally:
         client.disconnect()
 
@@ -1916,8 +1914,11 @@ def mark_read(
     """Mark an email as read."""
     client = _make_client()
     try:
-        success = client.mark_email(uid, folder, r"\Seen", True)
-        _out({"success": success})
+        try:  # ponytail: CourierError shim; C2 replaces with typed exit codes
+            client.mark_email(uid, folder, r"\Seen", True)
+            _out({"success": True})
+        except CourierError:
+            _out({"success": False})
     finally:
         client.disconnect()
 
@@ -1930,8 +1931,11 @@ def mark_unread(
     """Mark an email as unread."""
     client = _make_client()
     try:
-        success = client.mark_email(uid, folder, r"\Seen", False)
-        _out({"success": success})
+        try:  # ponytail: CourierError shim; C2 replaces with typed exit codes
+            client.mark_email(uid, folder, r"\Seen", False)
+            _out({"success": True})
+        except CourierError:
+            _out({"success": False})
     finally:
         client.disconnect()
 
@@ -1952,8 +1956,11 @@ def flag(
     """Flag (star) an email, or unflag it with --unflag."""
     client = _make_client()
     try:
-        success = client.mark_email(uid, folder, r"\Flagged", not unflag)
-        _out({"success": success, "flagged": not unflag})
+        try:  # ponytail: CourierError shim; C2 replaces with typed exit codes
+            client.mark_email(uid, folder, r"\Flagged", not unflag)
+            _out({"success": True, "flagged": not unflag})
+        except CourierError:
+            _out({"success": False, "flagged": not unflag})
     finally:
         client.disconnect()
 
@@ -1979,8 +1986,16 @@ def trash(
     """
     client = _make_client()
     try:
-        success = client.trash_email(uid, folder)
-        _out({"success": success})
+        try:  # ponytail: CourierError shim; C2 replaces with typed exit codes
+            client.trash_email(uid, folder)
+            _out({"success": True})
+        except FolderNotFound as exc:
+            # No resolvable Trash/Bin: same message + exit 1 as the old
+            # ValueError path.
+            typer.echo(f"Error: {exc}", err=True)
+            raise typer.Exit(1)
+        except CourierError:
+            _out({"success": False})
     except ValueError as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(1)
@@ -2002,8 +2017,11 @@ def delete(
     """
     client = _make_client()
     try:
-        success = client.delete_email(uid, folder)
-        _out({"success": success})
+        try:  # ponytail: CourierError shim; C2 replaces with typed exit codes
+            client.delete_email(uid, folder)
+            _out({"success": True})
+        except CourierError:
+            _out({"success": False})
     finally:
         client.disconnect()
 
@@ -2036,7 +2054,7 @@ def triage(
             message = client.process_email_action(
                 uid, folder, action, target_folder=target_folder
             )
-        except ValueError as exc:
+        except (ValueError, CourierError) as exc:
             typer.echo(str(exc), err=True)
             raise typer.Exit(1)
         _out({"message": message})
@@ -2471,7 +2489,12 @@ def compose(
         if output is not None:
             _write_raw_output(mime_message, output)
         else:
-            draft_uid = client.save_draft_mime(mime_message)
+            # ponytail: CourierError shim keeps today's failure output;
+            # C2 replaces it with typed exit codes.
+            try:
+                draft_uid = client.save_draft_mime(mime_message).uid
+            except CourierError:
+                draft_uid = None
             if draft_uid is None:
                 typer.echo("Failed to save draft", err=True)
                 raise typer.Exit(1)
@@ -2481,7 +2504,7 @@ def compose(
                     "message": "Draft saved",
                     "identity": identity.address,
                     "draft_uid": draft_uid,
-                    "draft_folder": client._get_drafts_folder(),
+                    "draft_folder": client.resolve_drafts_folder(),
                 }
             )
     except ValueError as exc:
@@ -2775,7 +2798,12 @@ def reply(
             elif output is not None:
                 _write_raw_output(mime_message, output)
             else:
-                draft_uid = client.save_draft_mime(mime_message)
+                # ponytail: CourierError shim keeps today's failure output;
+                # C2 replaces it with typed exit codes.
+                try:
+                    draft_uid = client.save_draft_mime(mime_message).uid
+                except CourierError:
+                    draft_uid = None
                 if draft_uid is None:
                     typer.echo("Failed to save reply draft", err=True)
                     raise typer.Exit(1)
@@ -2785,7 +2813,7 @@ def reply(
                         "message": "Draft reply saved",
                         "identity": identity.address,
                         "draft_uid": draft_uid,
-                        "draft_folder": client._get_drafts_folder(),
+                        "draft_folder": client.resolve_drafts_folder(),
                     }
                 )
         finally:

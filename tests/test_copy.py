@@ -8,7 +8,12 @@ import pytest
 from mcp.server.fastmcp import Context, FastMCP
 
 from courier.config import ImapBlock
-from courier.imap_client import ImapClient, copy_email_between_imap_blocks
+from courier.errors import PermanentError
+from courier.imap_client import (
+    AppendResult,
+    ImapClient,
+    copy_email_between_imap_blocks,
+)
 from courier.tools import register_tools
 
 # ---------------------------------------------------------------------------
@@ -143,9 +148,10 @@ class TestAppendRaw:
         with patch("imapclient.IMAPClient") as cls:
             cls.return_value = mock_imap_client
             client.connect()
-            uid = client.append_raw("Archive", b"raw message bytes")
+            result = client.append_raw("Archive", b"raw message bytes")
 
-        assert uid == 5678
+        # Both APPENDUID groups are parsed: UIDVALIDITY first, UID second
+        assert result == AppendResult(uid=5678, uidvalidity=1234)
 
     def test_append_raw_no_appenduid(self, mock_imap_client):
         mock_imap_client.append.return_value = b"OK"
@@ -155,9 +161,9 @@ class TestAppendRaw:
         with patch("imapclient.IMAPClient") as cls:
             cls.return_value = mock_imap_client
             client.connect()
-            uid = client.append_raw("Archive", b"raw message bytes")
+            result = client.append_raw("Archive", b"raw message bytes")
 
-        assert uid is None
+        assert result == AppendResult(uid=None, uidvalidity=None)
 
     def test_append_raw_passes_flags_and_time(self, mock_imap_client):
         mock_imap_client.append.return_value = b"OK"
@@ -209,7 +215,7 @@ class TestCopyEmailBetweenAccounts:
     @pytest.fixture
     def dest(self):
         client = MagicMock(spec=ImapClient)
-        client.append_raw.return_value = 999
+        client.append_raw.return_value = AppendResult(uid=999, uidvalidity=1)
         return client
 
     def test_copy_success(self, source, dest):
@@ -228,6 +234,17 @@ class TestCopyEmailBetweenAccounts:
         assert result["success"] is True
         assert result["moved"] is True
         source.delete_email.assert_called_once_with(42, "INBOX")
+
+    def test_copy_with_move_source_delete_failure_is_reported(self, source, dest):
+        """A failed source-delete after a successful append must not propagate."""
+        source.delete_email.side_effect = PermanentError("EXPUNGE failed: NO")
+
+        result = copy_email_between_imap_blocks(source, dest, 42, "INBOX", move=True)
+
+        assert result["success"] is True
+        assert result["new_uid"] == 999
+        assert result["moved"] is False
+        assert "failed to delete source" in result["error"]
 
     def test_copy_preserve_flags_filters_recent(self, source, dest):
         source.fetch_raw.return_value["flags"] = (

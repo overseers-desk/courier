@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from courier.imap_client import AppendResult
 from courier.models import Email, EmailAddress, EmailContent
 from courier.workflows.meeting_reply import process_meeting_invite_workflow
 
@@ -18,8 +19,10 @@ class TestAcceptInviteWorkflow:
         client = MagicMock()
         client.config = MagicMock()
         client.block.username = "test@example.com"
-        client.save_draft_mime = MagicMock(return_value=123)
-        client._get_drafts_folder = MagicMock(return_value="Drafts")
+        client.save_draft_mime = MagicMock(
+            return_value=AppendResult(uid=123, uidvalidity=1)
+        )
+        client.resolve_drafts_folder = MagicMock(return_value="Drafts")
         return client
 
     @pytest.fixture
@@ -100,7 +103,9 @@ class TestAcceptInviteWorkflow:
 
     def test_save_draft_failure(self, mock_client, invite_email):
         mock_client.fetch_email.return_value = invite_email
-        mock_client.save_draft_mime.return_value = None
+        mock_client.save_draft_mime.return_value = AppendResult(
+            uid=None, uidvalidity=None
+        )
 
         result = process_meeting_invite_workflow(
             mock_client,

@@ -22,6 +22,7 @@ from courier.config import (
     ImapBlock,
     SmtpConfig,
 )
+from courier.imap_client import AppendResult
 
 runner = CliRunner()
 
@@ -88,9 +89,9 @@ def _client(default_sent: str = "Sent") -> MagicMock:
     c.resolve_sent_folder.side_effect = lambda configured=None: (
         configured if configured is not None else default_sent
     )
-    c._get_drafts_folder.return_value = "Drafts"
-    c.append_raw.return_value = 999
-    c.save_draft_mime.return_value = 42
+    c.resolve_drafts_folder.return_value = "Drafts"
+    c.append_raw.return_value = AppendResult(uid=999, uidvalidity=1)
+    c.save_draft_mime.return_value = AppendResult(uid=42, uidvalidity=1)
     return c
 
 

@@ -22,6 +22,7 @@ from courier.config import (
     ImapBlock,
     SmtpConfig,
 )
+from courier.imap_client import AppendResult
 
 runner = CliRunner()
 
@@ -83,7 +84,7 @@ def _client_with_draft(from_addr: str = "alice@x.com") -> MagicMock:
     client.resolve_sent_folder.side_effect = lambda configured=None: (
         configured if configured is not None else "Sent"
     )
-    client.append_raw.return_value = 999
+    client.append_raw.return_value = AppendResult(uid=999, uidvalidity=1)
     client.delete_email.return_value = True
     return client
 

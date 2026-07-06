@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from courier.imap_client import AppendResult
 from courier.models import Email, EmailAddress, EmailContent
 from courier.smtp_client import _find_reply_from_address, compose_and_save_reply_draft
 
@@ -66,8 +67,10 @@ class TestComposeAndSaveReplyDraft:
         client = MagicMock()
         client.config = MagicMock()
         client.block.username = "me@example.com"
-        client.save_draft_mime = MagicMock(return_value=42)
-        client._get_drafts_folder = MagicMock(return_value="Drafts")
+        client.save_draft_mime = MagicMock(
+            return_value=AppendResult(uid=42, uidvalidity=1)
+        )
+        client.resolve_drafts_folder = MagicMock(return_value="Drafts")
         return client
 
     @pytest.fixture
@@ -112,7 +115,9 @@ class TestComposeAndSaveReplyDraft:
 
     def test_save_draft_failure(self, mock_client, original_email):
         mock_client.fetch_email.return_value = original_email
-        mock_client.save_draft_mime.return_value = None
+        mock_client.save_draft_mime.return_value = AppendResult(
+            uid=None, uidvalidity=None
+        )
 
         result = compose_and_save_reply_draft(
             mock_client,
