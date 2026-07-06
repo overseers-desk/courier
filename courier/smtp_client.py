@@ -349,8 +349,8 @@ def compose_and_save_reply_draft(
             attachments=attachments,
         )
 
-        # ponytail: CourierError shim keeps today's failure text; C2 owns
-        # the redesign.
+        # Compose callers have no exit-code channel; a failed draft save
+        # degrades to uid None and the JSON result carries the outcome.
         try:
             draft_uid = client.save_draft_mime(mime_message).uid
         except CourierError:
@@ -427,8 +427,8 @@ def compose_and_save_draft(
             attachments=attachments,
         )
 
-        # ponytail: CourierError shim keeps today's failure text; C2 owns
-        # the redesign.
+        # Compose callers have no exit-code channel; a failed draft save
+        # degrades to uid None and the JSON result carries the outcome.
         try:
             draft_uid = client.save_draft_mime(mime_message).uid
         except CourierError:

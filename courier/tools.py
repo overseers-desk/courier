@@ -159,7 +159,7 @@ def register_tools(mcp: FastMCP, imap_client: ImapClient) -> None:
             client.move_email(uid, folder, target_folder)
             return f"Email moved from {folder} to {target_folder}"
         except CourierError:
-            # ponytail: shim keeps today's failure text; C2 owns the redesign
+            # MCP returns error strings, not exit codes; the text is the contract
             return "Failed to move email"
         except Exception as e:
             logger.error(f"Error moving email: {e}")

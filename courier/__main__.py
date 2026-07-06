@@ -10,7 +10,7 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, List, NoReturn, Optional, Tuple, Union
 
 import typer
 
@@ -22,7 +22,7 @@ from courier.config import (
     load_config,
     load_config_with_warnings,
 )
-from courier.errors import CourierError, FolderNotFound
+from courier.errors import CourierError, FccUnresolved, TransientError
 from courier.imap_client import ImapClient
 from courier.logging_setup import setup_logging
 from courier.models import extract_links_batch
@@ -787,6 +787,17 @@ def _out(data: object) -> None:
         print(json.dumps(data, indent=2, default=str))
 
 
+def _die_on_courier_error(exc: CourierError) -> NoReturn:
+    """Print *exc* to stderr and exit with the retry-class code.
+
+    Mutation verbs share this: a PermanentError (server NO/BAD, incl.
+    MessageNotFound/FolderNotFound/CapabilityMissing) exits 1; a
+    TransientError (connection-layer, retryable) exits 3.
+    """
+    typer.echo(f"Error: {exc}", err=True)
+    raise typer.Exit(3 if isinstance(exc, TransientError) else 1)
+
+
 def _email_only(s: str) -> str:
     """Strip display name from ``Display Name <addr@host>``."""
     if "<" in s and ">" in s:
@@ -931,51 +942,55 @@ def _perform_send(
         smtp_response, accepted_recipients, fcc_folder, fcc_uid).
     """
     from courier.imap_client import SENT_FOLDER_CANDIDATES
-    from courier.smtp_transport import send as smtp_send
+    from courier.sending import send_with_fcc
 
-    fcc_target: Optional[str] = None
-    if client is not None:
-        identity_fcc_folder = identity.fcc if isinstance(identity.fcc, str) else None
-        configured = sent_folder_override or identity_fcc_folder
-        fcc_target = client.resolve_sent_folder(configured=configured)
-        if fcc_target is None:
-            if configured is not None:
-                typer.echo(
-                    f"Error: configured sent folder '{configured}' does not "
-                    f"exist on the IMAP server. Set it to a folder that "
-                    f"exists, drop the override to auto-discover, or pass "
-                    f"--no-save-sent.",
-                    err=True,
-                )
-            else:
-                typer.echo(
-                    "Error: no Sent folder found on the IMAP server. Tried, "
-                    "in order: " + ", ".join(SENT_FOLDER_CANDIDATES) + ". "
-                    "Configure [identity.NAME].fcc, pass "
-                    "--sent-folder, or pass --no-save-sent.",
-                    err=True,
-                )
-            raise typer.Exit(1)
+    identity_fcc_folder = identity.fcc if isinstance(identity.fcc, str) else None
+    configured = sent_folder_override or identity_fcc_folder
 
     try:
-        fcc_bytes, send_result = smtp_send(mime_message, smtp)
+        sent = send_with_fcc(
+            mime_message,
+            smtp,
+            fcc_client=client,
+            fcc_folder=configured,
+        )
+    except FccUnresolved:
+        if configured is not None:
+            typer.echo(
+                f"Error: configured sent folder '{configured}' does not "
+                f"exist on the IMAP server. Set it to a folder that "
+                f"exists, drop the override to auto-discover, or pass "
+                f"--no-save-sent.",
+                err=True,
+            )
+        else:
+            typer.echo(
+                "Error: no Sent folder found on the IMAP server. Tried, "
+                "in order: " + ", ".join(SENT_FOLDER_CANDIDATES) + ". "
+                "Configure [identity.NAME].fcc, pass "
+                "--sent-folder, or pass --no-save-sent.",
+                err=True,
+            )
+        raise typer.Exit(1)
     except Exception as exc:
         typer.echo(f"Error: SMTP send failed: {exc}", err=True)
         raise typer.Exit(1)
 
-    fcc_uid: Optional[int] = None
-    if client is not None and fcc_target is not None:
-        try:
-            fcc_uid = client.append_raw(fcc_target, fcc_bytes, flags=(r"\Seen",)).uid
-        except Exception as exc:
-            typer.echo(f"warning: FCC to {fcc_target} failed: {exc}", err=True)
+    if sent["fcc_error"] is not None:
+        typer.echo(
+            f"warning: FCC to {sent['fcc_folder']} failed: {sent['fcc_error']}",
+            err=True,
+        )
 
     return {
         "status": "success",
         "identity": identity.address,
-        **send_result,
-        "fcc_folder": fcc_target,
-        "fcc_uid": fcc_uid,
+        "message_id_local": sent["message_id_local"],
+        "message_id_sent": sent["message_id_sent"],
+        "smtp_response": sent["smtp_response"],
+        "accepted_recipients": sent["accepted_recipients"],
+        "fcc_folder": sent["fcc_folder"],
+        "fcc_uid": sent["fcc_uid"],
     }
 
 
@@ -1820,20 +1835,19 @@ def read(
 @app.command("move")
 def move(
     folder: str = typer.Option(..., "--folder", "-f", help="Source folder."),
-    uid: int = typer.Option(..., "--uid", "-u", help="Email UID."),
+    uid: List[int] = typer.Option(
+        ..., "--uid", "-u", help="Email UID (repeatable for a batch)."
+    ),
     target: str = typer.Option(..., "--target", "-t", help="Destination folder."),
 ) -> None:
-    """Move an email to another folder."""
+    """Move one or more emails to another folder."""
     client = _make_client()
     try:
-        # ponytail: CourierError shim keeps today's success=false JSON and
-        # exit 0; stage C2 replaces it with typed exit codes.
         try:
             client.move_email(uid, folder, target)
-        except CourierError:
-            _out({"success": False, "message": "Failed to move email"})
-        else:
-            _out({"success": True, "message": f"Moved from {folder} to {target}"})
+        except CourierError as exc:
+            _die_on_courier_error(exc)
+        _out({"success": True, "message": f"Moved from {folder} to {target}"})
     finally:
         client.disconnect()
 
@@ -1909,16 +1923,18 @@ def copy_cmd(
 @app.command("mark-read")
 def mark_read(
     folder: str = typer.Option(..., "--folder", "-f", help="Folder name."),
-    uid: int = typer.Option(..., "--uid", "-u", help="Email UID."),
+    uid: List[int] = typer.Option(
+        ..., "--uid", "-u", help="Email UID (repeatable for a batch)."
+    ),
 ) -> None:
-    """Mark an email as read."""
+    """Mark one or more emails as read."""
     client = _make_client()
     try:
-        try:  # ponytail: CourierError shim; C2 replaces with typed exit codes
+        try:
             client.mark_email(uid, folder, r"\Seen", True)
-            _out({"success": True})
-        except CourierError:
-            _out({"success": False})
+        except CourierError as exc:
+            _die_on_courier_error(exc)
+        _out({"success": True})
     finally:
         client.disconnect()
 
@@ -1926,16 +1942,18 @@ def mark_read(
 @app.command("mark-unread")
 def mark_unread(
     folder: str = typer.Option(..., "--folder", "-f", help="Folder name."),
-    uid: int = typer.Option(..., "--uid", "-u", help="Email UID."),
+    uid: List[int] = typer.Option(
+        ..., "--uid", "-u", help="Email UID (repeatable for a batch)."
+    ),
 ) -> None:
-    """Mark an email as unread."""
+    """Mark one or more emails as unread."""
     client = _make_client()
     try:
-        try:  # ponytail: CourierError shim; C2 replaces with typed exit codes
+        try:
             client.mark_email(uid, folder, r"\Seen", False)
-            _out({"success": True})
-        except CourierError:
-            _out({"success": False})
+        except CourierError as exc:
+            _die_on_courier_error(exc)
+        _out({"success": True})
     finally:
         client.disconnect()
 
@@ -1948,19 +1966,21 @@ def mark_unread(
 @app.command("flag")
 def flag(
     folder: str = typer.Option(..., "--folder", "-f", help="Folder name."),
-    uid: int = typer.Option(..., "--uid", "-u", help="Email UID."),
+    uid: List[int] = typer.Option(
+        ..., "--uid", "-u", help="Email UID (repeatable for a batch)."
+    ),
     unflag: bool = typer.Option(
         False, "--unflag", help="Remove the flag instead of setting it."
     ),
 ) -> None:
-    """Flag (star) an email, or unflag it with --unflag."""
+    """Flag (star) one or more emails, or unflag them with --unflag."""
     client = _make_client()
     try:
-        try:  # ponytail: CourierError shim; C2 replaces with typed exit codes
+        try:
             client.mark_email(uid, folder, r"\Flagged", not unflag)
-            _out({"success": True, "flagged": not unflag})
-        except CourierError:
-            _out({"success": False, "flagged": not unflag})
+        except CourierError as exc:
+            _die_on_courier_error(exc)
+        _out({"success": True, "flagged": not unflag})
     finally:
         client.disconnect()
 
@@ -1975,9 +1995,11 @@ def trash(
     folder: str = typer.Option(
         ..., "--folder", "-f", help="Folder containing the email."
     ),
-    uid: int = typer.Option(..., "--uid", "-u", help="Email UID."),
+    uid: List[int] = typer.Option(
+        ..., "--uid", "-u", help="Email UID (repeatable for a batch)."
+    ),
 ) -> None:
-    """Move an email to the server's Trash/Bin (recoverable removal).
+    """Move one or more emails to the server's Trash/Bin (recoverable removal).
 
     The normal way to remove a message. Resolves the Trash folder via the
     \\Trash SPECIAL-USE role, falling back to [Gmail]/Bin, [Gmail]/Trash, or
@@ -1986,16 +2008,13 @@ def trash(
     """
     client = _make_client()
     try:
-        try:  # ponytail: CourierError shim; C2 replaces with typed exit codes
+        try:
             client.trash_email(uid, folder)
-            _out({"success": True})
-        except FolderNotFound as exc:
-            # No resolvable Trash/Bin: same message + exit 1 as the old
-            # ValueError path.
-            typer.echo(f"Error: {exc}", err=True)
-            raise typer.Exit(1)
-        except CourierError:
-            _out({"success": False})
+        except CourierError as exc:
+            # FolderNotFound (no resolvable Trash/Bin) is a PermanentError,
+            # so it exits 1 through the shared helper.
+            _die_on_courier_error(exc)
+        _out({"success": True})
     except ValueError as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(1)
@@ -2006,9 +2025,11 @@ def trash(
 @app.command("delete")
 def delete(
     folder: str = typer.Option(..., "--folder", "-f", help="Folder name."),
-    uid: int = typer.Option(..., "--uid", "-u", help="Email UID."),
+    uid: List[int] = typer.Option(
+        ..., "--uid", "-u", help="Email UID (repeatable for a batch)."
+    ),
 ) -> None:
-    """Expunge an email in place, irrecoverable. (Normally use trash.)
+    """Expunge one or more emails in place, irrecoverable. (Normally use trash.)
 
     Sets \\Deleted and EXPUNGEs in the given folder. On standard IMAP this is
     a permanent removal that bypasses the Trash; on Gmail it only removes this
@@ -2017,11 +2038,11 @@ def delete(
     """
     client = _make_client()
     try:
-        try:  # ponytail: CourierError shim; C2 replaces with typed exit codes
+        try:
             client.delete_email(uid, folder)
-            _out({"success": True})
-        except CourierError:
-            _out({"success": False})
+        except CourierError as exc:
+            _die_on_courier_error(exc)
+        _out({"success": True})
     finally:
         client.disconnect()
 
@@ -2054,9 +2075,11 @@ def triage(
             message = client.process_email_action(
                 uid, folder, action, target_folder=target_folder
             )
-        except (ValueError, CourierError) as exc:
+        except ValueError as exc:
             typer.echo(str(exc), err=True)
             raise typer.Exit(1)
+        except CourierError as exc:
+            _die_on_courier_error(exc)
         _out({"message": message})
     finally:
         client.disconnect()
@@ -2489,13 +2512,12 @@ def compose(
         if output is not None:
             _write_raw_output(mime_message, output)
         else:
-            # ponytail: CourierError shim keeps today's failure output;
-            # C2 replaces it with typed exit codes.
             try:
                 draft_uid = client.save_draft_mime(mime_message).uid
-            except CourierError:
-                draft_uid = None
+            except CourierError as exc:
+                _die_on_courier_error(exc)
             if draft_uid is None:
+                # Saved, but the server returned no APPENDUID (no UIDPLUS).
                 typer.echo("Failed to save draft", err=True)
                 raise typer.Exit(1)
             _out(
@@ -2798,13 +2820,12 @@ def reply(
             elif output is not None:
                 _write_raw_output(mime_message, output)
             else:
-                # ponytail: CourierError shim keeps today's failure output;
-                # C2 replaces it with typed exit codes.
                 try:
                     draft_uid = client.save_draft_mime(mime_message).uid
-                except CourierError:
-                    draft_uid = None
+                except CourierError as exc:
+                    _die_on_courier_error(exc)
                 if draft_uid is None:
+                    # Saved, but the server returned no APPENDUID (no UIDPLUS).
                     typer.echo("Failed to save reply draft", err=True)
                     raise typer.Exit(1)
                 _out(

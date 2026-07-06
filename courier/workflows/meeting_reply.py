@@ -244,8 +244,8 @@ def process_meeting_invite_workflow(
             reply_all=False,
         )
 
-        # ponytail: CourierError shim keeps today's failure text; C2 owns
-        # the redesign.
+        # Workflow callers have no exit-code channel; a failed draft save
+        # degrades to uid None and the text result carries the outcome.
         try:
             draft_uid = client.save_draft_mime(mime_message).uid
         except CourierError:

@@ -16,6 +16,7 @@ Give your script or AI assistant access to your email.
 - [Claude Code (terminal-based Claude)](#claude-code-terminal-based-claude)
 - [MCP server](#mcp-server)
 - [Scripting and automation](#scripting-and-automation)
+- [Library use](#library-use)
 - [Faster searches](#faster-searches)
 - [Connection handling](#connection-handling)
 - [Security](#security)
@@ -214,6 +215,40 @@ courier search "is:unread subject:invoice" --folder INBOX \
 ```
 
 AI agents with skill/hook systems call Courier the same way: define a skill that runs a shell command and parses the JSON output.
+
+## Library use
+
+Courier is also a Python library. Import from the top-level `courier` package. The names in `courier.__all__` are the supported import surface: config loading, the error taxonomy, identity and SMTP resolution, the `ImapClient`, message models, the query parser, MIME building, and `send_with_fcc`. Anything not listed in `__all__` is internal and may reshape without announcement.
+
+```python
+from courier import (
+    load_config,
+    ImapClient,
+    EmailAddress,
+    create_mime,
+    resolve_smtp_for_identity,
+    send_with_fcc,
+)
+
+cfg = load_config()
+identity = cfg.identities["work"]
+imap_block = cfg.imap_blocks[identity.imap]
+smtp = resolve_smtp_for_identity(identity, imap_block, identity.imap, cfg.smtp_blocks)
+
+client = ImapClient(imap_block)
+client.connect()
+
+mime = create_mime(
+    from_addr=EmailAddress(name=identity.name, address=identity.address),
+    to=[EmailAddress.parse("alice@example.com")],
+    subject="Hello",
+    body="Sent from courier used as a library.",
+)
+
+# fcc_client files the sent copy in the server's Sent folder; drop it to skip.
+result = send_with_fcc(mime, smtp, fcc_client=client)
+print(result["fcc_uid"], result["fcc_error"])
+```
 
 ## Faster searches
 
