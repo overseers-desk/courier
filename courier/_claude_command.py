@@ -151,6 +151,12 @@ When a solution genuinely requires a rule (e.g. "avoid `2>&1` in examples"), the
 
 **Solution.** The Sending prose states that subjects and bodies pass through as UTF-8 in whatever script the user writes, and that the user's correspondence runs in Spanish and Chinese as well as English. The fact plus the base rate of non-English mail frames character fidelity as the default, leaving no opening for an English-only assumption or an ASCII-normalisation step. Phrased as framing rather than a prohibition, per the convention above (a "never transliterate" rule reads as infantilising and processes less reliably than the positive fact).
 
+### D5. Auto-selecting the nearest identity when the prior one is unavailable
+
+**Failure case.** In a case where the user asked the AI to reply to a thread and the identity that thread was previously sent from no longer appeared among the configured `[identity.NAME]` blocks, the AI silently picked the closest-matching configured identity and sent under it. The picked identity was a personal address, not the business address the thread needed, and the user only caught it after the message had gone out.
+
+**Solution.** The Sending prose states directly that a missing prior identity is a stop-and-ask case, not a nearest-match guess. This is one of the few instructions phrased as a behaviour script rather than a framing fact (per E4), because the failure is an unauthorised send under the wrong identity, not a stylistic choice the AI's judgement can absorb from an example.
+
 ---
 
 ## E. Doc mechanics
@@ -299,7 +305,7 @@ courier --imap <imap> send-draft -f Drafts -u <uid>
 
 Subjects and bodies pass through as UTF-8 in whatever script the user writes; their correspondence runs in Spanish and Chinese as well as English.
 
-`-i NAME` (= `--identity NAME`) picks a configured `[identity.NAME]` block; reply inherits the parent's threading headers. Drop `--send` to save as a draft. `courier list` returns the configured identity names under its `identity` key; `courier <verb> --help` carries flags for relay-style sends and other less-common paths.
+`-i NAME` (= `--identity NAME`) picks a configured `[identity.NAME]` block; reply inherits the parent's threading headers. Drop `--send` to save as a draft. `courier list` returns the configured identity names under its `identity` key; `courier <verb> --help` carries flags for relay-style sends and other less-common paths. For a reply, if the identity the thread was previously sent from isn't among those names, ask the user which identity to use rather than picking the closest match: the nearest name is often a personal address on a thread that needs a business one.
 """
 
 
