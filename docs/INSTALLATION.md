@@ -65,7 +65,13 @@ dpkg-buildpackage -us -uc -b
 
 ### RPM / Fedora (CLI-only)
 
-Build from the included spec file:
+Download the latest `.rpm` from the [Releases](https://github.com/overseers-desk/courier/releases) page and install:
+
+```bash
+sudo dnf install ./courier-<version>-1.noarch.rpm
+```
+
+Or build from the included spec file:
 
 ```bash
 rpmbuild -ba courier.spec
