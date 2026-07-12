@@ -53,7 +53,7 @@ Download the latest `.deb` from the [Releases](https://github.com/overseers-desk
 sudo apt install ./courier_*_all.deb
 ```
 
-The .deb provides all CLI commands. The MCP server subcommand (`courier mcp`) is not supported in the .deb — it requires the `mcp` Python package which is not yet available as a Debian package. Users who need MCP mode should install via pipx or Homebrew.
+The .deb provides all CLI commands. The MCP server subcommand (`courier mcp`) is not supported in the .deb: it requires the `mcp` Python package, which is not yet available as a Debian package. Users who need MCP mode should install via pipx or Homebrew.
 
 To build the .deb from source:
 
