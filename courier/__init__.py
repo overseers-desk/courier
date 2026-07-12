@@ -39,7 +39,7 @@ from courier.smtp_client import create_mime
 from courier.smtp_transport import send as smtp_send
 from courier.watch import WatchEvent, watch
 
-__version__ = "1.1.16"
+__version__ = "1.1.17"
 
 __all__ = [
     # config
