@@ -1336,6 +1336,14 @@ class ImapClient:
     # does and produces the expected filter (issue #17).
     _GMAIL_RAW_TRIGGER_PREFIXES = ("from:", "to:", "cc:", "bcc:")
 
+    # Matches a msgid:/rfc822msgid: token in an X-GM-RAW query: the leading
+    # boundary (start or whitespace) and an optional negation dash are
+    # captured so both can be preserved when rewriting to Gmail's spelling.
+    _GMAIL_RAW_MSGID_RE = re.compile(
+        r"(?P<lead>^|\s)(?P<neg>-?)(?:rfc822msgid|msgid):(?P<val>\S+)",
+        re.IGNORECASE,
+    )
+
     def _build_search_spec(self, query: str) -> Union[str, List[Any]]:
         """Translate a user query into IMAP search criteria.
 
@@ -1354,8 +1362,34 @@ class ImapClient:
             ValueError: Propagated from ``parse_query`` on malformed queries.
         """
         if self._should_use_gmail_raw(query):
-            return [b"X-GM-RAW", query.strip()]
+            return [b"X-GM-RAW", self._canonicalize_gmail_raw(query.strip())]
         return parse_query(query)
+
+    def _canonicalize_gmail_raw(self, query: str) -> str:
+        """Rewrite any msgid token in an ``X-GM-RAW`` query to Gmail syntax.
+
+        Gmail's web query language spells the Message-ID operator
+        ``rfc822msgid:`` and expects a bare id (no angle brackets).  A mixed
+        query such as ``from:alice msgid:<x@h>`` routes through ``X-GM-RAW``
+        because of the ``from:`` prefix, so its ``msgid:``/``rfc822msgid:``
+        token must be rewritten to ``rfc822msgid:`` plus the id stripped of
+        its surrounding ``<>``.  A leading negation dash is preserved.  A
+        query with no such token is returned unchanged, so the raw branch
+        stays byte-for-byte verbatim for every other query.
+
+        Args:
+            query: The stripped query string destined for ``X-GM-RAW``.
+
+        Returns:
+            The query with each msgid token canonicalised to Gmail's
+            ``rfc822msgid:`` form; identical to the input when none is present.
+        """
+
+        def _rewrite(match: re.Match[str]) -> str:
+            val = match.group("val").strip("<>")
+            return f"{match.group('lead')}{match.group('neg')}rfc822msgid:{val}"
+
+        return self._GMAIL_RAW_MSGID_RE.sub(_rewrite, query)
 
     def _should_use_gmail_raw(self, query: str) -> bool:
         """Decide whether a query should be sent via ``X-GM-RAW``.

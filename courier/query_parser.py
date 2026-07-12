@@ -166,6 +166,28 @@ def _parse_relative_date(value: str) -> date:
     return (datetime.now() - delta).date()
 
 
+def _normalize_msgid(value: str) -> str:
+    """Normalize a Message-ID value to its bare form.
+
+    Strips surrounding whitespace and one enclosing ``<...>`` pair.  The
+    single bare form serves all three backends: IMAP ``HEADER Message-ID``
+    (a substring match), mu (which indexes bare ids), and Gmail's
+    ``rfc822msgid:`` (which also takes bare ids).
+
+    Args:
+        value: The raw Message-ID as written in the query, e.g.
+            ``"<abc@host>"`` or ``"abc@host"``.
+
+    Returns:
+        The Message-ID with whitespace and a single surrounding angle-bracket
+        pair removed, e.g. ``"abc@host"``.
+    """
+    value = value.strip()
+    if value.startswith("<") and value.endswith(">"):
+        value = value[1:-1]
+    return value
+
+
 def _expand_term(token: str) -> List:
     """Expand a single token into its IMAP criteria components.
 
@@ -211,6 +233,10 @@ def _expand_term(token: str) -> List:
         return ["SINCE", _parse_relative_date(value)]
     if prefix_lower in ("older", "older_than"):
         return ["BEFORE", _parse_relative_date(value)]
+
+    # Message-ID lookup (both spellings) → IMAP HEADER substring match.
+    if prefix_lower in ("msgid", "rfc822msgid"):
+        return ["HEADER", "Message-ID", _normalize_msgid(value)]
 
     # Unknown prefix — treat the whole token as a bare word.
     return []
@@ -477,6 +503,11 @@ def _expand_term_mu(token: str) -> Optional[str]:
         return f"date:{_mu_date(_parse_relative_date(value))}.."
     if prefix_lower in ("older", "older_than"):
         return f"date:..{_mu_date(_parse_relative_date(value))}"
+
+    # Message-ID lookup (both spellings) → mu's exact-match msgid field.
+    # msgids carry no whitespace, so the bare value needs no quoting.
+    if prefix_lower in ("msgid", "rfc822msgid"):
+        return f"msgid:{_normalize_msgid(value)}"
 
     # Unknown prefix — treat the whole token as a bare word, matching
     # _expand_term's permissive behaviour.

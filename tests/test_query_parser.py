@@ -321,6 +321,34 @@ class TestEdgeCases:
         assert parse_query("69172700") == ["TEXT", "69172700"]
 
 
+class TestMsgidOperator:
+    """msgid: / rfc822msgid: expand to an IMAP HEADER Message-ID search."""
+
+    def test_bare_id(self):
+        result = parse_query("msgid:abc@host")
+        assert result == ["HEADER", "Message-ID", "abc@host"]
+
+    def test_angle_brackets_stripped(self):
+        result = parse_query("msgid:<abc@host>")
+        assert result == ["HEADER", "Message-ID", "abc@host"]
+
+    def test_rfc822msgid_alias(self):
+        result = parse_query("rfc822msgid:<abc@host>")
+        assert result == ["HEADER", "Message-ID", "abc@host"]
+
+    def test_negated(self):
+        result = parse_query("-msgid:<abc@host>")
+        assert result == ["NOT", "HEADER", "Message-ID", "abc@host"]
+
+    def test_or_with_from(self):
+        result = parse_query("msgid:<a@h> or from:alice")
+        assert result == ["OR", "HEADER", "Message-ID", "a@h", "FROM", "alice"]
+
+    def test_combined_with_flag(self):
+        result = parse_query("msgid:<a@h> is:unread")
+        assert result == ["HEADER", "Message-ID", "a@h", "UNSEEN"]
+
+
 class TestMuEmit:
     """parse_query_to_mu translates courier queries into mu CLI strings."""
 
@@ -392,6 +420,19 @@ class TestMuEmit:
 
     def test_dash_negation(self):
         assert parse_query_to_mu("-from:alice") == "NOT from:alice"
+
+    # ------------------------------------------------------------------
+    # msgid: / rfc822msgid: → mu's exact-match msgid field
+    # ------------------------------------------------------------------
+
+    def test_msgid_angle_brackets_stripped(self):
+        assert parse_query_to_mu("msgid:<abc@host>") == "msgid:abc@host"
+
+    def test_msgid_rfc822msgid_alias(self):
+        assert parse_query_to_mu("rfc822msgid:<abc@host>") == "msgid:abc@host"
+
+    def test_msgid_negated(self):
+        assert parse_query_to_mu("-msgid:<a@h>") == "NOT msgid:a@h"
 
     # ------------------------------------------------------------------
     # bare words and special inputs

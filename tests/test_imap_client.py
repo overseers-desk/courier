@@ -1438,6 +1438,34 @@ class TestGmailSearchDispatch:
         spec = client._build_search_spec("to:foo@example.com is:unread")
         assert spec == [b"X-GM-RAW", "to:foo@example.com is:unread"]
 
+    def test_gmail_standalone_msgid_uses_imap(self):
+        """msgid: alone has no raw-trigger prefix → standard IMAP HEADER."""
+        client = self._make_client()
+        spec = client._build_search_spec("msgid:abc@host")
+        assert spec == ["HEADER", "Message-ID", "abc@host"]
+
+    def test_gmail_msgid_with_from_canonicalized_in_raw(self):
+        """A msgid token in a raw-routed query becomes rfc822msgid: with
+        the id stripped of angle brackets."""
+        client = self._make_client()
+        spec = client._build_search_spec("from:alice msgid:<abc@host>")
+        assert spec == [b"X-GM-RAW", "from:alice rfc822msgid:abc@host"]
+
+    def test_gmail_rfc822msgid_with_from_normalized_in_raw(self):
+        """The rfc822msgid: alias is normalized without a doubled prefix."""
+        client = self._make_client()
+        spec = client._build_search_spec("from:alice rfc822msgid:<abc@host>")
+        assert spec == [b"X-GM-RAW", "from:alice rfc822msgid:abc@host"]
+
+    def test_gmail_raw_without_msgid_passes_through_verbatim(self):
+        """A raw-routed query with no msgid token is untouched byte-for-byte."""
+        client = self._make_client()
+        spec = client._build_search_spec("from:foo@example.com OR to:foo@example.com")
+        assert spec == [
+            b"X-GM-RAW",
+            "from:foo@example.com OR to:foo@example.com",
+        ]
+
     def test_search_emails_to_on_gmail_invokes_x_gm_raw(self, mock_imap_client):
         """End-to-end behaviour test: ``search_emails('to:foo@example.com')``
         on a Gmail host must pass ``X-GM-RAW`` (not bare ``TO``) to the
