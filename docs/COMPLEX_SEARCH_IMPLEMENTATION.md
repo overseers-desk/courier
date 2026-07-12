@@ -18,9 +18,9 @@ Courier uses a Gmail-inspired query language for email search. Queries work iden
 | `after:2025-03-01` | Sent on or after date | `SINCE 01-Mar-2025` |
 | `before:2025-04-01` | Sent before date | `BEFORE 01-Apr-2025` |
 | `on:2025-03-15` | Sent on exact date | `ON 15-Mar-2025` |
-| `msgid:<id@host>` | Match by RFC 5322 Message-ID | `HEADER Message-ID id@host` |
 | `newer:3d` | Within the last 3 days | Calculated `SINCE` |
 | `older:7d` | Older than 7 days | Calculated `BEFORE` |
+| `msgid:<id@host>` | Match by RFC 5322 Message-ID | `HEADER Message-ID id@host` |
 | bare words | Text search | `TEXT ...` |
 | `imap:EXPR` | Raw IMAP passthrough | Verbatim |
 

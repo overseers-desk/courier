@@ -71,7 +71,8 @@ install -Dpm 644 debian/courier.1 %{buildroot}%{_mandir}/man1/courier.1
 - msgid: search operator finds a message by RFC 5322 Message-ID on IMAP, the local cache, and Gmail (alias rfc822msgid:).
 - search --help and the MCP tool description now list the full operator inventory, rendered from the parser.
 - courier watch: new verb streaming IMAP IDLE folder events as JSON.
-- Typed CLI exit codes; send and FCC available as library API.
+- Typed CLI exit codes for data-returning commands.
+- Sending and FCC filing available as library API.
 
 * Mon Jun 30 2026 Weiwu Zhang <a@colourful.land> - 1.1.16-1
 - Project renamed from mailroom to courier; package name on PyPI is now courier.

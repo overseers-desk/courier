@@ -119,8 +119,9 @@ def _known_prefixes() -> Set[str]:
 # covers (empty for non-prefix forms) so the guard tests can prove the table
 # and the parser stay in lockstep. The ``is:`` keyword list and the
 # standalone-keyword syntax derive from the parser's own maps so even those
-# cannot drift. Constraint: no ``[`` or ``]`` anywhere in these strings — the
-# Typer app renders help through rich markup, which eats square brackets.
+# cannot drift. Constraint: no ``[`` or ``]`` anywhere in these strings,
+# because the Typer app renders help through rich markup, which eats
+# square brackets.
 _OPERATOR_TABLE: List[Dict[str, Any]] = [
     {
         "syntax": "from:ADDR",
@@ -321,9 +322,9 @@ def _normalize_msgid(value: str) -> str:
     """Normalize a Message-ID value to its bare form.
 
     Strips surrounding whitespace and one enclosing ``<...>`` pair.  The
-    single bare form serves all three backends: IMAP ``HEADER Message-ID``
-    (a substring match), mu (which indexes bare ids), and Gmail's
-    ``rfc822msgid:`` (which also takes bare ids).
+    single bare form serves all three query dialects: IMAP
+    ``HEADER Message-ID`` (a substring match), mu (which indexes bare
+    ids), and Gmail's ``rfc822msgid:`` (which also takes bare ids).
 
     Args:
         value: The raw Message-ID as written in the query, e.g.

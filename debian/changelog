@@ -5,7 +5,8 @@ courier (1.1.17) unstable; urgency=medium
   * search --help and the MCP tool description now list the full operator
     inventory, rendered from the parser so the two cannot drift.
   * courier watch: new verb streaming IMAP IDLE folder events as JSON.
-  * Typed CLI exit codes; send and FCC available as library API.
+  * Typed CLI exit codes for data-returning commands.
+  * Sending and FCC filing available as library API.
 
  -- Weiwu Zhang <a@colourful.land>  Sun, 12 Jul 2026 00:00:00 +0000
 
