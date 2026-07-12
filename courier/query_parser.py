@@ -63,7 +63,7 @@ _RELATIVE_PREFIX_MAP = {
 }
 
 # Prefixes with dedicated branch logic rather than a plain key mapping.
-_SPECIAL_PREFIXES = frozenset({"is", "imap", "msgid", "rfc822msgid"})
+_SPECIAL_PREFIXES = frozenset({"is", "imap", "msgid", "rfc822msgid", "larger", "has"})
 
 # is:keyword → IMAP flag string.
 _IS_MAP = {
@@ -93,15 +93,27 @@ _STANDALONE_KEYWORDS = {
 
 _RELATIVE_DATE_RE = re.compile(r"^(\d+)([dwm])$")
 
+# Size grammar for the larger: filter: an integer with an optional k/m/g unit
+# and an optional trailing b, case-insensitive (e.g. 1M, 500k, 1MB, 1048576).
+_SIZE_RE = re.compile(r"^(\d+)([kmg]?)b?$", re.IGNORECASE)
+
+# Binary (1024-based) unit factors for the larger: size grammar.
+_SIZE_UNIT_FACTORS = {
+    "": 1,
+    "k": 1024,
+    "m": 1024**2,
+    "g": 1024**3,
+}
+
 
 def _known_prefixes() -> Set[str]:
     """Return every prefix token the parser recognises.
 
     The union of the direct IMAP prefix map, the absolute and relative
     date prefix maps, and the special-cased prefixes (``is``, ``imap``,
-    and the two message-id spellings). This is the reference set the guard
-    tests use to prove the documented inventory neither omits a real prefix
-    nor invents one the parser does not accept.
+    ``larger``, ``has``, and the two message-id spellings). This is the
+    reference set the guard tests use to prove the documented inventory
+    neither omits a real prefix nor invents one the parser does not accept.
 
     Returns:
         The set of lowercase prefix tokens, without the trailing colon.
@@ -179,6 +191,24 @@ _OPERATOR_TABLE: List[Dict[str, Any]] = [
         "meaning": "Match by RFC 5322 Message-ID; rfc822msgid is a synonym",
         "example": "msgid:abc@host",
         "prefixes": ("msgid", "rfc822msgid"),
+    },
+    {
+        "syntax": "larger:SIZE",
+        "meaning": (
+            "Messages larger than SIZE; SIZE may carry a k, m, or g unit "
+            "(1024-based) or be a bare byte count"
+        ),
+        "example": "larger:1M",
+        "prefixes": ("larger",),
+    },
+    {
+        "syntax": "has:attachment",
+        "meaning": (
+            "Messages with an attachment; works on Gmail accounts and on "
+            "accounts with a local mail cache, and errors on other IMAP servers"
+        ),
+        "example": "has:attachment",
+        "prefixes": ("has",),
     },
     {
         "syntax": "imap:EXPR",
@@ -340,6 +370,54 @@ def _normalize_msgid(value: str) -> str:
     return value
 
 
+def _parse_size(value: str) -> int:
+    """Parse a larger: size like 1M, 500k, or 1048576 into a byte count.
+
+    The grammar is an integer with an optional k/m/g unit and an optional
+    trailing b, case-insensitive. Units are binary (1024-based): k is 1024,
+    m is 1024 squared, g is 1024 cubed; a bare number is bytes. The computed
+    byte count is shared by the IMAP LARGER key and mu's size range so both
+    backends filter on one threshold.
+
+    Args:
+        value: The size token as written after ``larger:``, e.g. ``"1M"``,
+            ``"500k"``, or ``"1048576"``.
+
+    Returns:
+        The size in bytes.
+
+    Raises:
+        ValueError: When ``value`` does not match the size grammar.
+    """
+    m = _SIZE_RE.match(value.strip())
+    if not m:
+        raise ValueError(
+            f"Invalid size: {value!r}. Use a number with an optional "
+            "k/m/g unit (1024-based), e.g. 1M, 500k, 1048576."
+        )
+    return int(m.group(1)) * _SIZE_UNIT_FACTORS[m.group(2).lower()]
+
+
+def _validate_has_value(value: str) -> None:
+    """Reject any has: value other than ``attachment``.
+
+    The ``has:`` operator supports only ``has:attachment``; the IMAP and
+    mu emitters share this check. Queries on Gmail hosts route to X-GM-RAW
+    before parsing ever runs, so there a ``has:`` value is judged by
+    Gmail's own richer has: vocabulary instead of by this check.
+
+    Args:
+        value: The value written after ``has:``.
+
+    Raises:
+        ValueError: When ``value`` is not ``attachment`` (case-insensitive).
+    """
+    if value.lower() != "attachment":
+        raise ValueError(
+            f"Unknown has: value: {value!r}. Only has:attachment is supported."
+        )
+
+
 def _expand_term(token: str) -> List:
     """Expand a single token into its IMAP criteria components.
 
@@ -383,6 +461,23 @@ def _expand_term(token: str) -> List:
     # Message-ID lookup (both spellings) → IMAP HEADER substring match.
     if prefix_lower in ("msgid", "rfc822msgid"):
         return ["HEADER", "Message-ID", _normalize_msgid(value)]
+
+    # Size filter → RFC 3501 LARGER. Deliberately not a Gmail raw trigger:
+    # LARGER is a standard IMAP key that Gmail's IMAP honours too.
+    if prefix_lower == "larger":
+        return ["LARGER", _parse_size(value)]
+
+    # Attachment presence. IMAP has no server-side attachment predicate, so
+    # this branch is reachable only on plain IMAP: Gmail hosts route to
+    # X-GM-RAW before parse_query runs, and cache-eligible accounts translate
+    # via mu first. Fail loudly rather than pretend to filter.
+    if prefix_lower == "has":
+        _validate_has_value(value)
+        raise ValueError(
+            "has:attachment has no server-side search on this IMAP backend. "
+            "The operator works on Gmail accounts and on accounts with a "
+            "local mail cache."
+        )
 
     # Unknown prefix — treat the whole token as a bare word.
     return []
@@ -680,6 +775,18 @@ def _expand_term_mu(token: str) -> Optional[str]:
     # msgids carry no whitespace, so the bare value needs no quoting.
     if prefix_lower in ("msgid", "rfc822msgid"):
         return f"msgid:{_normalize_msgid(value)}"
+
+    # Size filter → mu's open-ended size range. The byte count is computed
+    # by the same helper as the IMAP LARGER key so both share one threshold;
+    # mu accepts a bare byte count as the lower bound of the range.
+    if prefix_lower == "larger":
+        return f"size:{_parse_size(value)}.."
+
+    # Attachment presence → mu's attach flag. local_cache reads mu's attach
+    # flag when shaping results, so this filters correctly on the cache.
+    if prefix_lower == "has":
+        _validate_has_value(value)
+        return "flag:attach"
 
     # Unknown prefix — treat the whole token as a bare word, matching
     # _expand_term's permissive behaviour.

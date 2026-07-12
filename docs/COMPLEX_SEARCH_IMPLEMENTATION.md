@@ -21,6 +21,8 @@ Courier uses a Gmail-inspired query language for email search. Queries work iden
 | `newer:3d` | Within the last 3 days | Calculated `SINCE` |
 | `older:7d` | Older than 7 days | Calculated `BEFORE` |
 | `msgid:<id@host>` | Match by RFC 5322 Message-ID | `HEADER Message-ID id@host` |
+| `larger:1M` | Larger than SIZE (k/m/g units are 1024-based) | `LARGER 1048576` |
+| `has:attachment` | Has an attachment; Gmail and local-cache accounts only, errors on other IMAP servers | `X-GM-RAW` / mu `flag:attach` |
 | bare words | Text search | `TEXT ...` |
 | `imap:EXPR` | Raw IMAP passthrough | Verbatim |
 

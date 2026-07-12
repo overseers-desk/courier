@@ -1329,12 +1329,14 @@ class ImapClient:
         self._update_activity()
         return result
 
-    # Header search prefixes whose presence triggers the Gmail X-GM-RAW
-    # dispatch.  Standard IMAP SEARCH FROM/TO/CC/BCC against Gmail's All
-    # Mail empirically does not filter by header content for values that
-    # contain "@"/"."; X-GM-RAW evaluates the query the way Gmail's web UI
-    # does and produces the expected filter (issue #17).
-    _GMAIL_RAW_TRIGGER_PREFIXES = ("from:", "to:", "cc:", "bcc:")
+    # Prefixes whose presence triggers the Gmail X-GM-RAW dispatch.  Standard
+    # IMAP SEARCH FROM/TO/CC/BCC against Gmail's All Mail empirically does not
+    # filter by header content for values that contain "@"/"."; X-GM-RAW
+    # evaluates the query the way Gmail's web UI does and produces the expected
+    # filter (issue #17).  ``has:`` is here so has:attachment gets Gmail's
+    # native exact attachment search instead of the parse-time error the
+    # operator raises on backends with no server-side attachment predicate.
+    _GMAIL_RAW_TRIGGER_PREFIXES = ("from:", "to:", "cc:", "bcc:", "has:")
 
     # Matches a msgid:/rfc822msgid: token in an X-GM-RAW query: the leading
     # boundary (start or whitespace) and an optional negation dash are

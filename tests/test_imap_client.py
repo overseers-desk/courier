@@ -1466,6 +1466,24 @@ class TestGmailSearchDispatch:
             "from:foo@example.com OR to:foo@example.com",
         ]
 
+    def test_gmail_has_attachment_uses_x_gm_raw(self):
+        """has:attachment routes through X-GM-RAW for native exact semantics."""
+        client = self._make_client()
+        spec = client._build_search_spec("has:attachment")
+        assert spec == [b"X-GM-RAW", "has:attachment"]
+
+    def test_gmail_larger_with_has_uses_x_gm_raw_verbatim(self):
+        """A mixed larger:/has: query routes raw and is passed verbatim."""
+        client = self._make_client()
+        spec = client._build_search_spec("larger:1M has:attachment")
+        assert spec == [b"X-GM-RAW", "larger:1M has:attachment"]
+
+    def test_gmail_larger_alone_uses_imap(self):
+        """larger: has no raw-trigger prefix → standard IMAP LARGER."""
+        client = self._make_client()
+        spec = client._build_search_spec("larger:1M")
+        assert spec == ["LARGER", 1048576]
+
     def test_search_emails_to_on_gmail_invokes_x_gm_raw(self, mock_imap_client):
         """End-to-end behaviour test: ``search_emails('to:foo@example.com')``
         on a Gmail host must pass ``X-GM-RAW`` (not bare ``TO``) to the

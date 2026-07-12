@@ -358,6 +358,45 @@ class TestMsgidOperator:
         assert result == ["HEADER", "Message-ID", "a@h", "UNSEEN"]
 
 
+class TestLargerOperator:
+    """larger: maps to IMAP LARGER with a byte threshold and mu size:N.. ."""
+
+    def test_larger_megabyte(self):
+        assert parse_query("larger:1M") == ["LARGER", 1048576]
+
+    def test_larger_kilobyte(self):
+        assert parse_query("larger:500k") == ["LARGER", 512000]
+
+    def test_larger_bare_bytes(self):
+        assert parse_query("larger:1048576") == ["LARGER", 1048576]
+
+    def test_larger_invalid_size_raises(self):
+        with pytest.raises(ValueError, match="Invalid size"):
+            parse_query("larger:huge")
+
+    def test_larger_to_mu(self):
+        assert parse_query_to_mu("larger:1M") == "size:1048576.."
+
+
+class TestHasAttachment:
+    """has:attachment is exact where a backend answers, a loud error where not."""
+
+    def test_has_attachment_imap_names_backends(self):
+        """On plain IMAP the operator errors, naming Gmail and the cache."""
+        with pytest.raises(ValueError) as excinfo:
+            parse_query("has:attachment")
+        message = str(excinfo.value)
+        assert "Gmail" in message
+        assert "local mail cache" in message
+
+    def test_has_unknown_value_raises(self):
+        with pytest.raises(ValueError, match="Only has:attachment is supported"):
+            parse_query("has:read_receipt")
+
+    def test_has_attachment_to_mu(self):
+        assert parse_query_to_mu("has:attachment") == "flag:attach"
+
+
 class TestMuEmit:
     """parse_query_to_mu translates courier queries into mu CLI strings."""
 

@@ -16,6 +16,8 @@ def test_search_help_lists_operator_inventory():
     assert result.exit_code == 0
     assert "msgid:" in result.output
     assert "subject:" in result.output
+    assert "larger:" in result.output
+    assert "has:" in result.output
     # Rich markup would swallow an unescaped [imap.NAME] in the prose; the
     # escape in _SEARCH_CLI_HELP keeps it visible to the reader.
     assert "[imap.NAME]" in result.output
