@@ -1,13 +1,22 @@
 """Tests for the Gmail-style query parser."""
 
+import re
 from datetime import date, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
 from courier.query_parser import (
+    _IS_MAP,
+    _MU_IS_MAP,
+    _MU_PREFIX_MAP,
+    _OPERATOR_TABLE,
+    _PREFIX_MAP,
     UntranslatableQuery,
+    _known_prefixes,
     parse_query,
     parse_query_to_mu,
+    render_operator_help,
 )
 
 
@@ -490,3 +499,53 @@ class TestMuEmit:
     def test_dangling_not_raises(self):
         with pytest.raises(ValueError, match="[Nn]ot"):
             parse_query_to_mu("not")
+
+
+class TestOperatorInventory:
+    """The operator table derives from and stays aligned with parser data."""
+
+    def test_documented_prefixes_equal_known_prefixes(self):
+        """The union of every row's prefixes must equal the parser's set.
+
+        Bidirectional: a parser prefix missing from the table fails, and a
+        documented prefix the parser does not implement fails too.
+        """
+        documented = set()
+        for row in _OPERATOR_TABLE:
+            documented.update(row["prefixes"])
+        assert documented == _known_prefixes()
+
+    def test_imap_and_mu_prefix_maps_align(self):
+        assert set(_PREFIX_MAP) == set(_MU_PREFIX_MAP)
+
+    def test_imap_and_mu_is_maps_align(self):
+        assert set(_IS_MAP) == set(_MU_IS_MAP)
+
+    def test_rendered_help_has_no_square_brackets(self):
+        """Rich markup in the Typer help eats square brackets, so none may
+        appear in the rendered inventory."""
+        rendered = render_operator_help()
+        assert "[" not in rendered
+        assert "]" not in rendered
+
+
+class TestDocsOperatorTable:
+    """The docs quick-reference table must cite only real parser prefixes."""
+
+    def test_documented_table_prefixes_are_known(self):
+        doc = Path(__file__).parents[1] / "docs" / "COMPLEX_SEARCH_IMPLEMENTATION.md"
+        lines = doc.read_text(encoding="utf-8").splitlines()
+        start = next(
+            i for i, ln in enumerate(lines) if ln.lstrip().startswith("| Syntax")
+        )
+        tokens = []
+        # Skip the header and its separator row, then read data rows.
+        for ln in lines[start + 2 :]:
+            if not ln.lstrip().startswith("|"):
+                break
+            first_col = ln.split("|")[1]
+            tokens.extend(re.findall(r"([a-z_]+):", first_col))
+        assert tokens, "no prefix tokens found in the docs operator table"
+        known = _known_prefixes()
+        for tok in tokens:
+            assert tok in known, f"docs cite unknown prefix {tok!r}"

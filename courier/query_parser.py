@@ -4,23 +4,23 @@ Parses queries like ``from:alice subject:invoice is:unread after:2025-03-01``
 into imapclient-compatible search criteria, or into a mu CLI query string
 for the optional local-cache search backend.
 
-Supported syntax:
+Example shapes:
 
-    Prefixes:   from: to: cc: subject: body:
-    Flags:      is:unread  is:read  is:flagged  is:starred  is:answered ...
-    Dates:      after:YYYY-MM-DD  before:YYYY-MM-DD  on:YYYY-MM-DD
-    Relative:   newer:3d  older:7d  newer:2w  older:1m
-    Bare words: searched as TEXT (IMAP) or default-field (mu)
-    Boolean:    or (between terms), not / - (prefix negation)
-    Escape:     imap:RAW IMAP EXPRESSION   (untranslatable to mu)
-    Keywords:   all  today  yesterday  week  month
+    from:alice subject:invoice      prefix:value terms, implicitly AND-ed
+    is:unread after:2025-03-01      flag and date operators
+    imap:OR TEXT foo SUBJECT bar    raw IMAP passthrough
+
+The full operator inventory is defined once in ``_OPERATOR_TABLE`` and
+rendered by :func:`render_operator_help`; that table is the authoritative
+list from which the CLI and MCP help surfaces derive, so they cannot drift
+from what the parser actually accepts.
 """
 
 import logging
 import re
 import shlex
 from datetime import date, datetime, timedelta
-from typing import List, Optional, Union
+from typing import Any, Dict, List, Optional, Set, Union
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +45,25 @@ _PREFIX_MAP = {
     "subject": "SUBJECT",
     "body": "BODY",
 }
+
+# Absolute-date prefixes (prefix → IMAP date key). The IMAP key also picks
+# the mu bound side: SINCE → lower bound, BEFORE → upper bound, ON → both.
+_DATE_PREFIX_MAP = {
+    "after": "SINCE",
+    "before": "BEFORE",
+    "on": "ON",
+}
+
+# Relative-date prefixes (prefix → IMAP date key), resolved against "now".
+_RELATIVE_PREFIX_MAP = {
+    "newer": "SINCE",
+    "newer_than": "SINCE",
+    "older": "BEFORE",
+    "older_than": "BEFORE",
+}
+
+# Prefixes with dedicated branch logic rather than a plain key mapping.
+_SPECIAL_PREFIXES = frozenset({"is", "imap", "msgid", "rfc822msgid"})
 
 # is:keyword → IMAP flag string.
 _IS_MAP = {
@@ -73,6 +92,138 @@ _STANDALONE_KEYWORDS = {
 }
 
 _RELATIVE_DATE_RE = re.compile(r"^(\d+)([dwm])$")
+
+
+def _known_prefixes() -> Set[str]:
+    """Return every prefix token the parser recognises.
+
+    The union of the direct IMAP prefix map, the absolute and relative
+    date prefix maps, and the special-cased prefixes (``is``, ``imap``,
+    and the two message-id spellings). This is the reference set the guard
+    tests use to prove the documented inventory neither omits a real prefix
+    nor invents one the parser does not accept.
+
+    Returns:
+        The set of lowercase prefix tokens, without the trailing colon.
+    """
+    return (
+        set(_PREFIX_MAP)
+        | set(_DATE_PREFIX_MAP)
+        | set(_RELATIVE_PREFIX_MAP)
+        | set(_SPECIAL_PREFIXES)
+    )
+
+
+# The single authoritative inventory of query operators. Each row documents
+# one operator family; ``prefixes`` names the parser prefix keys the row
+# covers (empty for non-prefix forms) so the guard tests can prove the table
+# and the parser stay in lockstep. The ``is:`` keyword list and the
+# standalone-keyword syntax derive from the parser's own maps so even those
+# cannot drift. Constraint: no ``[`` or ``]`` anywhere in these strings — the
+# Typer app renders help through rich markup, which eats square brackets.
+_OPERATOR_TABLE: List[Dict[str, Any]] = [
+    {
+        "syntax": "from:ADDR",
+        "meaning": "Sender contains ADDR",
+        "example": "from:alice",
+        "prefixes": ("from",),
+    },
+    {
+        "syntax": "to:ADDR",
+        "meaning": "Recipient contains ADDR",
+        "example": "to:bob",
+        "prefixes": ("to",),
+    },
+    {
+        "syntax": "cc:ADDR",
+        "meaning": "Cc contains ADDR",
+        "example": "cc:team",
+        "prefixes": ("cc",),
+    },
+    {
+        "syntax": "subject:TEXT",
+        "meaning": "Subject contains TEXT",
+        "example": "subject:invoice",
+        "prefixes": ("subject",),
+    },
+    {
+        "syntax": "body:TEXT",
+        "meaning": "Body contains TEXT",
+        "example": "body:hello",
+        "prefixes": ("body",),
+    },
+    {
+        "syntax": "is:KEYWORD",
+        "meaning": "Match a flag; KEYWORD is one of: " + ", ".join(sorted(_IS_MAP)),
+        "example": "is:unread",
+        "prefixes": ("is",),
+    },
+    {
+        "syntax": "after:DATE before:DATE on:DATE",
+        "meaning": "Sent since, before, or on a date (YYYY-MM-DD or YYYY/MM/DD)",
+        "example": "after:2025-03-01 before:2025-04-01",
+        "prefixes": ("after", "before", "on"),
+    },
+    {
+        "syntax": "newer:Nd|Nw|Nm older:Nd|Nw|Nm",
+        "meaning": (
+            "Within or beyond the last N days, weeks, or months; "
+            "newer_than / older_than are synonyms"
+        ),
+        "example": "newer:3d older:2w",
+        "prefixes": ("newer", "newer_than", "older", "older_than"),
+    },
+    {
+        "syntax": "msgid:ID",
+        "meaning": "Match by RFC 5322 Message-ID; rfc822msgid is a synonym",
+        "example": "msgid:abc@host",
+        "prefixes": ("msgid", "rfc822msgid"),
+    },
+    {
+        "syntax": "imap:EXPR",
+        "meaning": "Send EXPR straight through as a raw IMAP SEARCH expression",
+        "example": "imap:OR TEXT foo SUBJECT bar",
+        "prefixes": ("imap",),
+    },
+    {
+        "syntax": "WORDS",
+        "meaning": "Tokens with no prefix search the full message text",
+        "example": "meeting notes",
+        "prefixes": (),
+    },
+    {
+        "syntax": " ".join(_STANDALONE_KEYWORDS),
+        "meaning": "A one-word query mapping to a preset date range or match-all",
+        "example": "today",
+        "prefixes": (),
+    },
+    {
+        "syntax": "or / not / -",
+        "meaning": "Combine or negate terms; adjacent terms are AND-ed",
+        "example": "from:alice or not is:read",
+        "prefixes": (),
+    },
+]
+
+
+def render_operator_help() -> str:
+    """Render the operator inventory as aligned help text.
+
+    Walks :data:`_OPERATOR_TABLE` once, padding the syntax column to a
+    common width so the meanings line up. This is the single rendering
+    shared by the CLI ``--help`` and the MCP search tool, so both track the
+    parser automatically.
+
+    Returns:
+        A multi-line string: a header line followed by one line per
+        operator family, each as ``syntax  meaning  (e.g. example)``.
+    """
+    lines = ["Gmail-style search operators:"]
+    width = max(len(str(row["syntax"])) for row in _OPERATOR_TABLE)
+    for row in _OPERATOR_TABLE:
+        syntax = str(row["syntax"]).ljust(width)
+        lines.append(f"  {syntax}  {row['meaning']}  (e.g. {row['example']})")
+    return "\n".join(lines)
 
 
 def parse_query(query: str) -> Union[str, List]:
@@ -220,19 +371,13 @@ def _expand_term(token: str) -> List:
             )
         return [_IS_MAP[val_lower]]
 
-    # Date operators.
-    if prefix_lower == "after":
-        return ["SINCE", _parse_date(value)]
-    if prefix_lower == "before":
-        return ["BEFORE", _parse_date(value)]
-    if prefix_lower == "on":
-        return ["ON", _parse_date(value)]
+    # Date operators (absolute), membership-driven off _DATE_PREFIX_MAP.
+    if prefix_lower in _DATE_PREFIX_MAP:
+        return [_DATE_PREFIX_MAP[prefix_lower], _parse_date(value)]
 
-    # Relative date operators.
-    if prefix_lower in ("newer", "newer_than"):
-        return ["SINCE", _parse_relative_date(value)]
-    if prefix_lower in ("older", "older_than"):
-        return ["BEFORE", _parse_relative_date(value)]
+    # Relative date operators, keyed off _RELATIVE_PREFIX_MAP.
+    if prefix_lower in _RELATIVE_PREFIX_MAP:
+        return [_RELATIVE_PREFIX_MAP[prefix_lower], _parse_relative_date(value)]
 
     # Message-ID lookup (both spellings) → IMAP HEADER substring match.
     if prefix_lower in ("msgid", "rfc822msgid"):
@@ -421,6 +566,34 @@ def _mu_date(d: date) -> str:
     return d.strftime("%Y%m%d")
 
 
+def _mu_date_bound(imap_key: str, d: date) -> str:
+    """Emit a mu ``date:`` predicate for an IMAP date key.
+
+    The same key that the absolute and relative date maps assign to a
+    prefix chooses which side of the mu range is bound: ``SINCE`` opens a
+    lower bound (``date:X..``), ``BEFORE`` opens an upper bound
+    (``date:..X``), and ``ON`` closes a single-day range (``date:X..X``).
+
+    Args:
+        imap_key: The IMAP date key (``SINCE``, ``BEFORE``, or ``ON``).
+        d: The resolved calendar date.
+
+    Returns:
+        A mu ``date:`` query fragment.
+
+    Raises:
+        ValueError: If ``imap_key`` is not a recognised date key.
+    """
+    ds = _mu_date(d)
+    if imap_key == "SINCE":
+        return f"date:{ds}.."
+    if imap_key == "BEFORE":
+        return f"date:..{ds}"
+    if imap_key == "ON":
+        return f"date:{ds}..{ds}"
+    raise ValueError(f"Unhandled IMAP date key: {imap_key!r}")
+
+
 def _standalone_keyword_to_mu(keyword: str) -> str:
     """Translate a standalone keyword (today/yesterday/...) to mu syntax."""
     today = date.today()
@@ -491,18 +664,16 @@ def _expand_term_mu(token: str) -> Optional[str]:
             )
         return _MU_IS_MAP[val_lower]
 
-    if prefix_lower == "after":
-        return f"date:{_mu_date(_parse_date(value))}.."
-    if prefix_lower == "before":
-        return f"date:..{_mu_date(_parse_date(value))}"
-    if prefix_lower == "on":
-        d = _parse_date(value)
-        return f"date:{_mu_date(d)}..{_mu_date(d)}"
+    # Date operators (absolute). The same map that names the IMAP key picks
+    # the mu bound side (SINCE → lower, BEFORE → upper, ON → both).
+    if prefix_lower in _DATE_PREFIX_MAP:
+        return _mu_date_bound(_DATE_PREFIX_MAP[prefix_lower], _parse_date(value))
 
-    if prefix_lower in ("newer", "newer_than"):
-        return f"date:{_mu_date(_parse_relative_date(value))}.."
-    if prefix_lower in ("older", "older_than"):
-        return f"date:..{_mu_date(_parse_relative_date(value))}"
+    # Relative date operators, keyed off the same map as the IMAP side.
+    if prefix_lower in _RELATIVE_PREFIX_MAP:
+        return _mu_date_bound(
+            _RELATIVE_PREFIX_MAP[prefix_lower], _parse_relative_date(value)
+        )
 
     # Message-ID lookup (both spellings) → mu's exact-match msgid field.
     # msgids carry no whitespace, so the bare value needs no quoting.

@@ -21,9 +21,23 @@ from mcp.server.fastmcp import Context, FastMCP
 from courier.errors import CourierError, FolderNotFound
 from courier.imap_client import ImapClient
 from courier.models import extract_links_batch
+from courier.query_parser import render_operator_help
 from courier.resources import get_client_from_context
 
 logger = logging.getLogger(__name__)
+
+# Explicit description for the search tool. FastMCP uses an explicit
+# ``description`` over the function docstring, so the operator inventory
+# derives from the parser (via render_operator_help) and cannot drift.
+_SEARCH_TOOL_DESCRIPTION = (
+    "Search for emails using Gmail-style query syntax.\n\n"
+    + render_operator_help()
+    + '\n\nReturns a JSON dict {"results": [...], "provenance": {...}} where '
+    'provenance.source is "local" (served from a local mu cache) or "remote" '
+    "(went to IMAP), provenance.indexed_at carries the local index mtime when "
+    "applicable, and provenance.fell_back_reason names the condition that forced "
+    "an IMAP fallback or is null."
+)
 
 
 def register_tools(mcp: FastMCP, imap_client: ImapClient) -> None:
@@ -322,7 +336,7 @@ def register_tools(mcp: FastMCP, imap_client: ImapClient) -> None:
             logger.error(f"Error deleting email: {e}")
             return f"Error: {e}"
 
-    @mcp.tool(name="search")
+    @mcp.tool(name="search", description=_SEARCH_TOOL_DESCRIPTION)
     async def search(
         query: Union[str, int] = "",
         ctx: Optional[Context] = None,
@@ -333,16 +347,11 @@ def register_tools(mcp: FastMCP, imap_client: ImapClient) -> None:
     ) -> str:
         """Search for emails using Gmail-style query syntax.
 
+        The full operator inventory is rendered into the tool description
+        (see ``_SEARCH_TOOL_DESCRIPTION``, derived from the query parser).
+
         Args:
             query: Gmail-style search query (numeric IDs are converted to strings).
-                   Prefixes: from: to: cc: subject: body:
-                   Flags: is:unread is:read is:flagged is:starred is:answered
-                   Dates: after:YYYY-MM-DD before:YYYY-MM-DD on:YYYY-MM-DD
-                   Relative: newer:3d older:7d newer:2w older:1m
-                   Bare words search message text.
-                   Boolean: 'or' between terms, '-' or 'not' for negation.
-                   Raw IMAP: prefix with 'imap:' (e.g. 'imap:OR TEXT foo SUBJECT bar').
-                   Keywords: all, today, yesterday, week, month.
             folder: Folder to search in (None for all folders)
             limit: Maximum number of results
             ctx: MCP context

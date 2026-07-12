@@ -27,6 +27,7 @@ from courier.errors import CourierError, FccUnresolved, TransientError
 from courier.imap_client import ImapClient
 from courier.logging_setup import setup_logging
 from courier.models import extract_links_batch
+from courier.query_parser import render_operator_help
 from courier.watch import watch as watch_folder
 
 if TYPE_CHECKING:
@@ -1732,16 +1733,40 @@ def watch_cmd(
 # ---------------------------------------------------------------------------
 
 
-@app.command("search")
+# Full CLI help for `search`: the command description followed by the
+# operator inventory rendered from the parser (render_operator_help), so the
+# help cannot drift from what the parser accepts. The inventory sits at the
+# command level rather than on the query argument because Typer's arguments
+# panel reflows the aligned table into a narrow column and mangles it; the
+# command description renders at full width and keeps the alignment.
+_SEARCH_CLI_HELP = """Search for emails.
+
+Repeat the verb to look up several keywords in one invocation:
+``courier search foo search bar``.
+
+Output is a JSON object keyed first by operation string, then by
+\\[imap.NAME] block. Each per-block value is ``{"results": [...],
+"provenance": {...}}`` where ``provenance`` reports whether the
+result came from IMAP (``source: "remote"``) or from a local mu
+cache (``source: "local"``). ``--limit`` is applied per block.
+
+``--format text`` renders multi-line, prompt-friendly output grouped
+by operation and block; ``--format oneline`` renders one
+tab-separated line per result (op_key, imap_name, date, subject,
+from -> to, message_id).
+
+Exit code: 0 on hits, 1 when every block returned zero results, so
+shell fallback chains work: ``courier search 'from:x' || courier
+search 'x'``.
+
+""" + render_operator_help()
+
+
+@app.command("search", help=_SEARCH_CLI_HELP)
 def search(
     query: str = typer.Argument(
         "",
-        help=(
-            "Gmail-style search query. Examples: "
-            "'from:alice subject:invoice', 'is:unread after:2025-03-01', "
-            "'meeting notes' (bare words search text), "
-            "'imap:OR TEXT foo SUBJECT bar' (raw IMAP)."
-        ),
+        help="Gmail-style search query; see the command help for the operators.",
     ),
     query_opt: Optional[str] = typer.Option(
         None, "--query", "-q", help="Alias for the positional query (overrides if set)."
@@ -1764,23 +1789,9 @@ def search(
 ) -> None:
     """Search for emails.
 
-    Repeat the verb to look up several keywords in one invocation:
-    ``courier search foo search bar``.
-
-    Output is a JSON object keyed first by operation string, then by
-    [imap.NAME] block. Each per-block value is ``{"results": [...],
-    "provenance": {...}}`` where ``provenance`` reports whether the
-    result came from IMAP (``source: "remote"``) or from a local mu
-    cache (``source: "local"``). ``--limit`` is applied per block.
-
-    ``--format text`` renders multi-line, prompt-friendly output grouped
-    by operation and block; ``--format oneline`` renders one
-    tab-separated line per result (op_key, imap_name, date, subject,
-    from -> to, message_id).
-
-    Exit code: 0 on hits, 1 when every block returned zero results, so
-    shell fallback chains work: ``courier search 'from:x' || courier
-    search 'x'``.
+    The user-facing help, including the operator inventory, is rendered
+    from ``_SEARCH_CLI_HELP`` (which appends :func:`render_operator_help`);
+    Typer uses that explicit ``help`` in place of this docstring.
     """
     effective = query_opt if query_opt is not None else query
     op_key = _build_op_key("search", query=effective, folder=folder, limit=limit)
