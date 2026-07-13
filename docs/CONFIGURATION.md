@@ -120,6 +120,33 @@ courier compose --send --smtp ses-syd \
 
 Drafting (no `--send`) keeps the previous convenience defaults: the first identity on the selected `[imap.*]` block is the From, and `--from EMAIL` selects a different identity by address.
 
+## `WORLD_AS_OF`: bounding the mailbox at an instant
+
+`WORLD_AS_OF` is an environment variable carrying an ISO-8601 timestamp with a timezone offset (e.g. `2026-07-12T17:07:00+10:00`). When set, nothing dated after that instant leaves courier, so a session replayed against the mailbox later sees the same world it saw the first time. The three semantics:
+
+1. **Unset**: unbounded, normal operation; existing callers pay nothing and no output shape changes.
+2. **Set**: searches gain a server-side prefilter (IMAP `SEARCH BEFORE`, day-granular and over-inclusive by up to a day; Gmail additionally `before:<epoch seconds>`; the local mu cache a `date:..<bound>` clause) *and* an exact client-side post-filter on each message's date. A direct read (`read`, `attachments`, `save`, `export`, `links`, a thread's root, `copy`'s source) of a message dated after the bound refuses with a message naming both instants. Thread members and search hits after the bound are dropped, before any `--limit` cut. `watch` refuses outright: a live tail of the future is meaningless under a bound. Relative query terms (`today`, `newer:7d`, …) resolve against the bound, not the wall clock.
+3. **Set but unparseable, or naive (no timezone offset)**: hard failure at startup. The CLI exits 1 and the MCP server refuses to start. Never a silent fallback, because a silently ignored bound produces a contaminated replay that looks valid.
+
+**The date compared is INTERNALDATE** (server receipt time), not the sender-supplied `Date` header: INTERNALDATE is when the message entered this mailbox, which is when it entered the world a session could see, and it cannot be forged by the sender. Two consequences to know about: a message imported or copied recently carries a recent INTERNALDATE even if it was sent long ago, and results served from a local cache (maildir file or mu index) are judged by their indexed Date-header date instead, flagged as `date_source: "mu_index"` in provenance.
+
+**The honest rule for mutable state.** Message existence and content are append-only, so the bound over them is exact. Flags (`\Seen`, `\Flagged`), folder membership, and the folder list are current-state only (IMAP keeps no history for them), so they are served as they now stand and flagged as such: bounded search provenance carries a `world_as_of` block naming them in `current_state_fields`, and the `folders` surfaces wrap their list the same way. One known limit: a message that existed at the bound instant but was expunged since is gone, and no query can resurrect it.
+
+Bounded search results extend the existing `provenance` dict:
+
+```json
+"world_as_of": {
+  "bound": "2026-07-12T17:07:00+10:00",
+  "dropped_after_bound": 3,
+  "current_state_fields": ["flags", "folder"],
+  "date_source": "internaldate"
+}
+```
+
+`dropped_after_bound` makes the filtering auditable rather than invisible; a replay harness can assert it.
+
+Write verbs (`compose`, `send-draft`, `move`, `mark-*`, `flag`, `trash`, `delete`) emit no dated data and are out of the read-bound's scope; whether a replay harness should permit mutations at all is the harness's policy, not this variable's.
+
 ## Claude Code integration
 
 Courier ships a Claude Code command definition that tells Claude how to invoke the CLI for email tasks. Once registered, Claude routes requests like "find the invoice from last week" or "reply to Alice's message" through courier automatically.
