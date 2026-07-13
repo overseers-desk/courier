@@ -407,6 +407,32 @@ class ImapClient:
         logger.debug(f"Listed {len(folders)} folders")
         return folders
 
+    def folders_result(self, refresh: bool = False) -> Union[List[str], Dict[str, Any]]:
+        """The folder list as served to output surfaces (tool, CLI, resource).
+
+        The folder list is mutable, current-state-only data IMAP keeps
+        no history for; under WORLD_AS_OF it cannot be rewound, only
+        served as it now stands and flagged as such (the honest rule).
+
+        Args:
+            refresh: Force refresh of the folder list cache.
+
+        Returns:
+            Unbounded: the plain folder-name list, shape unchanged.
+            Bounded: ``{"folders": [...], "world_as_of": {"bound": ...,
+            "current_state_fields": ["folders"]}}``.
+        """
+        folders = self.list_folders(refresh=refresh)
+        if self.world_as_of is None:
+            return folders
+        return {
+            "folders": folders,
+            "world_as_of": {
+                "bound": self.world_as_of.isoformat(),
+                "current_state_fields": ["folders"],
+            },
+        }
+
     def find_special_use_folder(self, role: bytes) -> Optional[str]:
         """Return the folder marked with the given SPECIAL-USE flag.
 

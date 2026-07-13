@@ -54,6 +54,7 @@ class TestTools:
         client.mark_email.return_value = None
         client.delete_email.return_value = None
         client.list_folders.return_value = ["INBOX", "Sent", "Archive", "Trash"]
+        client.folders_result.return_value = ["INBOX", "Sent", "Archive", "Trash"]
         client.search.return_value = [1, 2, 3]
         client.fetch_emails.return_value = {1: mock_email, 2: mock_email, 3: mock_email}
         client.fetch_email.return_value = mock_email
@@ -545,7 +546,7 @@ class TestTools:
 
     @pytest.mark.asyncio
     async def test_folders(self, tools, mock_client, mock_context):
-        """Folders tool returns the JSON list from list_folders()."""
+        """Folders tool returns the JSON list from folders_result()."""
         folders = tools["folders"]
         result = await folders(mock_context)
         data = json.loads(result)
@@ -555,9 +556,9 @@ class TestTools:
     async def test_folders_exception_returns_error_json(
         self, tools, mock_client, mock_context
     ):
-        """When list_folders raises, the tool surfaces it as an error JSON."""
+        """When folders_result raises, the tool surfaces it as an error JSON."""
         folders = tools["folders"]
-        mock_client.list_folders.side_effect = RuntimeError("connection lost")
+        mock_client.folders_result.side_effect = RuntimeError("connection lost")
         result = await folders(mock_context)
         data = json.loads(result)
         assert "error" in data

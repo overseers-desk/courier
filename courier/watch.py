@@ -23,8 +23,14 @@ from dataclasses import dataclass
 from typing import Iterator, Optional, Tuple
 
 from courier.config import ImapBlock
-from courier.errors import CapabilityMissing, TransientError, as_courier_error
+from courier.errors import (
+    CapabilityMissing,
+    TransientError,
+    WorldBoundRefused,
+    as_courier_error,
+)
 from courier.imap_client import ImapClient
+from courier.world_bound import world_as_of
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +112,10 @@ def watch(
     exponential backoff (1 s doubling to 60 s) and a ``reconnected``
     event carries the fresh UIDVALIDITY.
 
+    Refused outright — eagerly, at call time — when ``WORLD_AS_OF`` is
+    set: a watch is a live tail of events after the bound, and every
+    one of them would be dated in the bound's future.
+
     Args:
         block: [imap.NAME] block to connect with.
         folder: Folder to watch.
@@ -115,9 +125,35 @@ def watch(
             at poll granularity).
 
     Raises:
+        WorldBoundRefused: WORLD_AS_OF is set.
+        WorldAsOfInvalid: WORLD_AS_OF is set but unparseable or naive.
         CapabilityMissing: The server does not advertise IDLE.
         PermanentError: The server answered NO/BAD.
     """
+    bound = world_as_of()
+    if bound is not None:
+        raise WorldBoundRefused(
+            "watch refused: a live tail of the mailbox is meaningless "
+            f"under WORLD_AS_OF {bound.isoformat()}"
+        )
+    return _watch_events(
+        block,
+        folder,
+        reissue_after=reissue_after,
+        poll_interval=poll_interval,
+        stop=stop,
+    )
+
+
+def _watch_events(
+    block: ImapBlock,
+    folder: str,
+    *,
+    reissue_after: int,
+    poll_interval: float,
+    stop: Optional[threading.Event],
+) -> Iterator[WatchEvent]:
+    """The IDLE loop behind :func:`watch` (see its docstring)."""
     client = ImapClient(block)
     kind_next = "started"
     backoff = _BACKOFF_START

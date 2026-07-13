@@ -1713,11 +1713,14 @@ def _print_status_table(rows: List[Tuple[str, str, str, str, str]]) -> None:
 
 @app.command("folders")
 def folders() -> None:
-    """List available email folders."""
+    """List available email folders.
+
+    Under WORLD_AS_OF the list is wrapped and flagged as current-state
+    data: ``{"folders": [...], "world_as_of": {...}}``.
+    """
     client = _make_client()
     try:
-        folder_list = client.list_folders()
-        _out(folder_list)
+        _out(client.folders_result())
     finally:
         client.disconnect()
 

@@ -187,3 +187,37 @@ class TestWatchCli:
             result = runner.invoke(app, ["watch"])
         assert result.exit_code == 1
         assert "Error:" in result.output
+
+
+class TestWatchWorldBound:
+    """watch refuses under WORLD_AS_OF: a live tail of the future."""
+
+    def test_watch_refuses_eagerly_under_bound(self, monkeypatch):
+        from courier.errors import WorldBoundRefused
+
+        monkeypatch.setenv("WORLD_AS_OF", "2026-07-12T17:07:00+10:00")
+        # Eager: the refusal fires at call time, before any iteration
+        # (and before any connection is attempted).
+        with pytest.raises(WorldBoundRefused, match="WORLD_AS_OF"):
+            watch(_block())
+
+    def test_watch_unbounded_still_yields(self, monkeypatch):
+        monkeypatch.delenv("WORLD_AS_OF", raising=False)
+        stop = threading.Event()
+        inst = _mock_server()
+
+        def checks(timeout):
+            stop.set()
+            return []
+
+        inst.idle_check.side_effect = checks
+        with patch("imapclient.IMAPClient", return_value=inst):
+            events = list(watch(_block(), stop=stop, poll_interval=0.01))
+        assert [e.kind for e in events] == ["started"]
+
+    def test_cli_watch_exits_one_under_bound(self, monkeypatch):
+        monkeypatch.setenv("WORLD_AS_OF", "2026-07-12T17:07:00+10:00")
+        with patch_default_cli_config():
+            result = runner.invoke(app, ["watch"])
+        assert result.exit_code == 1
+        assert "WORLD_AS_OF" in result.output

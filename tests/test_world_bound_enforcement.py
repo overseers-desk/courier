@@ -464,3 +464,88 @@ class TestLocalCachePathBoundedLikeImap:
         result = client.search_emails("from:alice")
         assert len(result["results"]) == 1
         assert result["provenance"]["world_as_of"]["dropped_after_bound"] == 0
+
+
+class TestFoldersHonestRule:
+    """Folder list: mutable, no history — served current-state, flagged."""
+
+    def test_folders_result_flagged_under_bound(self):
+        client = ImapClient(_block(), world_as_of=BOUND)
+        with patch.object(client, "list_folders", return_value=["INBOX", "Sent"]):
+            result = client.folders_result()
+        assert result == {
+            "folders": ["INBOX", "Sent"],
+            "world_as_of": {
+                "bound": BOUND_STR,
+                "current_state_fields": ["folders"],
+            },
+        }
+
+    def test_folders_result_plain_list_unbounded(self):
+        client = ImapClient(_block(), world_as_of=None)
+        with patch.object(client, "list_folders", return_value=["INBOX"]):
+            assert client.folders_result() == ["INBOX"]
+
+
+class TestResourceBypassSurfaces:
+    """resources.py calls ImapClient directly; the bound must hold there."""
+
+    def _register(self, imap_client):
+        from courier.resources import register_resources
+
+        registered = {}
+        mcp = MagicMock()
+        mcp.resource = lambda path: lambda func: registered.setdefault(path, func)
+        register_resources(mcp, imap_client)
+        return registered
+
+    @pytest.mark.asyncio
+    async def test_get_email_resource_surfaces_refusal(self):
+        imap_client = MagicMock()
+        imap_client.fetch_email.side_effect = WorldBoundRefused(
+            "message dated 2026-07-13T09:12:00+10:00 is after "
+            "WORLD_AS_OF 2026-07-12T17:07:00+10:00; refused"
+        )
+        registered = self._register(imap_client)
+        result = await registered["email://{folder}/{uid}"]("INBOX", "42")
+        assert "WORLD_AS_OF" in result
+        assert "refused" in result
+
+    @pytest.mark.asyncio
+    async def test_folders_resource_flagged_under_bound(self):
+        import json
+
+        client = ImapClient(_block(), world_as_of=BOUND)
+        registered = self._register(client)
+        with patch.object(client, "list_folders", return_value=["INBOX"]):
+            result = await registered["email://folders"]()
+        data = json.loads(result)
+        assert data["folders"] == ["INBOX"]
+        assert data["world_as_of"]["bound"] == BOUND_STR
+
+    @pytest.mark.asyncio
+    async def test_list_resource_drops_post_bound_messages(self):
+        # email://{folder}/list is search("ALL") + fetch_emails on the
+        # real client; the shared fetch assembly drops post-bound UIDs.
+        import json
+
+        client = _connected_client()
+        wire = _wire(client)
+        wire.search.return_value = [1, 2]
+
+        def fetch_side_effect(uids, items):
+            dates = {1: SAME_DAY_BEFORE, 2: SAME_DAY_AFTER}
+            return {
+                u: {
+                    b"BODY[]": _raw_message(u),
+                    b"FLAGS": (b"\\Seen",),
+                    b"INTERNALDATE": dates[u],
+                }
+                for u in uids
+            }
+
+        wire.fetch.side_effect = fetch_side_effect
+        registered = self._register(client)
+        result = await registered["email://{folder}/list"]("INBOX")
+        uids = [entry["uid"] for entry in json.loads(result)]
+        assert uids == [1]

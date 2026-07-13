@@ -57,6 +57,7 @@ class TestResources:
 
         # Setup some default returns
         mock_client.list_folders.return_value = ["INBOX", "Sent", "Drafts", "Trash"]
+        mock_client.folders_result.return_value = ["INBOX", "Sent", "Drafts", "Trash"]
 
         # Mock search
         mock_client.search.return_value = [101, 102, 103]
@@ -145,7 +146,7 @@ class TestResources:
         assert "INBOX" in folders
 
         # Verify client method was called
-        mock_imap_client.list_folders.assert_called_once()
+        mock_imap_client.folders_result.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_list_emails(self, mock_mcp, mock_imap_client, mock_context):

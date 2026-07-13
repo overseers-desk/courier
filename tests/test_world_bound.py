@@ -142,8 +142,13 @@ class TestCliStartupWiring:
         from courier.__main__ import app
 
         client = MagicMock()
-        client.list_folders.return_value = ["INBOX"]
-        client.world_as_of = BOUND
+        client.folders_result.return_value = {
+            "folders": ["INBOX"],
+            "world_as_of": {
+                "bound": BOUND_STR,
+                "current_state_fields": ["folders"],
+            },
+        }
         with patch("courier.__main__._make_client", return_value=client):
             result = runner.invoke(app, ["folders"], env={"WORLD_AS_OF": BOUND_STR})
         assert result.exit_code == 0
@@ -154,8 +159,7 @@ class TestCliStartupWiring:
 
         monkeypatch.delenv("WORLD_AS_OF", raising=False)
         client = MagicMock()
-        client.list_folders.return_value = ["INBOX"]
-        client.world_as_of = None
+        client.folders_result.return_value = ["INBOX"]
         with patch("courier.__main__._make_client", return_value=client):
             result = runner.invoke(app, ["folders"])
         assert result.exit_code == 0

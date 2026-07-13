@@ -749,12 +749,13 @@ def register_tools(mcp: FastMCP, imap_client: ImapClient) -> None:
             imap: [imap.NAME] block name (None for default)
 
         Returns:
-            JSON-formatted list of folder names
+            JSON-formatted list of folder names. Under WORLD_AS_OF the
+            list is wrapped and flagged as current-state data:
+            ``{"folders": [...], "world_as_of": {...}}``.
         """
         client = get_client_from_context(ctx, imap)
         try:
-            folder_list = client.list_folders()
-            return json.dumps(folder_list, indent=2)
+            return json.dumps(client.folders_result(), indent=2)
         except Exception as e:
             logger.error(f"Error listing folders: {e}")
             return json.dumps({"error": str(e)})

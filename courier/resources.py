@@ -81,10 +81,10 @@ def register_resources(mcp: FastMCP, imap_client: ImapClient) -> None:
         """List available email folders.
 
         Returns:
-            JSON-formatted list of folders
+            JSON-formatted list of folders. Under WORLD_AS_OF the list
+            is wrapped and flagged as current-state data.
         """
-        folders = imap_client.list_folders()
-        return json.dumps(folders, indent=2)
+        return json.dumps(imap_client.folders_result(), indent=2)
 
     # List email summaries in a folder
     @mcp.resource("email://{folder}/list")
