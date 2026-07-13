@@ -112,7 +112,7 @@ def watch(
     exponential backoff (1 s doubling to 60 s) and a ``reconnected``
     event carries the fresh UIDVALIDITY.
 
-    Refused outright — eagerly, at call time — when ``WORLD_AS_OF`` is
+    Refused outright (eagerly, at call time) when ``WORLD_AS_OF`` is
     set: a watch is a live tail of events after the bound, and every
     one of them would be dated in the bound's future.
 

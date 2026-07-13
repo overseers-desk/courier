@@ -467,7 +467,7 @@ class TestLocalCachePathBoundedLikeImap:
 
 
 class TestFoldersHonestRule:
-    """Folder list: mutable, no history — served current-state, flagged."""
+    """Folder list: mutable with no history, so served current-state and flagged."""
 
     def test_folders_result_flagged_under_bound(self):
         client = ImapClient(_block(), world_as_of=BOUND)

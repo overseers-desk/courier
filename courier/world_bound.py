@@ -5,10 +5,10 @@ with a timezone offset (e.g. ``2026-07-12T17:07:00+10:00``). When set,
 nothing dated after that instant may leave the tool, so a session replayed
 against the mailbox later yields the same answers. The three semantics:
 
-1. Unset — unbounded, normal operation, zero cost for existing callers.
-2. Set — searches are prefiltered server-side and post-filtered exactly;
+1. Unset: unbounded, normal operation, zero cost for existing callers.
+2. Set: searches are prefiltered server-side and post-filtered exactly;
    reads of messages dated after the bound are refused; ``watch`` refuses.
-3. Set but unparseable, or naive (no timezone offset) — hard failure at
+3. Set but unparseable, or naive (no timezone offset): hard failure at
    startup via :class:`~courier.errors.WorldAsOfInvalid`, never a silent
    fallback: a silently ignored bound produces a contaminated replay that
    looks valid.
@@ -41,7 +41,7 @@ def world_as_of() -> Optional[datetime]:
         WorldAsOfInvalid: When the variable is set but empty,
             unparseable, or naive (no timezone offset). Naive
             timestamps are rejected because accepting one would
-            silently bind against an assumed zone — a cousin of the
+            silently bind against an assumed zone, a cousin of the
             silent fallback the contract forbids.
     """
     raw = os.environ.get(ENV_VAR)

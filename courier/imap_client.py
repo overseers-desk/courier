@@ -1547,8 +1547,8 @@ class ImapClient:
         if self._should_use_gmail_raw(query):
             raw_query = self._canonicalize_gmail_raw(query.strip())
             if self.world_as_of is not None:
-                # Gmail's before: accepts epoch seconds — a second-precision
-                # Layer 1, tighter than the day-granular SEARCH BEFORE that
+                # Gmail's before: accepts epoch seconds, a second-precision
+                # Layer 1 tighter than the day-granular SEARCH BEFORE that
                 # is also ANDed on. Layer 2 still decides.
                 raw_query = f"{raw_query} before:{int(self.world_as_of.timestamp())}"
             return [b"X-GM-RAW", raw_query]
@@ -1666,7 +1666,7 @@ class ImapClient:
             ``None``), and ``fell_back_reason`` (``None`` or one of
             ``"no_cache"``, ``"mu_missing"``, ``"db_missing"``,
             ``"stale"``, ``"untranslatable"``, ``"exception"``).  When
-            the client is bounded, ``provenance`` additionally carries a
+            the client is bounded, ``provenance`` also carries a
             ``world_as_of`` block (see :meth:`_world_as_of_provenance`).
 
         Raises:

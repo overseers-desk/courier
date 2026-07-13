@@ -1,10 +1,10 @@
-"""Tests for courier.world_bound — WORLD_AS_OF parsing, predicates, wiring.
+"""Tests for courier.world_bound: WORLD_AS_OF parsing, predicates, wiring.
 
 The three semantics under test:
 
-1. Unset — ``world_as_of()`` returns ``None``; nothing changes.
-2. Set — an aware ``datetime`` is returned for enforcement downstream.
-3. Set but unparseable or naive — ``WorldAsOfInvalid`` at parse time,
+1. Unset: ``world_as_of()`` returns ``None``; nothing changes.
+2. Set: an aware ``datetime`` is returned for enforcement downstream.
+3. Set but unparseable or naive: ``WorldAsOfInvalid`` at parse time,
    surfaced as a hard failure at CLI and MCP-server startup.
 """
 
