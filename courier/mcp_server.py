@@ -45,7 +45,7 @@ async def server_lifespan(server: FastMCP) -> AsyncIterator[Dict]:
     # WORLD_AS_OF hard-fails at startup: the server must refuse to start
     # rather than silently serve an unbounded world under a bad bound.
     try:
-        world_as_of()
+        bound = world_as_of()
     except WorldAsOfInvalid as exc:
         logger.error(f"Refusing to start: {exc}")
         raise
@@ -65,7 +65,7 @@ async def server_lifespan(server: FastMCP) -> AsyncIterator[Dict]:
     try:
         for name, block in config.imap_blocks.items():
             logger.info(f"Connecting to IMAP server for [imap.{name}]...")
-            client = ImapClient(block, local_cache=mu_backend)
+            client = ImapClient(block, local_cache=mu_backend, world_as_of=bound)
             client.connect()
             clients[name] = client
 

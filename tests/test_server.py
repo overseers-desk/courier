@@ -84,7 +84,9 @@ class TestServer:
             async with AsyncExitStack() as stack:
                 context = await stack.enter_async_context(server_lifespan(mock_server))
 
-                MockImapClient.assert_called_once_with(block, local_cache=None)
+                MockImapClient.assert_called_once_with(
+                    block, local_cache=None, world_as_of=None
+                )
                 mock_client.connect.assert_called_once()
                 assert context["imap_clients"]["test"] == mock_client
                 assert context["default_imap"] == "test"
