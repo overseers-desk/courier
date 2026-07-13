@@ -361,3 +361,44 @@ class TestCliReadSurfacing:
         result = _fetch_email_result(client, "INBOX", 42)
         assert "error" in result
         assert "WORLD_AS_OF" in result["error"]
+
+
+class TestRelativeTermsAnchorToBound:
+    """ImapClient threads its bound into relative-date resolution."""
+
+    def test_build_search_spec_anchors_newer_to_bound(self):
+        client = ImapClient(_block(), world_as_of=BOUND)
+        assert client._build_search_spec("newer:7d") == [
+            "SINCE",
+            date(2026, 7, 5),
+        ]
+
+    def test_search_today_preset_anchors_to_bound(self):
+        client = _connected_client()
+        _wire(client).search.return_value = []
+        client.search("today", folder="INBOX")
+        _wire(client).search.assert_called_once_with(
+            ["SINCE", date(2026, 7, 12), "BEFORE", date(2026, 7, 13)],
+            charset=None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_search_resource_anchors_to_client_bound(self):
+        # resources.py calls parse_query itself (the bypass path); it
+        # must pass the client's bound as the reference instant.
+        from courier.resources import register_resources
+
+        registered = {}
+        mcp = MagicMock()
+        mcp.resource = lambda path: lambda func: registered.setdefault(path, func)
+
+        imap_client = MagicMock()
+        imap_client.world_as_of = BOUND
+        imap_client.list_folders.return_value = ["INBOX"]
+        imap_client.search.return_value = []
+        register_resources(mcp, imap_client)
+
+        await registered["email://search/{query}"]("newer:7d")
+        imap_client.search.assert_called_with(
+            ["SINCE", date(2026, 7, 5)], folder="INBOX"
+        )

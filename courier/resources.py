@@ -145,7 +145,9 @@ def register_resources(mcp: FastMCP, imap_client: ImapClient) -> None:
         Returns:
             JSON-formatted list of email summaries
         """
-        search_spec = parse_query(query)
+        # Relative terms anchor to the client's WORLD_AS_OF bound when
+        # set (parse_query defaults to the wall clock on None).
+        search_spec = parse_query(query, now=imap_client.world_as_of)
         folders = imap_client.list_folders()
         results = []
 

@@ -588,3 +588,60 @@ class TestDocsOperatorTable:
         known = _known_prefixes()
         for tok in tokens:
             assert tok in known, f"docs cite unknown prefix {tok!r}"
+
+
+class TestReferenceInstantInjection:
+    """Relative terms resolve against an injected instant (WORLD_AS_OF).
+
+    Without the injection, a replayed ``newer:7d`` would drift as real
+    time advances: the post-filter would keep results correct but the
+    window would shrink to empty.
+    """
+
+    BOUND = datetime.fromisoformat("2026-07-12T17:07:00+10:00")
+
+    def test_today_resolves_against_bound(self):
+        assert parse_query("today", now=self.BOUND) == [
+            "SINCE",
+            date(2026, 7, 12),
+        ]
+
+    def test_yesterday_resolves_against_bound(self):
+        assert parse_query("yesterday", now=self.BOUND) == [
+            "SINCE",
+            date(2026, 7, 11),
+            "BEFORE",
+            date(2026, 7, 12),
+        ]
+
+    def test_newer_days_resolves_against_bound(self):
+        assert parse_query("newer:7d", now=self.BOUND) == [
+            "SINCE",
+            date(2026, 7, 5),
+        ]
+
+    def test_newer_than_synonym_resolves_against_bound(self):
+        assert parse_query("newer_than:3d", now=self.BOUND) == [
+            "SINCE",
+            date(2026, 7, 9),
+        ]
+
+    def test_older_resolves_against_bound(self):
+        assert parse_query("older:2w", now=self.BOUND) == [
+            "BEFORE",
+            date(2026, 6, 28),
+        ]
+
+    def test_default_reference_is_wall_clock(self):
+        expected = (datetime.now() - timedelta(days=3)).date()
+        assert parse_query("newer:3d") == ["SINCE", expected]
+
+    def test_mu_relative_resolves_against_bound(self):
+        assert parse_query_to_mu("newer:7d", now=self.BOUND) == "date:20260705.."
+
+    def test_mu_today_resolves_against_bound(self):
+        assert parse_query_to_mu("today", now=self.BOUND) == "date:20260712.."
+
+    def test_mu_default_reference_is_wall_clock(self):
+        expected = (datetime.now() - timedelta(days=7)).date().strftime("%Y%m%d")
+        assert parse_query_to_mu("newer:7d") == f"date:{expected}.."

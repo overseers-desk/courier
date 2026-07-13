@@ -77,18 +77,21 @@ _IS_MAP = {
     "unanswered": "UNANSWERED",
 }
 
-# Single-word queries that have special meaning.
+# Single-word queries that have special meaning. Each resolver takes the
+# reference instant ("now"): wall clock normally, the WORLD_AS_OF bound
+# under a bounded client, so relative queries do not drift as real time
+# advances across replays.
 _STANDALONE_KEYWORDS = {
-    "all": lambda: "ALL",
-    "today": lambda: ["SINCE", date.today()],
-    "yesterday": lambda: [
+    "all": lambda now: "ALL",
+    "today": lambda now: ["SINCE", now.date()],
+    "yesterday": lambda now: [
         "SINCE",
-        (datetime.now() - timedelta(days=1)).date(),
+        (now - timedelta(days=1)).date(),
         "BEFORE",
-        date.today(),
+        now.date(),
     ],
-    "week": lambda: ["SINCE", (datetime.now() - timedelta(days=7)).date()],
-    "month": lambda: ["SINCE", (datetime.now() - timedelta(days=30)).date()],
+    "week": lambda now: ["SINCE", (now - timedelta(days=7)).date()],
+    "month": lambda now: ["SINCE", (now - timedelta(days=30)).date()],
 }
 
 _RELATIVE_DATE_RE = re.compile(r"^(\d+)([dwm])$")
@@ -257,7 +260,7 @@ def render_operator_help() -> str:
     return "\n".join(lines)
 
 
-def parse_query(query: str) -> Union[str, List]:
+def parse_query(query: str, now: Optional[datetime] = None) -> Union[str, List]:
     """Parse a Gmail-style query string into imapclient-compatible criteria.
 
     Args:
@@ -266,6 +269,10 @@ def parse_query(query: str) -> Union[str, List]:
             ``"is:unread after:2025-03-01"``
             ``"meeting notes"`` (bare words → TEXT search)
             ``"imap:OR TEXT foo SUBJECT bar"`` (raw IMAP passthrough)
+        now: Reference instant for relative terms (``today``,
+            ``newer:3d``, …). Defaults to the wall clock; a bounded
+            caller passes its WORLD_AS_OF instant so ``newer:7d`` means
+            seven days before the bound on every replay.
 
     Returns:
         A string (e.g. ``"ALL"``, ``"UNSEEN"``) or a list
@@ -276,6 +283,7 @@ def parse_query(query: str) -> Union[str, List]:
         ValueError: On malformed queries (dangling ``or``/``not``, bad dates,
             unknown ``is:`` keywords).
     """
+    reference = now if now is not None else datetime.now()
     stripped = query.strip()
     if not stripped:
         return "ALL"
@@ -286,13 +294,13 @@ def parse_query(query: str) -> Union[str, List]:
 
     # Standalone keyword (entire query is one word).
     if stripped.lower() in _STANDALONE_KEYWORDS:
-        result = _STANDALONE_KEYWORDS[stripped.lower()]()
+        result = _STANDALONE_KEYWORDS[stripped.lower()](reference)
         if isinstance(result, str):
             return result
         return list(result)
 
     tokens = _tokenize(stripped)
-    return _build_criteria(tokens)
+    return _build_criteria(tokens, reference)
 
 
 # ------------------------------------------------------------------
@@ -331,8 +339,19 @@ def _parse_date(value: str) -> date:
     raise ValueError(f"Invalid date format: {value!r}. Use YYYY-MM-DD or YYYY/MM/DD.")
 
 
-def _parse_relative_date(value: str) -> date:
-    """Parse relative offset like 3d, 2w, 1m into a date."""
+def _parse_relative_date(value: str, now: datetime) -> date:
+    """Parse relative offset like 3d, 2w, 1m into a date.
+
+    Args:
+        value: The offset as written after the prefix, e.g. ``"3d"``.
+        now: Reference instant the offset counts back from.
+
+    Returns:
+        The resolved calendar date.
+
+    Raises:
+        ValueError: When ``value`` does not match the offset grammar.
+    """
     m = _RELATIVE_DATE_RE.match(value)
     if not m:
         raise ValueError(
@@ -345,7 +364,7 @@ def _parse_relative_date(value: str) -> date:
         delta = timedelta(weeks=n)
     else:  # "m"
         delta = timedelta(days=n * 30)
-    return (datetime.now() - delta).date()
+    return (now - delta).date()
 
 
 def _normalize_msgid(value: str) -> str:
@@ -418,15 +437,16 @@ def _validate_has_value(value: str) -> None:
         )
 
 
-def _expand_term(token: str) -> List:
+def _expand_term(token: str, now: datetime) -> List:
     """Expand a single token into its IMAP criteria components.
 
     Returns a list of IMAP criteria items.  For flag-only results
     (e.g. ``is:unread`` → ``UNSEEN``) returns a single-element list.
+    ``now`` is the reference instant for relative date prefixes.
     """
     # Negation with dash prefix: -from:alice
     if token.startswith("-") and ":" in token[1:]:
-        inner = _expand_term(token[1:])
+        inner = _expand_term(token[1:], now)
         return ["NOT"] + inner
 
     if ":" not in token:
@@ -456,7 +476,7 @@ def _expand_term(token: str) -> List:
 
     # Relative date operators, keyed off _RELATIVE_PREFIX_MAP.
     if prefix_lower in _RELATIVE_PREFIX_MAP:
-        return [_RELATIVE_PREFIX_MAP[prefix_lower], _parse_relative_date(value)]
+        return [_RELATIVE_PREFIX_MAP[prefix_lower], _parse_relative_date(value, now)]
 
     # Message-ID lookup (both spellings) → IMAP HEADER substring match.
     if prefix_lower in ("msgid", "rfc822msgid"):
@@ -483,10 +503,11 @@ def _expand_term(token: str) -> List:
     return []
 
 
-def _build_criteria(tokens: List[str]) -> Union[str, List]:
+def _build_criteria(tokens: List[str], now: datetime) -> Union[str, List]:
     """Walk tokens and assemble a flat IMAP criteria list.
 
     Handles ``or``, ``not``, prefix:value terms, and bare words.
+    ``now`` is the reference instant for relative date terms.
     """
     # Phase 1: classify each token into a "clause" (an IMAP criteria fragment).
     clauses: List[Union[str, List]] = []  # each entry is "OR" or a list of IMAP items
@@ -514,7 +535,7 @@ def _build_criteria(tokens: List[str]) -> Union[str, List]:
             if i + 1 >= len(tokens):
                 raise ValueError("'not' at end of query with nothing to negate.")
             next_tok = tokens[i + 1]
-            expanded = _expand_term(next_tok)
+            expanded = _expand_term(next_tok, now)
             if not expanded:
                 # Bare word after not.
                 clauses.append(["NOT", "TEXT", next_tok])
@@ -524,7 +545,7 @@ def _build_criteria(tokens: List[str]) -> Union[str, List]:
             continue
 
         # Regular token.
-        expanded = _expand_term(tok)
+        expanded = _expand_term(tok, now)
         if expanded:
             _flush_bare_words()
             clauses.append(expanded)
@@ -625,11 +646,15 @@ _MU_IS_MAP = {
 }
 
 
-def parse_query_to_mu(query: str) -> str:
+def parse_query_to_mu(query: str, now: Optional[datetime] = None) -> str:
     """Translate a Gmail-style query into a mu CLI query string.
 
     Args:
         query: Same syntax accepted by :func:`parse_query`.
+        now: Reference instant for relative terms (``today``,
+            ``newer:3d``, …). Defaults to the wall clock; a bounded
+            caller passes its WORLD_AS_OF instant so relative windows
+            do not drift across replays.
 
     Returns:
         A mu CLI query string suitable for ``mu find``.  The empty
@@ -643,6 +668,7 @@ def parse_query_to_mu(query: str) -> str:
         ValueError: On malformed queries (dangling ``or``/``not``,
             bad dates, unknown ``is:`` keywords).
     """
+    reference = now if now is not None else datetime.now()
     stripped = query.strip()
     if not stripped:
         return ""
@@ -651,10 +677,10 @@ def parse_query_to_mu(query: str) -> str:
         raise UntranslatableQuery("untranslatable")
 
     if stripped.lower() in _STANDALONE_KEYWORDS:
-        return _standalone_keyword_to_mu(stripped.lower())
+        return _standalone_keyword_to_mu(stripped.lower(), reference)
 
     tokens = _tokenize(stripped)
-    return _build_mu_query(tokens)
+    return _build_mu_query(tokens, reference)
 
 
 def _mu_date(d: date) -> str:
@@ -690,9 +716,12 @@ def _mu_date_bound(imap_key: str, d: date) -> str:
     raise ValueError(f"Unhandled IMAP date key: {imap_key!r}")
 
 
-def _standalone_keyword_to_mu(keyword: str) -> str:
-    """Translate a standalone keyword (today/yesterday/...) to mu syntax."""
-    today = date.today()
+def _standalone_keyword_to_mu(keyword: str, now: datetime) -> str:
+    """Translate a standalone keyword (today/yesterday/...) to mu syntax.
+
+    ``now`` is the reference instant the keyword resolves against.
+    """
+    today = now.date()
     if keyword == "all":
         return ""
     if keyword == "today":
@@ -719,8 +748,10 @@ def _quote_mu(value: str) -> str:
     return value
 
 
-def _expand_term_mu(token: str) -> Optional[str]:
+def _expand_term_mu(token: str, now: datetime) -> Optional[str]:
     """Translate a single token into a mu query fragment.
+
+    ``now`` is the reference instant for relative date prefixes.
 
     Returns:
         A mu query fragment, or ``None`` if the token is a bare word
@@ -732,7 +763,7 @@ def _expand_term_mu(token: str) -> Optional[str]:
     """
     # Negation with dash prefix: -from:alice
     if token.startswith("-") and ":" in token[1:]:
-        inner = _expand_term_mu(token[1:])
+        inner = _expand_term_mu(token[1:], now)
         if inner is None:
             return None
         return f"NOT {inner}"
@@ -768,7 +799,7 @@ def _expand_term_mu(token: str) -> Optional[str]:
     # Relative date operators, keyed off the same map as the IMAP side.
     if prefix_lower in _RELATIVE_PREFIX_MAP:
         return _mu_date_bound(
-            _RELATIVE_PREFIX_MAP[prefix_lower], _parse_relative_date(value)
+            _RELATIVE_PREFIX_MAP[prefix_lower], _parse_relative_date(value, now)
         )
 
     # Message-ID lookup (both spellings) → mu's exact-match msgid field.
@@ -793,12 +824,13 @@ def _expand_term_mu(token: str) -> Optional[str]:
     return None
 
 
-def _build_mu_query(tokens: List[str]) -> str:
+def _build_mu_query(tokens: List[str], now: datetime) -> str:
     """Walk tokens and assemble a mu CLI query string.
 
     AND-binding between adjacent terms is implicit (Xapian's default
     operator).  ``or`` becomes ``OR``; ``not`` and ``-prefix:`` become
     ``NOT``.  Bare words are emitted as default-field search tokens.
+    ``now`` is the reference instant for relative date terms.
     """
     fragments: List[str] = []  # each entry is a fragment string or "OR"
     bare_words: List[str] = []
@@ -825,7 +857,7 @@ def _build_mu_query(tokens: List[str]) -> str:
             if i + 1 >= len(tokens):
                 raise ValueError("'not' at end of query with nothing to negate.")
             next_tok = tokens[i + 1]
-            expanded = _expand_term_mu(next_tok)
+            expanded = _expand_term_mu(next_tok, now)
             if expanded is None:
                 fragments.append(f"NOT {_quote_mu(next_tok)}")
             else:
@@ -833,7 +865,7 @@ def _build_mu_query(tokens: List[str]) -> str:
             i += 2
             continue
 
-        expanded = _expand_term_mu(tok)
+        expanded = _expand_term_mu(tok, now)
         if expanded is not None:
             _flush_bare_words()
             fragments.append(expanded)

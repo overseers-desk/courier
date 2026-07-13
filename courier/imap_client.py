@@ -500,6 +500,9 @@ class ImapClient:
 
         resolved_criteria: Union[str, List[Any], Tuple[Any, ...]] = criteria
         if isinstance(criteria, str):
+            # Relative presets resolve against the bound when set, so a
+            # replayed "today" is the bound's day, not the wall clock's.
+            now = self.world_as_of if self.world_as_of is not None else datetime.now()
             # Predefined criteria strings
             criteria_map: Dict[str, Union[str, List[Any]]] = {
                 "all": "ALL",
@@ -512,15 +515,15 @@ class ImapClient:
                 "flagged": "FLAGGED",
                 "unflagged": "UNFLAGGED",
                 "recent": "RECENT",
-                "today": ["SINCE", datetime.now().date()],
+                "today": ["SINCE", now.date()],
                 "yesterday": [
                     "SINCE",
-                    (datetime.now() - timedelta(days=1)).date(),
+                    (now - timedelta(days=1)).date(),
                     "BEFORE",
-                    datetime.now().date(),
+                    now.date(),
                 ],
-                "week": ["SINCE", (datetime.now() - timedelta(days=7)).date()],
-                "month": ["SINCE", (datetime.now() - timedelta(days=30)).date()],
+                "week": ["SINCE", (now - timedelta(days=7)).date()],
+                "month": ["SINCE", (now - timedelta(days=30)).date()],
             }
 
             if criteria.lower() in criteria_map:
@@ -1523,7 +1526,9 @@ class ImapClient:
                 # is also ANDed on. Layer 2 still decides.
                 raw_query = f"{raw_query} before:{int(self.world_as_of.timestamp())}"
             return [b"X-GM-RAW", raw_query]
-        return parse_query(query)
+        # Relative terms resolve against the bound when set (wall clock
+        # otherwise), so a replayed newer:7d is anchored to the bound.
+        return parse_query(query, now=self.world_as_of)
 
     def _canonicalize_gmail_raw(self, query: str) -> str:
         """Rewrite any msgid token in an ``X-GM-RAW`` query to Gmail syntax.
