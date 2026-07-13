@@ -10,12 +10,14 @@ from mcp.server.fastmcp import FastMCP
 
 from courier import __version__
 from courier.config import CourierConfig, load_config
+from courier.errors import WorldAsOfInvalid
 from courier.imap_client import ImapClient
 from courier.local_cache import MuBackend
 from courier.logging_setup import setup_logging
 from courier.mcp_protocol import extend_server
 from courier.resources import register_resources
 from courier.tools import register_tools
+from courier.world_bound import world_as_of
 
 # Set up logging: prefer the local syslog socket so MCP-server warnings
 # survive process restarts, with a timestamped stderr fallback when no
@@ -40,6 +42,14 @@ async def server_lifespan(server: FastMCP) -> AsyncIterator[Dict]:
     Yields:
         Context dictionary with ``imap_clients`` dict and ``default_imap``
     """
+    # WORLD_AS_OF hard-fails at startup: the server must refuse to start
+    # rather than silently serve an unbounded world under a bad bound.
+    try:
+        world_as_of()
+    except WorldAsOfInvalid as exc:
+        logger.error(f"Refusing to start: {exc}")
+        raise
+
     config_attr = getattr(server, "_config", None)
     config: CourierConfig
     if config_attr is None:

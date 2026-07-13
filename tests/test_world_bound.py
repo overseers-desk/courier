@@ -9,11 +9,16 @@ The three semantics under test:
 """
 
 from datetime import datetime, timedelta, timezone
+from unittest.mock import MagicMock, patch
 
 import pytest
+from typer.testing import CliRunner
 
+from courier.config import CourierConfig, ImapBlock
 from courier.errors import CourierError, WorldAsOfInvalid
 from courier.world_bound import after_bound, refusal_message, world_as_of
+
+runner = CliRunner()
 
 BOUND_STR = "2026-07-12T17:07:00+10:00"
 BOUND = datetime.fromisoformat(BOUND_STR)
@@ -112,3 +117,78 @@ class TestUtcComparisonSanity:
         bound_utc = datetime(2026, 7, 12, 7, 7, 0, tzinfo=timezone.utc)
         just_after = datetime.fromisoformat("2026-07-12T17:07:01+10:00")
         assert after_bound(just_after, bound_utc) is True
+
+
+class TestCliStartupWiring:
+    """A bad WORLD_AS_OF is a hard failure before any verb runs."""
+
+    def test_bad_bound_exits_one_with_message(self):
+        from courier.__main__ import app
+
+        result = runner.invoke(app, ["folders"], env={"WORLD_AS_OF": "garbage"})
+        assert result.exit_code == 1
+        assert "WORLD_AS_OF" in result.output
+
+    def test_naive_bound_exits_one(self):
+        from courier.__main__ import app
+
+        result = runner.invoke(
+            app, ["folders"], env={"WORLD_AS_OF": "2026-07-12T17:07:00"}
+        )
+        assert result.exit_code == 1
+        assert "timezone offset" in result.output
+
+    def test_good_bound_proceeds(self):
+        from courier.__main__ import app
+
+        client = MagicMock()
+        client.list_folders.return_value = ["INBOX"]
+        client.world_as_of = BOUND
+        with patch("courier.__main__._make_client", return_value=client):
+            result = runner.invoke(app, ["folders"], env={"WORLD_AS_OF": BOUND_STR})
+        assert result.exit_code == 0
+        assert "INBOX" in result.output
+
+    def test_unset_proceeds(self, monkeypatch):
+        from courier.__main__ import app
+
+        monkeypatch.delenv("WORLD_AS_OF", raising=False)
+        client = MagicMock()
+        client.list_folders.return_value = ["INBOX"]
+        client.world_as_of = None
+        with patch("courier.__main__._make_client", return_value=client):
+            result = runner.invoke(app, ["folders"])
+        assert result.exit_code == 0
+
+    def test_chain_globals_fail_hard(self, monkeypatch):
+        from courier.__main__ import _apply_global_flags
+
+        monkeypatch.setenv("WORLD_AS_OF", "garbage")
+        with pytest.raises(SystemExit) as excinfo:
+            _apply_global_flags([])
+        assert excinfo.value.code == 1
+
+
+class TestMcpStartupWiring:
+    """The MCP server refuses to start under an invalid bound."""
+
+    @pytest.mark.asyncio
+    async def test_lifespan_refuses_bad_bound(self, monkeypatch):
+        from courier.mcp_server import server_lifespan
+
+        monkeypatch.setenv("WORLD_AS_OF", "garbage")
+        server = MagicMock()
+        server._config = CourierConfig(
+            imap_blocks={
+                "default": ImapBlock(
+                    host="imap.example.com",
+                    port=993,
+                    username="u@example.com",
+                    password="x",
+                )
+            },
+            _default_imap="default",
+        )
+        with pytest.raises(WorldAsOfInvalid):
+            async with server_lifespan(server):
+                pass  # pragma: no cover - startup must refuse first

@@ -23,12 +23,18 @@ from courier.config import (
     load_config,
     load_config_with_warnings,
 )
-from courier.errors import CourierError, FccUnresolved, TransientError
+from courier.errors import (
+    CourierError,
+    FccUnresolved,
+    TransientError,
+    WorldAsOfInvalid,
+)
 from courier.imap_client import ImapClient
 from courier.logging_setup import setup_logging
 from courier.models import extract_links_batch
 from courier.query_parser import render_operator_help
 from courier.watch import watch as watch_folder
+from courier.world_bound import world_as_of
 
 if TYPE_CHECKING:
     from courier.local_cache import MuBackend
@@ -127,6 +133,13 @@ def _global_options(
     _all_imap = all_imap
     level = logging.DEBUG if verbose else logging.WARNING
     setup_logging(level)
+    # WORLD_AS_OF hard-fails at startup: a bound the tool cannot parse
+    # must never degrade into silent unbounded operation.
+    try:
+        world_as_of()
+    except WorldAsOfInvalid as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1)
     if ctx.invoked_subcommand not in ("install-claude-command", "config-sample"):
         nudge = _claude_registration_status()
         if nudge:
@@ -714,6 +727,13 @@ def _apply_global_flags(global_argv: List[str]) -> None:
     _all_imap = all_imap
     level = logging.DEBUG if verbose else logging.WARNING
     setup_logging(level)
+    # Same WORLD_AS_OF hard-failure as _global_options: the chain branch
+    # bypasses typer dispatch, so it validates the bound itself.
+    try:
+        world_as_of()
+    except WorldAsOfInvalid as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1)
 
 
 def _run_chain(
