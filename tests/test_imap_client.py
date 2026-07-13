@@ -1539,7 +1539,9 @@ class TestSearchEmailsDispatch:
         config = self._make_config()
         client = ImapClient(config)
 
-        with patch.object(client, "_search_emails_imap", return_value=[]) as mock_imap:
+        with patch.object(
+            client, "_search_emails_imap", return_value=([], 0)
+        ) as mock_imap:
             result = client.search_emails("from:alice")
 
         mock_imap.assert_called_once_with("from:alice", None, 10, False)
@@ -1596,7 +1598,9 @@ class TestSearchEmailsDispatch:
 
         client = ImapClient(block, local_cache=mu)
 
-        with patch.object(client, "_search_emails_imap", return_value=[]) as mock_imap:
+        with patch.object(
+            client, "_search_emails_imap", return_value=([], 0)
+        ) as mock_imap:
             result = client.search_emails("from:alice")
 
         mock_imap.assert_called_once_with("from:alice", None, 10, False)
@@ -1613,7 +1617,9 @@ class TestSearchEmailsDispatch:
 
         client = ImapClient(block, local_cache=mu)
 
-        with patch.object(client, "_search_emails_imap", return_value=[]) as mock_imap:
+        with patch.object(
+            client, "_search_emails_imap", return_value=([], 0)
+        ) as mock_imap:
             result = client.search_emails("imap:UNSEEN")
 
         mock_imap.assert_called_once()
@@ -1632,7 +1638,9 @@ class TestSearchEmailsDispatch:
 
         client = ImapClient(block, local_cache=mu)
 
-        with patch.object(client, "_search_emails_imap", return_value=[]) as mock_imap:
+        with patch.object(
+            client, "_search_emails_imap", return_value=([], 0)
+        ) as mock_imap:
             result = client.search_emails("from:alice", folder="INBOX")
 
         mock_imap.assert_not_called()
@@ -1649,7 +1657,9 @@ class TestSearchEmailsDispatch:
 
         client = ImapClient(block, local_cache=mu)
 
-        with patch.object(client, "_search_emails_imap", return_value=[]) as mock_imap:
+        with patch.object(
+            client, "_search_emails_imap", return_value=([], 0)
+        ) as mock_imap:
             result = client.search_emails("from:alice", no_cache=True)
 
         mock_imap.assert_called_once_with("from:alice", None, 10, True)
@@ -1667,7 +1677,9 @@ class TestSearchEmailsDispatch:
 
         client = ImapClient(block, local_cache=mu)
 
-        with patch.object(client, "_search_emails_imap", return_value=[]) as mock_imap:
+        with patch.object(
+            client, "_search_emails_imap", return_value=([], 0)
+        ) as mock_imap:
             result = client.search_emails("from:alice")
 
         mock_imap.assert_called_once()
@@ -1801,7 +1813,9 @@ class TestSearchEmailsImapResultShape:
             mock_clientor.return_value.fetch.return_value = {
                 42: {b"INTERNALDATE": datetime(2026, 4, 1, 10, 0, 0)}
             }
-            results = client._search_emails_imap("from:alice", folder="INBOX", limit=10)
+            results, _ = client._search_emails_imap(
+                "from:alice", folder="INBOX", limit=10
+            )
 
         assert len(results) == 1
         assert results[0]["message_id"] == "<m1@example.com>"
@@ -1873,7 +1887,7 @@ class TestSearchEmailsImapResultShape:
             mock_clientor.return_value.fetch.return_value = {
                 42: {b"INTERNALDATE": datetime(2026, 4, 1, 10, 0, 0)}
             }
-            results = client._search_emails_imap("from:alice", folder=None, limit=10)
+            results, _ = client._search_emails_imap("from:alice", folder=None, limit=10)
 
         assert len(results) == 1
         assert results[0]["folder"] == "INBOX"
@@ -1904,7 +1918,7 @@ class TestSearchEmailsImapResultShape:
             mock_clientor.return_value.fetch.return_value = {
                 1: {b"INTERNALDATE": datetime(2026, 4, 1, 10, 0, 0)}
             }
-            results = client._search_emails_imap("from:alice", folder=None, limit=10)
+            results, _ = client._search_emails_imap("from:alice", folder=None, limit=10)
 
         # INBOX result returned; Broken folder skipped
         assert len(results) == 1
@@ -1933,7 +1947,9 @@ class TestSearchEmailsImapResultShape:
             mock_clientor.return_value.fetch.return_value = {
                 42: {b"INTERNALDATE": datetime(2026, 4, 1, 10, 0, 0)}
             }
-            results = client._search_emails_imap("from:alice", folder="INBOX", limit=10)
+            results, _ = client._search_emails_imap(
+                "from:alice", folder="INBOX", limit=10
+            )
 
         assert results[0]["redacted_by"] == "newsletter-rule"
 
@@ -1969,7 +1985,7 @@ class TestSearchEmailsImapResultShape:
                 {10: {b"INTERNALDATE": datetime(2026, 1, 1, 10, 0, 0)}},
                 {20: {b"INTERNALDATE": datetime(2026, 4, 1, 10, 0, 0)}},
             ]
-            results = client._search_emails_imap("from:alice", folder=None, limit=1)
+            results, _ = client._search_emails_imap("from:alice", folder=None, limit=1)
 
         assert len(results) == 1
         assert results[0]["folder"] == "FolderB"

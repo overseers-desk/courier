@@ -6,7 +6,7 @@ import logging
 import os
 import re
 import shlex
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -17,12 +17,14 @@ from typing import (
     Sequence,
     Tuple,
     Union,
+    cast,
 )
 
 import imapclient  # type: ignore[import-untyped]
 
+from courier import world_bound
 from courier.config import ImapBlock
-from courier.errors import FolderNotFound, as_courier_error
+from courier.errors import FolderNotFound, WorldBoundRefused, as_courier_error
 from courier.models import Email
 from courier.oauth2 import get_access_token
 from courier.query_parser import parse_query
@@ -85,6 +87,63 @@ def _as_uid_list(uid: Union[int, Sequence[int]]) -> List[int]:
     return list(uid)
 
 
+# Sentinel default for ImapClient's world_as_of parameter: "read the
+# WORLD_AS_OF environment variable at construction". Distinct from None,
+# which means an explicit unbounded client, so no construction site can
+# silently opt out of the bound by omitting the argument.
+_ENV_BOUND: Any = object()
+
+# IMAP month abbreviations for SEARCH date formatting. An explicit table
+# because %b is locale-dependent and RFC 3501 dates are always English.
+_IMAP_MONTHS = (
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
+)
+
+
+def _imap_date(d: date) -> str:
+    """Format a date as an RFC 3501 SEARCH date (e.g. ``13-Jul-2026``)."""
+    return f"{d.day:02d}-{_IMAP_MONTHS[d.month - 1]}-{d.year}"
+
+
+def _apply_search_bound(
+    criteria: Union[str, List[Any], Tuple[Any, ...]], bound: datetime
+) -> Union[str, List[Any]]:
+    """AND a ``BEFORE`` prefilter onto search criteria (Layer 1, coarse).
+
+    IMAP ``SEARCH BEFORE`` filters on INTERNALDATE at day granularity in
+    the server's idea of the day, so the clause uses the bound's date
+    plus one day: over-inclusive by up to a day plus timezone slack,
+    never under-inclusive. This keeps result sets small; the exact cut
+    is the INTERNALDATE post-filter (Layer 2), never this clause.
+
+    Args:
+        criteria: Resolved search criteria, either a raw string or an
+            imapclient criteria list/tuple.
+        bound: The WORLD_AS_OF instant.
+
+    Returns:
+        The criteria with the BEFORE clause ANDed on. String criteria
+        gain a textual clause (imapclient passes strings through
+        unquoted); list criteria gain two items, with the date object
+        formatted by imapclient itself.
+    """
+    before_day = bound.date() + timedelta(days=1)
+    if isinstance(criteria, str):
+        return f"{criteria} BEFORE {_imap_date(before_day)}"
+    return list(criteria) + ["BEFORE", before_day]
+
+
 class ImapClient:
     """IMAP client for interacting with email servers."""
 
@@ -92,6 +151,7 @@ class ImapClient:
         self,
         block: ImapBlock,
         local_cache: Optional["MuBackend"] = None,
+        world_as_of: Union[Optional[datetime], object] = _ENV_BOUND,
     ):
         """Initialize IMAP client.
 
@@ -102,8 +162,23 @@ class ImapClient:
             local_cache: Optional ``MuBackend`` for serving search calls
                 from a local mu index. When ``None`` or when the block's
                 ``maildir`` is unset, all searches are served by IMAP.
+            world_as_of: The WORLD_AS_OF bound this client enforces on
+                every search and fetch. Defaults to reading the
+                environment variable once, here at construction (so a
+                construction site that does not thread the value still
+                gets the bound, and per-call re-reads never happen);
+                pass an aware ``datetime`` to bind explicitly, or
+                ``None`` for an explicitly unbounded client.
+
+        Raises:
+            WorldAsOfInvalid: When the default is used and the
+                environment variable is set but unparseable or naive.
         """
         self.block = block
+        if world_as_of is _ENV_BOUND:
+            self.world_as_of: Optional[datetime] = world_bound.world_as_of()
+        else:
+            self.world_as_of = cast(Optional[datetime], world_as_of)
         self.allowed_folders = (
             set(block.allowed_folders) if block.allowed_folders else None
         )
@@ -451,6 +526,11 @@ class ImapClient:
             if criteria.lower() in criteria_map:
                 resolved_criteria = criteria_map[criteria.lower()]
 
+        if self.world_as_of is not None:
+            # Layer 1: every search the client issues gains the coarse
+            # server-side BEFORE prefilter; Layer 2 post-filters exactly.
+            resolved_criteria = _apply_search_bound(resolved_criteria, self.world_as_of)
+
         results = self._client_or_raise().search(resolved_criteria, charset=charset)
         self._update_activity()
         logger.debug(f"Search returned {len(results)} results")
@@ -469,6 +549,53 @@ class ImapClient:
         email_obj = Email.from_message(message, uid=uid, folder=folder)
         email_obj.flags = flags
         return email_obj
+
+    def _after_bound(self, dt: Optional[datetime]) -> bool:
+        """Whether a message date falls after the WORLD_AS_OF bound.
+
+        The shared Layer 2 predicate: result-assembly paths drop
+        messages for which this is ``True``. Always ``False`` when the
+        client is unbounded, when the date is unavailable (an undated
+        message is not "dated after the bound"), or when the value is
+        not a ``datetime`` (defensive against server-library quirks).
+
+        Args:
+            dt: The message's INTERNALDATE, or its Date-header date on
+                paths without one (disk cache, mu index).
+
+        Returns:
+            ``True`` when the message must not leave the tool.
+        """
+        if self.world_as_of is None or not isinstance(dt, datetime):
+            return False
+        return world_bound.after_bound(dt, self.world_as_of)
+
+    def _refuse_read_after_bound(self, dt: Optional[datetime]) -> None:
+        """Refuse a direct read of a message dated after the bound (Layer 2).
+
+        Args:
+            dt: The message's INTERNALDATE, or its Date-header date on
+                paths without one (disk cache).
+
+        Raises:
+            WorldBoundRefused: When the bound is set and *dt* is after
+                it, with a message naming both instants.
+        """
+        bound = self.world_as_of
+        if bound is None or dt is None or not self._after_bound(dt):
+            return
+        raise WorldBoundRefused(world_bound.refusal_message(dt, bound))
+
+    def _bound_fetch_items(self, items: List[str]) -> List[str]:
+        """Add INTERNALDATE to fetch items when the bound is set.
+
+        Layer 2 needs the INTERNALDATE to judge each message; it is
+        fetched only under a bound so unbounded operation stays
+        byte-identical on the wire.
+        """
+        if self.world_as_of is not None:
+            return items + ["INTERNALDATE"]
+        return items
 
     def _disk_cache_eligible(self, no_cache: bool = False) -> bool:
         """Whether a read-shaped call may be served from the local maildir.
@@ -525,6 +652,9 @@ class ImapClient:
         if self._disk_cache_eligible(no_cache):
             disk_email = self._fetch_email_disk(uid, folder)
             if disk_email is not None:
+                # Disk files carry no INTERNALDATE; the Date-header date
+                # judges the bound, as on the mu-index path.
+                self._refuse_read_after_bound(disk_email.date)
                 return self._apply_redact(disk_email)
 
         self.ensure_connected()
@@ -532,7 +662,9 @@ class ImapClient:
 
         # Fetch message data with BODY.PEEK[] to get all parts including headers
         # Using BODY.PEEK[] instead of RFC822 to avoid setting the \Seen flag
-        result = self._client_or_raise().fetch([uid], ["BODY.PEEK[]", "FLAGS"])
+        result = self._client_or_raise().fetch(
+            [uid], self._bound_fetch_items(["BODY.PEEK[]", "FLAGS"])
+        )
 
         if not result or uid not in result:
             logger.warning(f"Message with UID {uid} not found in folder {folder}")
@@ -542,9 +674,14 @@ class ImapClient:
         message_data = result[uid]
         raw_message = message_data[b"BODY[]"]
         flags = message_data[b"FLAGS"]
+        internal_date = message_data.get(b"INTERNALDATE")
 
         str_flags = [f.decode("utf-8") if isinstance(f, bytes) else f for f in flags]
         email_obj = self._email_from_bytes(raw_message, uid, folder, str_flags)
+
+        self._refuse_read_after_bound(
+            internal_date if internal_date is not None else email_obj.date
+        )
 
         self._update_activity()
         return self._apply_redact(email_obj)
@@ -653,6 +790,10 @@ class ImapClient:
             for uid in uids:
                 disk_email = self._fetch_email_disk(uid, folder)
                 if disk_email is not None:
+                    if self._after_bound(disk_email.date):
+                        # Dated after WORLD_AS_OF: dropped from batch
+                        # assembly (direct reads refuse instead).
+                        continue
                     emails[uid] = self._apply_redact(disk_email)
                 else:
                     missing.append(uid)
@@ -664,15 +805,22 @@ class ImapClient:
 
         self.ensure_connected()
         self.select_folder(folder, readonly=True)
-        result = self._client_or_raise().fetch(missing, ["BODY.PEEK[]", "FLAGS"])
+        result = self._client_or_raise().fetch(
+            missing, self._bound_fetch_items(["BODY.PEEK[]", "FLAGS"])
+        )
 
         for uid, message_data in result.items():
             raw_message = message_data[b"BODY[]"]
             flags = message_data[b"FLAGS"]
+            internal_date = message_data.get(b"INTERNALDATE")
             str_flags = [
                 f.decode("utf-8") if isinstance(f, bytes) else f for f in flags
             ]
             email_obj = self._email_from_bytes(raw_message, uid, folder, str_flags)
+            if self._after_bound(
+                internal_date if internal_date is not None else email_obj.date
+            ):
+                continue
             emails[uid] = self._apply_redact(email_obj)
 
         self._update_activity()
@@ -1265,6 +1413,10 @@ class ImapClient:
         flags = data[b"FLAGS"]
         internal_date = data.get(b"INTERNALDATE")
 
+        self._refuse_read_after_bound(
+            internal_date if isinstance(internal_date, datetime) else None
+        )
+
         # Extract subject for logging/display
         msg = email.message_from_bytes(raw_message)
         subject = msg.get("Subject", "(no subject)")
@@ -1364,7 +1516,13 @@ class ImapClient:
             ValueError: Propagated from ``parse_query`` on malformed queries.
         """
         if self._should_use_gmail_raw(query):
-            return [b"X-GM-RAW", self._canonicalize_gmail_raw(query.strip())]
+            raw_query = self._canonicalize_gmail_raw(query.strip())
+            if self.world_as_of is not None:
+                # Gmail's before: accepts epoch seconds — a second-precision
+                # Layer 1, tighter than the day-granular SEARCH BEFORE that
+                # is also ANDed on. Layer 2 still decides.
+                raw_query = f"{raw_query} before:{int(self.world_as_of.timestamp())}"
+            return [b"X-GM-RAW", raw_query]
         return parse_query(query)
 
     def _canonicalize_gmail_raw(self, query: str) -> str:
@@ -1476,7 +1634,9 @@ class ImapClient:
             (``"local"`` or ``"remote"``), ``indexed_at`` (ISO 8601 or
             ``None``), and ``fell_back_reason`` (``None`` or one of
             ``"no_cache"``, ``"mu_missing"``, ``"db_missing"``,
-            ``"stale"``, ``"untranslatable"``, ``"exception"``).
+            ``"stale"``, ``"untranslatable"``, ``"exception"``).  When
+            the client is bounded, ``provenance`` additionally carries a
+            ``world_as_of`` block (see :meth:`_world_as_of_provenance`).
 
         Raises:
             ValueError: On malformed queries.
@@ -1485,26 +1645,102 @@ class ImapClient:
             query, folder, limit, no_cache
         )
         if local_results is not None:
-            return {
-                "results": local_results,
-                "provenance": {
-                    "source": "local",
-                    "indexed_at": (
-                        self.local_cache.index_mtime_iso()
-                        if self.local_cache is not None
-                        else None
-                    ),
-                    "fell_back_reason": None,
-                },
+            dropped_after_bound = 0
+            if self.world_as_of is not None:
+                local_results, dropped_after_bound = self._drop_results_after_bound(
+                    local_results
+                )
+            provenance: Dict[str, Any] = {
+                "source": "local",
+                "indexed_at": (
+                    self.local_cache.index_mtime_iso()
+                    if self.local_cache is not None
+                    else None
+                ),
+                "fell_back_reason": None,
             }
-        return {
-            "results": self._search_emails_imap(query, folder, limit, no_cache),
-            "provenance": {
-                "source": "remote",
-                "indexed_at": None,
-                "fell_back_reason": fell_back_reason,
-            },
+            if self.world_as_of is not None:
+                provenance["world_as_of"] = self._world_as_of_provenance(
+                    dropped_after_bound, date_source="mu_index"
+                )
+            return {"results": local_results, "provenance": provenance}
+        imap_results, dropped_after_bound = self._search_emails_imap(
+            query, folder, limit, no_cache
+        )
+        provenance = {
+            "source": "remote",
+            "indexed_at": None,
+            "fell_back_reason": fell_back_reason,
         }
+        if self.world_as_of is not None:
+            provenance["world_as_of"] = self._world_as_of_provenance(
+                dropped_after_bound, date_source="internaldate"
+            )
+        return {"results": imap_results, "provenance": provenance}
+
+    def _world_as_of_provenance(
+        self, dropped_after_bound: int, date_source: str
+    ) -> Dict[str, Any]:
+        """The provenance block recording that this result was bounded.
+
+        ``dropped_after_bound`` makes the filtering auditable rather
+        than invisible (a replay harness can assert it);
+        ``current_state_fields`` names the fields IMAP keeps no history
+        for, served as they now stand; ``date_source`` names the date
+        the bound compared against (``"internaldate"`` on the IMAP
+        path, ``"mu_index"`` when the local cache served the call, whose
+        indexed date derives from the Date header).
+
+        Args:
+            dropped_after_bound: How many hits Layer 2 dropped.
+            date_source: ``"internaldate"`` or ``"mu_index"``.
+
+        Returns:
+            The ``world_as_of`` provenance dict.
+
+        Raises:
+            ValueError: If called on an unbounded client.
+        """
+        if self.world_as_of is None:
+            raise ValueError("client is not bounded by WORLD_AS_OF")
+        return {
+            "bound": self.world_as_of.isoformat(),
+            "dropped_after_bound": dropped_after_bound,
+            "current_state_fields": ["flags", "folder"],
+            "date_source": date_source,
+        }
+
+    def _drop_results_after_bound(
+        self, results: List[Dict[str, Any]]
+    ) -> Tuple[List[Dict[str, Any]], int]:
+        """Exact post-filter over assembled result dicts (Layer 2).
+
+        Used on the local-cache path, whose date field is the indexed
+        (Date-header) date rendered as ISO 8601. Undated or unparseable
+        dates are kept: an undated message is not "dated after the
+        bound".
+
+        Args:
+            results: Search result dicts carrying a ``date`` ISO string.
+
+        Returns:
+            ``(kept_results, dropped_count)``.
+        """
+        kept: List[Dict[str, Any]] = []
+        dropped = 0
+        for result in results:
+            iso = result.get("date")
+            dt: Optional[datetime] = None
+            if isinstance(iso, str):
+                try:
+                    dt = datetime.fromisoformat(iso)
+                except ValueError:
+                    dt = None
+            if self._after_bound(dt):
+                dropped += 1
+                continue
+            kept.append(result)
+        return kept, dropped
 
     def _try_local_cache_search(
         self,
@@ -1556,7 +1792,7 @@ class ImapClient:
         folder: Optional[str] = None,
         limit: int = 10,
         no_cache: bool = False,
-    ) -> List[Dict[str, Any]]:
+    ) -> Tuple[List[Dict[str, Any]], int]:
         """Run a search against the IMAP server (no local-cache attempt).
 
         Args:
@@ -1568,11 +1804,16 @@ class ImapClient:
                 when the caller forced ``--no-cache``.
 
         Returns:
-            List of result dicts sorted by date descending, each with
-            keys: ``uid``, ``folder``, ``from``, ``to``, ``subject``,
+            ``(results, dropped_after_bound)``.  ``results`` is a list
+            of result dicts sorted by date descending, each with keys:
+            ``uid``, ``folder``, ``from``, ``to``, ``subject``,
             ``date``, ``flags``, ``has_attachments``, ``message_id``.
             ``message_id`` matches the field already emitted by the
             local-cache path in ``local_cache.py``.
+            ``dropped_after_bound`` counts hits whose INTERNALDATE fell
+            after the WORLD_AS_OF bound; the drop happens before the
+            limit cut so a limit-truncated page cannot come back
+            artificially empty.
 
         Raises:
             ValueError: On malformed queries.
@@ -1615,8 +1856,12 @@ class ImapClient:
                 )
                 folders_to_search = self.list_folders()
 
-        # Pass 1: collect (uid, folder, date) using a lightweight fetch
+        # Pass 1: collect (uid, folder, date) using a lightweight fetch.
+        # The exact WORLD_AS_OF cut happens here, on the fetched
+        # INTERNALDATE and before the limit cut: SEARCH BEFORE (Layer 1)
+        # is day-granular and may leak same-day post-bound messages.
         candidates: List[tuple] = []
+        dropped_after_bound = 0
         for current_folder in folders_to_search:
             try:
                 uids = self.search(search_spec, folder=current_folder)
@@ -1626,6 +1871,9 @@ class ImapClient:
                 date_data = self._client_or_raise().fetch(uids, ["INTERNALDATE"])
                 for uid, data in date_data.items():
                     dt = data.get(b"INTERNALDATE")
+                    if self._after_bound(dt):
+                        dropped_after_bound += 1
+                        continue
                     iso = dt.isoformat() if dt else "0"
                     candidates.append((iso, uid, current_folder))
             except Exception as e:
@@ -1666,7 +1914,7 @@ class ImapClient:
                 logger.warning(f"Error fetching from folder {current_folder}: {e}")
 
         results.sort(key=lambda x: x.get("date") or "0", reverse=True)
-        return results
+        return results, dropped_after_bound
 
 
 def copy_email_between_imap_blocks(

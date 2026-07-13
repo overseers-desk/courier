@@ -28,6 +28,7 @@ from courier.errors import (
     FccUnresolved,
     TransientError,
     WorldAsOfInvalid,
+    WorldBoundRefused,
 )
 from courier.imap_client import ImapClient
 from courier.logging_setup import setup_logging
@@ -325,7 +326,10 @@ def _fetch_email_result(
     Extracted so both the standalone ``read`` command and the chain executor
     share identical output structure.
     """
-    email_obj = client.fetch_email(uid, folder, no_cache=no_cache)
+    try:
+        email_obj = client.fetch_email(uid, folder, no_cache=no_cache)
+    except WorldBoundRefused as exc:
+        return {"error": str(exc)}
     if not email_obj:
         return {"error": f"Email UID {uid} not found in {folder}"}
     result: Dict[str, Any] = {
@@ -3287,7 +3291,13 @@ def main() -> None:
         _apply_global_flags(global_argv)
         sys.exit(_run_chain(verbs, output_format, chain_defaults))
     _print_eager_warnings_if_relevant()
-    app()
+    try:
+        app()
+    except WorldBoundRefused as exc:
+        # One choke point for every verb whose read path refuses under
+        # WORLD_AS_OF: a clear message and exit 1, not a traceback.
+        typer.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
