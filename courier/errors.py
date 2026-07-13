@@ -40,6 +40,22 @@ class CapabilityMissing(PermanentError):
     """The server lacks a capability the operation requires."""
 
 
+class WorldAsOfInvalid(CourierError):
+    """WORLD_AS_OF is set but unparseable or lacks a timezone offset.
+
+    Raised at process start (CLI global options, MCP server lifespan) so
+    no partial output escapes under a bound the tool cannot honour.
+    """
+
+
+class WorldBoundRefused(PermanentError):
+    """The operation would surface data dated after the WORLD_AS_OF bound.
+
+    Raised on a direct read of a message dated after the bound, and by
+    ``watch`` (a live tail of the future is meaningless under a bound).
+    """
+
+
 class FccUnresolved(PermanentError):
     """No usable Sent folder could be resolved for the FCC step."""
 
