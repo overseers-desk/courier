@@ -402,3 +402,65 @@ class TestRelativeTermsAnchorToBound:
         imap_client.search.assert_called_with(
             ["SINCE", date(2026, 7, 5)], folder="INBOX"
         )
+
+
+class TestLocalCachePathBoundedLikeImap:
+    """The mu-cache path is bounded the same as the IMAP path."""
+
+    def _local_client(self, results):
+        from courier.local_cache import EligibilityResult
+
+        mu = MagicMock()
+        mu.is_eligible.return_value = EligibilityResult(True)
+        mu.search.return_value = results
+        mu.index_mtime_iso.return_value = "2026-07-12T00:00:00+00:00"
+        return (
+            ImapClient(
+                _block(maildir="/var/local/mail/work"),
+                local_cache=mu,
+                world_as_of=BOUND,
+            ),
+            mu,
+        )
+
+    def _result(self, message_id: str, iso_date: str) -> dict:
+        return {
+            "message_id": message_id,
+            "path": f"/var/local/mail/work/cur/{message_id}",
+            "folder": "INBOX",
+            "from": "Alice <a@b.com>",
+            "to": ["c@d.com"],
+            "subject": "Hi",
+            "date": iso_date,
+            "flags": ["seen"],
+            "has_attachments": False,
+        }
+
+    def test_bound_threaded_to_backend(self):
+        client, mu = self._local_client([])
+        client.search_emails("from:alice")
+        mu.search.assert_called_once_with(
+            client.block, "from:alice", 10, None, world_as_of=BOUND
+        )
+
+    def test_post_filter_drops_and_counts(self):
+        client, _ = self._local_client(
+            [
+                self._result("keep", "2026-07-12T16:00:00+10:00"),
+                self._result("drop", "2026-07-12T18:00:00+10:00"),
+            ]
+        )
+        result = client.search_emails("from:alice")
+        assert [r["message_id"] for r in result["results"]] == ["keep"]
+        prov = result["provenance"]["world_as_of"]
+        assert prov["bound"] == BOUND_STR
+        assert prov["dropped_after_bound"] == 1
+        assert prov["date_source"] == "mu_index"
+
+    def test_undated_results_are_kept(self):
+        record = self._result("undated", "2026-07-12T16:00:00+10:00")
+        record["date"] = None
+        client, _ = self._local_client([record])
+        result = client.search_emails("from:alice")
+        assert len(result["results"]) == 1
+        assert result["provenance"]["world_as_of"]["dropped_after_bound"] == 0

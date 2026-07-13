@@ -523,3 +523,60 @@ class TestScopeQuery:
             MuBackend._scope_query("/var/local/mail/acct", "", "[Gmail]/Sent Mail")
             == 'maildir:"/acct/[Gmail]/Sent Mail"'
         )
+
+
+class TestWorldAsOfBoundsMuQuery:
+    """Under WORLD_AS_OF the mu query gains a date:.. upper bound."""
+
+    BOUND = datetime.fromisoformat("2026-07-12T17:07:00+10:00")
+
+    def _backend(self, tmp_path) -> MuBackend:
+        muhome = _make_xapian_dir(tmp_path)
+        cfg = LocalCacheConfig(mu_index=muhome, max_staleness_seconds=86400)
+        return MuBackend(cfg)
+
+    def _capture_query(self, tmp_path, query: str) -> str:
+        backend = self._backend(tmp_path)
+        account_cfg = _make_block("/tmp/foo/work")
+        captured: Dict[str, Any] = {}
+
+        def fake_run(argv, **kwargs):
+            captured["argv"] = argv
+            return subprocess.CompletedProcess(
+                args=argv, returncode=0, stdout="[]", stderr=""
+            )
+
+        with patch("courier.local_cache.subprocess.run", side_effect=fake_run):
+            backend.search(account_cfg, query, limit=10, world_as_of=self.BOUND)
+        return captured["argv"][-1]
+
+    def test_query_gains_date_upper_bound(self, tmp_path):
+        expected_stamp = self.BOUND.astimezone().strftime("%Y%m%dT%H%M%S")
+        scoped = self._capture_query(tmp_path, "from:alice")
+        assert (
+            scoped == f"((from:alice) AND date:..{expected_stamp}) AND maildir:/work/"
+        )
+
+    def test_empty_query_is_bound_alone(self, tmp_path):
+        expected_stamp = self.BOUND.astimezone().strftime("%Y%m%dT%H%M%S")
+        scoped = self._capture_query(tmp_path, "")
+        assert scoped == f"(date:..{expected_stamp}) AND maildir:/work/"
+
+    def test_relative_terms_resolve_against_bound(self, tmp_path):
+        scoped = self._capture_query(tmp_path, "newer:7d")
+        assert "date:20260705.." in scoped
+
+    def test_unbounded_query_unchanged(self, tmp_path):
+        backend = self._backend(tmp_path)
+        account_cfg = _make_block("/tmp/foo/work")
+        captured: Dict[str, Any] = {}
+
+        def fake_run(argv, **kwargs):
+            captured["argv"] = argv
+            return subprocess.CompletedProcess(
+                args=argv, returncode=0, stdout="[]", stderr=""
+            )
+
+        with patch("courier.local_cache.subprocess.run", side_effect=fake_run):
+            backend.search(account_cfg, "from:alice", limit=10)
+        assert captured["argv"][-1] == "(from:alice) AND maildir:/work/"

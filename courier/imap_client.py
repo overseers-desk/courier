@@ -1783,7 +1783,9 @@ class ImapClient:
         if not eligibility.eligible:
             return None, eligibility.reason
         try:
-            results = self.local_cache.search(self.block, query, limit, folder)
+            results = self.local_cache.search(
+                self.block, query, limit, folder, world_as_of=self.world_as_of
+            )
         except UntranslatableQuery:
             return None, "untranslatable"
         except (MuFailure, ValueError) as e:

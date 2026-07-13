@@ -184,6 +184,7 @@ class MuBackend:
         query: str,
         limit: int,
         folder: Optional[str] = None,
+        world_as_of: Optional[datetime] = None,
     ) -> List[Dict[str, Any]]:
         """Run a search against the local mu store, scoped to the block.
 
@@ -195,6 +196,12 @@ class MuBackend:
             folder: When given, narrow the search to that one IMAP folder
                 (exact, non-recursive); when ``None``, search the whole
                 block.
+            world_as_of: When set, the WORLD_AS_OF bound: relative terms
+                resolve against it, and the mu query gains a
+                ``date:..<bound>`` clause (Layer 1).  Note the semantic
+                caveat: mu indexes the Date header, not INTERNALDATE, so
+                the caller flags results with ``date_source: "mu_index"``
+                and post-filters on the result's date field (Layer 2).
 
         Returns:
             A list of result dicts mirroring the IMAP search shape minus
@@ -215,7 +222,12 @@ class MuBackend:
         if not home:
             raise MuFailure("muhome could not be resolved")
 
-        translated = parse_query_to_mu(query)
+        translated = parse_query_to_mu(query, now=world_as_of)
+        if world_as_of is not None:
+            # Layer 1: bound the indexed date at second precision, in
+            # local time (mu evaluates date: terms in the local zone).
+            clause = f"date:..{world_as_of.astimezone().strftime('%Y%m%dT%H%M%S')}"
+            translated = f"({translated}) AND {clause}" if translated else clause
         scoped = self._scope_query(imap_block.maildir, translated, folder)
 
         # ``--muhome`` is parsed by ``mu find`` (the subcommand), not the

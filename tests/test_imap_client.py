@@ -1582,7 +1582,9 @@ class TestSearchEmailsDispatch:
             result = client.search_emails("from:alice")
 
         mock_imap.assert_not_called()
-        mu.search.assert_called_once_with(block, "from:alice", 10, None)
+        mu.search.assert_called_once_with(
+            block, "from:alice", 10, None, world_as_of=None
+        )
         assert result["results"] == canned
         assert result["provenance"]["source"] == "local"
         assert result["provenance"]["indexed_at"] == "2025-04-01T12:00:00+00:00"
@@ -1644,7 +1646,9 @@ class TestSearchEmailsDispatch:
             result = client.search_emails("from:alice", folder="INBOX")
 
         mock_imap.assert_not_called()
-        mu.search.assert_called_once_with(block, "from:alice", 10, "INBOX")
+        mu.search.assert_called_once_with(
+            block, "from:alice", 10, "INBOX", world_as_of=None
+        )
         assert result["provenance"]["source"] == "local"
         assert result["provenance"]["fell_back_reason"] is None
 
