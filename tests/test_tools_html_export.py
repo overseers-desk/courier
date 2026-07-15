@@ -590,6 +590,35 @@ class TestExport:
         assert "Success" in result
         assert nested.read_bytes() == raw_bytes
 
+    @pytest.mark.asyncio
+    async def test_export_raw_refuses_redacted_message(
+        self, tools, mock_client, mock_context, tmp_path
+    ):
+        """A policy-withheld message must surface the redaction, not a
+        0-byte 'Success' (issue #61): no file is written and the rule
+        is named."""
+        mock_client.fetch_raw.return_value = {
+            "raw": b"",
+            "flags": (),
+            "date": None,
+            "subject": "[redacted by rule private]",
+            "redacted_by": "private",
+        }
+        out_file = tmp_path / "withheld.eml"
+
+        result = await tools["export"](
+            folder="INBOX",
+            uid=7,
+            save_path=str(out_file),
+            ctx=mock_context,
+            raw=True,
+        )
+
+        assert result.startswith("Error")
+        assert "redact" in result
+        assert "private" in result
+        assert not out_file.exists()
+
 
 class TestExportRawCLI:
     """Tests for `courier export --raw`."""
@@ -692,3 +721,80 @@ class TestExportRawCLI:
             )
 
         assert result.exit_code != 0
+
+    def test_raw_refuses_redacted_message(self, tmp_path):
+        """CLI export --raw on a policy-withheld message exits 1 naming
+        the redaction; nothing is written or streamed (issue #61)."""
+        from typer.testing import CliRunner
+
+        from courier.__main__ import app
+
+        runner = CliRunner()
+        client = MagicMock()
+        client.fetch_raw.return_value = {
+            "raw": b"",
+            "flags": (),
+            "date": None,
+            "subject": "[redacted by rule private]",
+            "redacted_by": "private",
+        }
+        out_file = tmp_path / "withheld.eml"
+
+        with patch("courier.__main__._make_client", return_value=client):
+            result = runner.invoke(
+                app,
+                [
+                    "--config",
+                    "dummy.toml",
+                    "export",
+                    "-f",
+                    "INBOX",
+                    "-u",
+                    "7",
+                    "-o",
+                    str(out_file),
+                    "--raw",
+                ],
+            )
+
+        assert result.exit_code == 1
+        assert "redact" in result.stderr
+        assert "private" in result.stderr
+        assert not out_file.exists()
+
+    def test_raw_stdout_refuses_redacted_message(self):
+        """The stdout streaming form refuses too: no empty stream with
+        exit 0."""
+        from typer.testing import CliRunner
+
+        from courier.__main__ import app
+
+        runner = CliRunner()
+        client = MagicMock()
+        client.fetch_raw.return_value = {
+            "raw": b"",
+            "flags": (),
+            "date": None,
+            "subject": "[redacted by rule private]",
+            "redacted_by": "private",
+        }
+
+        with patch("courier.__main__._make_client", return_value=client):
+            result = runner.invoke(
+                app,
+                [
+                    "--config",
+                    "dummy.toml",
+                    "export",
+                    "-f",
+                    "INBOX",
+                    "-u",
+                    "7",
+                    "-o",
+                    "-",
+                    "--raw",
+                ],
+            )
+
+        assert result.exit_code == 1
+        assert result.stdout == ""

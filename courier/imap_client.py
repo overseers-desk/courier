@@ -2263,6 +2263,29 @@ def copy_email_between_imap_blocks(
             "error": f"UID {uid} not found in {from_folder}",
         }
 
+    redacted_by = raw_data.get("redacted_by")
+    if redacted_by:
+        # fetch_raw returned the redacted placeholder (empty bytes,
+        # rule marker): copying would APPEND an empty payload as a
+        # success, and move=True would then expunge the only real
+        # copy. Refuse before the APPEND and before any source
+        # delete (issue #61).
+        logger.warning(
+            f"Refusing cross-account copy of UID {uid} in {from_folder}: "
+            f"redact policy withholds the raw message (rule {redacted_by})"
+        )
+        return {
+            "success": False,
+            "subject": raw_data.get("subject", ""),
+            "new_uid": None,
+            "moved": False,
+            "error": (
+                f"UID {uid} in {from_folder} is withheld by redact policy "
+                f"(rule {redacted_by}); nothing was appended and the "
+                "source was not deleted"
+            ),
+        }
+
     flags: tuple = ()
     if preserve_flags:
         raw_flags = raw_data["flags"]

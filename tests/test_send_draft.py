@@ -134,6 +134,30 @@ class TestSendDraftHappyPath:
         client.delete_email.assert_not_called()
 
 
+class TestSendDraftRedacted:
+    def test_refuses_redacted_draft(self):
+        """A draft withheld by redact policy must not be sent as an
+        empty message or deleted: fetch_raw's redacted shape refuses
+        before any SMTP or delete leg (same class as issue #61)."""
+        cfg = _cfg_with_identities()
+        client = _client_with_draft()
+        client.fetch_raw.return_value = {
+            "raw": b"",
+            "subject": "[redacted by rule private]",
+            "redacted_by": "private",
+        }
+        with (
+            patch("courier.__main__.load_config", return_value=cfg),
+            patch("courier.__main__._make_client", return_value=client),
+            patch("courier.smtp_transport.send") as send_mock,
+        ):
+            result = runner.invoke(app, ["send-draft", "-f", "Drafts", "-u", "42"])
+        assert result.exit_code == 1
+        assert "redact" in result.stderr
+        send_mock.assert_not_called()
+        client.delete_email.assert_not_called()
+
+
 class TestSendDraftUnknownFrom:
     def test_hard_error_on_unknown_from(self):
         cfg = _cfg_with_identities()

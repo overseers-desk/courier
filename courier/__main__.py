@@ -2286,10 +2286,22 @@ def save(
 
 
 def _export_raw(client: ImapClient, folder: str, uid: int, save_path: str) -> None:
-    """Export raw RFC 822 bytes to *save_path* (or stdout if ``-``)."""
+    """Export raw RFC 822 bytes to *save_path* (or stdout if ``-``).
+
+    A message withheld by the block's redact policy is refused with
+    exit 1 naming the rule: a 0-byte export with exit 0 would report
+    the message as empty rather than withheld (issue #61).
+    """
     fetched = client.fetch_raw(uid, folder)
     if not fetched:
         typer.echo(f"Email UID {uid} not found in {folder}", err=True)
+        raise typer.Exit(1)
+    if fetched.get("redacted_by"):
+        typer.echo(
+            f"Error: message UID {uid} in {folder} is withheld by redact "
+            f"policy (rule {fetched['redacted_by']}); raw export refused",
+            err=True,
+        )
         raise typer.Exit(1)
 
     raw_bytes = fetched["raw"]
@@ -3083,6 +3095,16 @@ def send_draft(
         fetched = client.fetch_raw(uid, folder)
         if not fetched:
             typer.echo(f"Error: draft UID {uid} not found in {folder}", err=True)
+            raise typer.Exit(1)
+        if fetched.get("redacted_by"):
+            # fetch_raw returned the redacted placeholder (empty
+            # bytes): sending it would deliver an empty message and
+            # then delete the draft. Same refusal class as issue #61.
+            typer.echo(
+                f"Error: draft UID {uid} in {folder} is withheld by redact "
+                f"policy (rule {fetched['redacted_by']}); refusing to send it",
+                err=True,
+            )
             raise typer.Exit(1)
 
         msg = BytesParser().parsebytes(fetched["raw"])

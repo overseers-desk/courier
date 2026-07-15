@@ -584,6 +584,16 @@ def register_tools(mcp: FastMCP, imap_client: ImapClient) -> None:
                 fetched = client.fetch_raw(uid, folder)
                 if not fetched:
                     return f"Error: Email with UID {uid} not found in folder {folder}"
+                if fetched.get("redacted_by"):
+                    # fetch_raw returned the redacted placeholder: a
+                    # 0-byte file reported as "Success" would tell the
+                    # caller the message is empty, not that policy
+                    # withheld it (issue #61).
+                    return (
+                        f"Error: message UID {uid} in {folder} is withheld "
+                        f"by redact policy (rule {fetched['redacted_by']}); "
+                        "raw export refused"
+                    )
                 raw_bytes = fetched["raw"]
                 dir_part = os.path.dirname(save_path)
                 if dir_part:

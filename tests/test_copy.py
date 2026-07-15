@@ -295,6 +295,41 @@ class TestCopyEmailBetweenAccounts:
         call_kwargs = dest.append_raw.call_args
         assert call_kwargs.kwargs["flags"] == ("\\Seen",)
 
+    def _redact_source(self, source):
+        """Make the source serve fetch_raw's redacted shape (issue #61)."""
+        source.fetch_raw.return_value = {
+            "raw": b"",
+            "flags": (b"\\Seen",),
+            "date": datetime(2026, 3, 1, 12, 0, 0),
+            "subject": "[redacted by rule private]",
+            "redacted_by": "private",
+        }
+        return source
+
+    def test_copy_refuses_redacted_source_before_append(self, source, dest):
+        """A policy-withheld message must never be APPENDed as an empty
+        payload and reported as a success (issue #61)."""
+        self._redact_source(source)
+
+        result = copy_email_between_imap_blocks(source, dest, 42, "INBOX")
+
+        assert result["success"] is False
+        assert "redact" in result["error"]
+        assert "private" in result["error"]
+        dest.append_raw.assert_not_called()
+
+    def test_copy_with_move_never_deletes_redacted_source(self, source, dest):
+        """move=True on a redacted source must not expunge the only
+        real copy: the refusal happens before any destructive leg."""
+        self._redact_source(source)
+
+        result = copy_email_between_imap_blocks(source, dest, 42, "INBOX", move=True)
+
+        assert result["success"] is False
+        assert result["moved"] is False
+        dest.append_raw.assert_not_called()
+        source.delete_email.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # D. MCP copy tool
