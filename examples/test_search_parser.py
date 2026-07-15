@@ -1,68 +1,73 @@
 #!/usr/bin/env python3
 """
-Quick test to verify the Gmail-style search query parser works correctly.
-This script tests parsing without requiring an actual IMAP connection.
+Quick check that the Gmail-style query grammar and the generic IMAP
+emitter work correctly, without requiring an IMAP connection.
 """
 
-from courier.query_parser import parse_query
+from datetime import datetime
+
+from courier.query import parse
+from courier.query.emit_imap import emit
 
 
 def test_example_queries():
-    """Test example queries from the documentation."""
+    """Run example queries from the documentation through parse+emit."""
 
-    print("Testing Gmail-Style Query Parser")
+    print("Testing Gmail-Style Query Translation")
     print("=" * 80)
+
+    now = datetime.now()
 
     test_cases = [
         {
-            "name": "Bare words → TEXT search",
+            "name": "Bare words, one TEXT term each",
             "query": "meeting notes",
-            "expected": ["TEXT", "meeting notes"],
+            "expected": [b"TEXT", b"meeting", b"TEXT", b"notes"],
         },
         {
             "name": "from: prefix",
             "query": "from:alice@example.com",
-            "expected": ["FROM", "alice@example.com"],
+            "expected": [b"FROM", b"alice@example.com"],
         },
         {
             "name": "Combined prefixes",
             "query": "from:alice subject:invoice is:unread",
-            "expected": ["FROM", "alice", "SUBJECT", "invoice", "UNSEEN"],
+            "expected": [b"FROM", b"alice", b"SUBJECT", b"invoice", b"UNSEEN"],
         },
         {
             "name": "OR operator",
             "query": "from:alice or from:bob",
-            "expected": ["OR", "FROM", "alice", "FROM", "bob"],
+            "expected": [b"OR", b"FROM", b"alice", b"FROM", b"bob"],
         },
         {
-            "name": "Chained OR",
+            "name": "Chained OR right-folds to binary pairs",
             "query": "from:a or from:b or from:c",
-            "expected": ["OR", "FROM", "a", "OR", "FROM", "b", "FROM", "c"],
+            "expected": [b"OR", b"FROM", b"a", b"OR", b"FROM", b"b", b"FROM", b"c"],
+        },
+        {
+            "name": "Parentheses group for real (issue #58)",
+            "query": "after:2026-07-13 (ticket OR booking)",
+            "expected_length": 7,
         },
         {
             "name": "Negation with dash",
             "query": "-from:alice",
-            "expected": ["NOT", "FROM", "alice"],
+            "expected": [b"NOT", b"FROM", b"alice"],
         },
         {
             "name": "Standalone keyword: all",
             "query": "all",
-            "expected_type": str,
+            "expected": [b"ALL"],
         },
         {
-            "name": "Empty query → ALL",
+            "name": "Empty query matches all",
             "query": "",
-            "expected_type": str,
+            "expected": [b"ALL"],
         },
         {
             "name": "Raw IMAP passthrough",
             "query": 'imap:OR TEXT "Edinburgh" TEXT "Berlin"',
-            "expected": ["OR", "TEXT", "Edinburgh", "TEXT", "Berlin"],
-        },
-        {
-            "name": "Complex raw IMAP travel query",
-            "query": 'imap:OR TEXT "Edinburgh" OR TEXT "Berlin" OR TEXT "Munich" OR TEXT "Vienna" OR TEXT "Warsaw" OR TEXT "itinerary" OR TEXT "booking confirmation" OR TEXT "e-ticket" OR TEXT "reservation" OR TEXT "receipt" OR TEXT "ticket" TEXT "order"',
-            "expected_length": 35,
+            "expected": [b"OR", b"TEXT", b"Edinburgh", b"TEXT", b"Berlin"],
         },
     ]
 
@@ -72,28 +77,16 @@ def test_example_queries():
     for test in test_cases:
         print(f"\n{test['name']}")
         print("-" * 80)
-        query_display = (
-            test["query"][:80] + "..." if len(test["query"]) > 80 else test["query"]
-        )
-        print(f"Query: {query_display!r}")
+        print(f"Query: {test['query']!r}")
 
         try:
-            result = parse_query(test["query"])
-            result_display = (
-                str(result)[:100] + "..." if len(str(result)) > 100 else str(result)
-            )
-            print(f"Result: {result_display}")
+            emission = emit(parse(test["query"]), now=now)
+            result = emission.criteria
+            print(f"Criteria: {result}")
+            if emission.report.approximations:
+                print(f"Approximations: {emission.report.approximations}")
 
-            if "expected_type" in test:
-                if isinstance(result, test["expected_type"]):
-                    print("PASS - Correct type")
-                    passed += 1
-                else:
-                    print(
-                        f"FAIL - Expected type {test['expected_type']}, got {type(result)}"
-                    )
-                    failed += 1
-            elif "expected" in test:
+            if "expected" in test:
                 if result == test["expected"]:
                     print("PASS - Exact match")
                     passed += 1
@@ -101,13 +94,13 @@ def test_example_queries():
                     print(f"FAIL - Expected {test['expected']}")
                     failed += 1
             elif "expected_length" in test:
-                if isinstance(result, list) and len(result) == test["expected_length"]:
-                    print(f"PASS - Correct length ({len(result)} tokens)")
+                if len(result) == test["expected_length"]:
+                    print(f"PASS - Correct length ({len(result)} atoms)")
                     passed += 1
                 else:
-                    actual = len(result) if isinstance(result, list) else "not a list"
                     print(
-                        f"FAIL - Expected length {test['expected_length']}, got {actual}"
+                        f"FAIL - Expected length {test['expected_length']}, "
+                        f"got {len(result)}"
                     )
                     failed += 1
         except Exception as e:

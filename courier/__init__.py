@@ -2,7 +2,7 @@
 
 The names in ``__all__`` are courier's supported library surface: config
 loading, the error taxonomy, identity/SMTP resolution, the IMAP client,
-message models, the query parser, MIME building, and send-with-FCC.
+message models, the query grammar, MIME building, and send-with-FCC.
 Anything not listed here is internal and may reshape without notice.
 """
 
@@ -33,11 +33,20 @@ from courier.identity import (
 from courier.imap_client import AppendResult, ImapClient
 from courier.local_cache import MuBackend
 from courier.models import Email, EmailAddress, EmailAttachment, decode_mime_header
-from courier.query_parser import UntranslatableQuery, parse_query
+from courier.query import (
+    ParseResult,
+    QuerySyntaxError,
+    UntranslatableForBackend,
+    parse,
+)
 from courier.sending import send_with_fcc
 from courier.smtp_client import create_mime
 from courier.smtp_transport import send as smtp_send
 from courier.watch import WatchEvent, watch
+
+# Backwards-compatible name for the exception external callers caught
+# from the old translator; the cache-fallback semantics are unchanged.
+UntranslatableQuery = UntranslatableForBackend
 
 __version__ = "1.1.17"
 
@@ -75,7 +84,10 @@ __all__ = [
     "EmailAttachment",
     "decode_mime_header",
     # query
-    "parse_query",
+    "parse",
+    "ParseResult",
+    "QuerySyntaxError",
+    "UntranslatableForBackend",
     "UntranslatableQuery",
     # sending
     "create_mime",

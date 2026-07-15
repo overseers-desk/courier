@@ -14,7 +14,7 @@ The ranking sorts by demand (how often users voice the underlying pain) multipli
 6. **IMAP connection lifecycle.** Stale-connection detection, reconnect, IDLE handling. (`courier/imap_client.py`)
 7. **Gmail X-GM-RAW search passthrough.** Gmail's actual search engine, not the weak IMAP `SEARCH` command. Exposed via the `imap:` escape in the DSL.
 8. **Local cache fallback.** Optional `mu` or offlineimap-indexed local search; orders-of-magnitude faster on large archives. (`courier/local_cache.py`)
-9. **Gmail-style query DSL.** `from:x is:unread newer:3d` translates portably to IMAP search. (`courier/query_parser.py`)
+9. **Gmail-style query DSL.** `from:x is:unread newer:3d` translates portably to IMAP search. (`courier/query/`)
 10. **`.ics` meeting invite reply.** Calendar invite parsing and structured RSVP generation. (`courier/workflows/`)
 11. **Multi-account simultaneous search.** `-A` queries every configured `[imap.*]` block in parallel and returns per-block-attributed results.
 12. **Verb-chain in one CLI invocation.** `courier -A search foo search bar read -f INBOX -u 42` collapses the LLM's natural fan-out into one process call. (`courier/__main__.py`)

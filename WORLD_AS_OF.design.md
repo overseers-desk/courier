@@ -65,7 +65,7 @@ MCP tools (`tools.py`) and their CLI twins (`__main__.py`); enforcement column n
 
 ## Relative dates and "now"
 
-`query_parser.py` resolves `today`, `week`, `newer:3d`, etc. against `datetime.now()`. Under a bound, "now" is the bound instant: a replayed session asking `newer:7d` means seven days before WORLD_AS_OF. The parser's date-resolution lambdas take an injected reference instant defaulting to wall clock; `ImapClient` passes the bound when set. Without this, relative queries drift as real time advances, which defeats the reproducibility goal even with the post-filter in place (the filter would keep results correct but the window would shrink to empty).
+The query translator (`courier/query/`, historically `query_parser.py`) resolves `today`, `week`, `newer:3d`, etc. against a reference instant. Under a bound, "now" is the bound instant: a replayed session asking `newer:7d` means seven days before WORLD_AS_OF. The emitters take the injected reference instant; `ImapClient` passes the bound when set. Without this, relative queries drift as real time advances, which defeats the reproducibility goal even with the post-filter in place (the filter would keep results correct but the window would shrink to empty).
 
 ## The pre-filled-prompt path
 
@@ -88,14 +88,14 @@ The search result's existing `provenance` dict gains, when the bound is set:
 
 ## Feasibility verdict
 
-Feasible, and cleanly, because the architecture already funnels every fetch through `ImapClient` and the local-cache backend, and search results already carry a provenance dict to extend. Effort: **M**. Roughly: `world_bound.py` + startup wiring (S), `ImapClient` two-layer enforcement across search/fetch/thread (the bulk), `query_parser` reference-instant injection (S), mu cache clause (S), watch refusal (XS), tests throughout.
+Feasible, and cleanly, because the architecture already funnels every fetch through `ImapClient` and the local-cache backend, and search results already carry a provenance dict to extend. Effort: **M**. Roughly: `world_bound.py` + startup wiring (S), `ImapClient` two-layer enforcement across search/fetch/thread (the bulk), query-translator reference-instant injection (S), mu cache clause (S), watch refusal (XS), tests throughout.
 
 Sharpest risks:
 
 1. **IMAP date coarseness.** SEARCH BEFORE is day-granular and evaluated in the server's timezone; treating it as exact would leak same-day future messages. The design never trusts Layer 1 for correctness; the post-filter on FETCHed INTERNALDATE is the invariant. A test that plants two same-day messages straddling the bound instant guards this.
 2. **Bypass surfaces.** `resources.py` calling `imap_client.search` directly is exactly the path a tools-layer implementation would miss. Any future fetch path added to `ImapClient` inherits the bound only if enforcement sits inside the shared fetch/search assembly, not sprinkled at call sites. The staged tests include one against the resource functions specifically.
 3. **INTERNALDATE vs Date divergence.** A message sent long ago but imported/copied recently has a recent INTERNALDATE; a message with a forged future Date header has a sane INTERNALDATE. Binding on INTERNALDATE is the defensible choice (it is when the mailbox saw it) but produces occasional surprises against user intuition; the provenance block and refusal message name the date used.
-4. **Relative-date drift.** Missing the `query_parser` "now" injection leaves a silent reproducibility hole that the post-filter masks as shrinking result windows. Its test asserts `newer:7d` under a bound resolves against the bound.
+4. **Relative-date drift.** Missing the query translator's "now" injection leaves a silent reproducibility hole that the post-filter masks as shrinking result windows. Its test asserts `newer:7d` under a bound resolves against the bound.
 5. **mu cache date field.** `mu find` filters on the indexed date (from the Date header, not INTERNALDATE), a semantic mismatch with the IMAP layers. Either accept it flagged (`date_source: "mu_index"`) or fall back to IMAP when the bound is set; the flagged-accept keeps the cache useful and is the recommended default, recorded as a decision for the user to overturn.
 
 ## Staging for the implementing session

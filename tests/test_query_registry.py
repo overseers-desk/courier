@@ -3,10 +3,14 @@
 Extends the old _known_prefixes guard pattern: the pinned inventory
 proves the registry neither loses nor invents an operator, and the
 parse-through guard proves every advertised prefix spelling actually
-parses to a term carrying its row's canonical op and value type.
+parses to a term carrying its row's canonical op and value type. The
+docs guard carries over from the old translator's test file: the
+quick-reference table may only cite real operators.
 """
 
+import re
 from datetime import date, timedelta
+from pathlib import Path
 
 from courier.query import parse
 from courier.query.ast import Flag, Term
@@ -186,6 +190,34 @@ class TestSuggestions:
     def test_suggestions_are_sorted(self):
         hits = suggest_prefixes("im")
         assert list(hits) == sorted(hits)
+
+
+class TestDocsOperatorTable:
+    """The docs quick-reference table must cite only real prefixes.
+
+    One-directional until the stage-4 doc rewrite re-pins the full
+    lockstep: the table may lag the registry's new rows between the
+    two stages, but it must never cite an operator the parser does not
+    accept.
+    """
+
+    def test_documented_table_prefixes_are_known(self):
+        doc = Path(__file__).parents[1] / "docs" / "COMPLEX_SEARCH_IMPLEMENTATION.md"
+        lines = doc.read_text(encoding="utf-8").splitlines()
+        start = next(
+            i for i, ln in enumerate(lines) if ln.lstrip().startswith("| Syntax")
+        )
+        tokens = []
+        # Skip the header and its separator row, then read data rows.
+        for ln in lines[start + 2 :]:
+            if not ln.lstrip().startswith("|"):
+                break
+            first_col = ln.split("|")[1]
+            tokens.extend(re.findall(r"([a-z_]+):", first_col))
+        assert tokens, "no prefix tokens found in the docs operator table"
+        known = known_prefixes()
+        for tok in tokens:
+            assert tok in known, f"docs cite unknown prefix {tok!r}"
 
 
 class TestRenderedHelp:
