@@ -17,9 +17,16 @@ the "FCC instead of BCC-self" capability discussed in the design.
 import re
 import smtplib
 from email.parser import BytesParser
+from email.utils import getaddresses
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from courier.config import SmtpConfig
+
+# Socket timeout for the SMTP session, in seconds. Matches the IMAP
+# side's connect timeout (imap_client passes timeout=10) so a stalled
+# server cannot hang a send forever; a stall after the server queued
+# the message would otherwise invite the caller to kill and re-send.
+_SMTP_TIMEOUT = 10
 
 # Post-DATA "Ok <token>" line from SES. Real tokens look like
 # "010f01a8e6c8e7d2-9eaeb4d6-fcb5-4b04-bc89-3d8e36f5db7e-000000": hex chunks
@@ -37,23 +44,25 @@ _SES_RESPONSE_RE = re.compile(rb"^\s*Ok\s+([0-9a-fA-F][0-9a-fA-F-]*)", re.IGNORE
 #                         a recognisable tracking token (e.g. SES).
 #   smtp_response         Decoded response after DATA, e.g. "Ok 0102019...".
 #   accepted_recipients   Bare addresses the server accepted at RCPT TO.
+#   refused_recipients    [{addr, code, reply}] for addresses the server
+#                         refused at RCPT TO. Non-empty means the message
+#                         was delivered to a subset only; callers report
+#                         status "partial".
 
 
 def _extract_addresses(mime: Any, header: str) -> List[str]:
-    """Return the bare addresses from a comma-separated recipient header."""
+    """Return the bare addresses from a recipient header.
+
+    Parsed with :func:`email.utils.getaddresses` so a quoted display
+    name containing a comma (``'"Smith, John" <js@x>'`` — a shape
+    courier itself produces via ``formataddr``) yields one address, not
+    junk fragments that the server would 501-reject or a relay would
+    qualify and misdeliver.
+    """
     raw = mime.get(header)
     if not raw:
         return []
-    out: List[str] = []
-    for part in str(raw).split(","):
-        part = part.strip()
-        if not part:
-            continue
-        if "<" in part and ">" in part:
-            out.append(part.split("<", 1)[1].rsplit(">", 1)[0].strip())
-        else:
-            out.append(part)
-    return out
+    return [addr for _name, addr in getaddresses([str(raw)]) if addr]
 
 
 def _from_address(mime: Any) -> str:
@@ -87,6 +96,21 @@ def _strip_bcc(raw_bytes: bytes) -> bytes:
     if "Bcc" in msg:
         del msg["Bcc"]
     return msg.as_bytes()
+
+
+def _to_crlf(raw_bytes: bytes) -> bytes:
+    """Normalise line endings to CRLF for the SMTP wire.
+
+    ``as_bytes()`` serialises with bare LFs and ``smtplib.data()``
+    transmits bytes as-is (its ``_fix_eols`` pass applies to str input
+    only), so without this step bare LFs reach the wire in violation of
+    RFC 5321 section 2.3.8 — a hard reject on qmail, hardened Postfix,
+    and Exchange Online. The same bytes are APPENDed as the FCC copy,
+    which strict IMAP servers also require to be CRLF.
+    """
+    return raw_bytes.replace(b"\r\n", b"\n").replace(b"\r", b"\n").replace(
+        b"\n", b"\r\n"
+    )
 
 
 def parse_ses_token(response_bytes: Any) -> Optional[str]:
@@ -141,13 +165,17 @@ def send(
 
     Returns:
         ``(fcc_bytes, result)`` where ``result`` is a dict with the keys
-        documented at the top of this module. ``fcc_bytes`` has Bcc stripped
-        and Message-ID rewritten if the SMTP block requested it; pass to
-        ``ImapClient.append_raw`` for the FCC step.
+        documented at the top of this module (``refused_recipients``
+        carries any RCPT TO rejections; the message was still delivered
+        to the accepted subset). ``fcc_bytes`` has Bcc stripped, CRLF
+        line endings, and Message-ID rewritten if the SMTP block
+        requested it; pass to ``ImapClient.append_raw`` for the FCC step.
 
     Raises:
         ValueError: On a malformed MIME message (no From, no recipients).
-        smtplib.SMTPException: On any SMTP-layer failure.
+        smtplib.SMTPRecipientsRefused: Every recipient was refused at
+            RCPT TO. Raised before DATA, so nothing was transmitted.
+        smtplib.SMTPException: On any other SMTP-layer failure.
     """
     factory = transport or _pick_default_transport(smtp_cfg.port)
 
@@ -164,9 +192,9 @@ def send(
         if hasattr(mime_msg, "as_bytes")
         else mime_msg.as_string().encode("utf-8")
     )
-    on_wire = _strip_bcc(raw)
+    on_wire = _to_crlf(_strip_bcc(raw))
 
-    smtp = factory(smtp_cfg.host, smtp_cfg.port)
+    smtp = factory(smtp_cfg.host, smtp_cfg.port, timeout=_SMTP_TIMEOUT)
     try:
         smtp.ehlo()
         if smtp_cfg.port in (587, 2587):
@@ -176,10 +204,30 @@ def send(
             smtp.login(smtp_cfg.username, smtp_cfg.password)
         smtp.mail(from_addr)
         accepted: List[str] = []
+        refused: List[Dict[str, Any]] = []
         for rcpt in rcpts:
-            code, _ = smtp.rcpt(rcpt)
+            code, reply = smtp.rcpt(rcpt)
             if 200 <= code < 300:
                 accepted.append(rcpt)
+            else:
+                refused.append(
+                    {
+                        "addr": rcpt,
+                        "code": code,
+                        "reply": (
+                            reply.decode("utf-8", errors="replace")
+                            if isinstance(reply, bytes)
+                            else str(reply)
+                        ),
+                    }
+                )
+        if not accepted:
+            # Every recipient was refused; DATA would deliver to nobody
+            # (and many servers answer it with a non-354 anyway). Fail
+            # loudly with the per-address verdicts instead.
+            raise smtplib.SMTPRecipientsRefused(
+                {r["addr"]: (r["code"], r["reply"]) for r in refused}
+            )
         code, response = smtp.data(on_wire)
         if not (200 <= code < 300):
             raise smtplib.SMTPDataError(code, response)
@@ -195,7 +243,9 @@ def send(
         token = parse_ses_token(response)
         if token:
             msgid_sent = f"<{token}@email.amazonses.com>"
-            fcc_bytes = rewrite_message_id(on_wire, msgid_sent)
+            # rewrite_message_id re-serialises with bare LFs; restore
+            # CRLF so the FCC copy stays wire-clean.
+            fcc_bytes = _to_crlf(rewrite_message_id(on_wire, msgid_sent))
 
     if isinstance(response, bytes):
         response_str = response.decode("utf-8", errors="replace")
@@ -207,4 +257,5 @@ def send(
         "message_id_sent": msgid_sent,
         "smtp_response": response_str,
         "accepted_recipients": accepted,
+        "refused_recipients": refused,
     }

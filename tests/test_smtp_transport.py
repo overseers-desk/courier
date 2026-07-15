@@ -5,6 +5,7 @@ no network is required. The fake records the sequence of calls and supplies
 the post-DATA response that drives the SES Message-ID rewrite logic.
 """
 
+import smtplib
 from email.message import EmailMessage
 
 import pytest
@@ -20,12 +21,19 @@ SES_TOKEN = "010f01a8e6c8e7d2-9eaeb4d6-fcb5-4b04-bc89-3d8e36f5db7e-000000"
 
 
 class _FakeSMTPBase:
-    """Records every smtplib call. Subclasses override `data` to set the response."""
+    """Records every smtplib call. Subclasses override `data` to set the response.
 
-    def __init__(self, host: str, port: int):
+    ``refuse`` maps an RCPT TO address to the ``(code, reply)`` the fake
+    answers with; addresses not listed are accepted with 250. ``body``
+    keeps the exact bytes handed to ``data()`` for wire assertions.
+    """
+
+    def __init__(self, host: str, port: int, timeout=None):
         self.host = host
         self.port = port
+        self.timeout = timeout
         self.calls: list = []
+        self.refuse: dict = {}
 
     def ehlo(self) -> None:
         self.calls.append(("ehlo",))
@@ -42,9 +50,12 @@ class _FakeSMTPBase:
 
     def rcpt(self, addr: str) -> tuple:
         self.calls.append(("rcpt", addr))
+        if addr in self.refuse:
+            return self.refuse[addr]
         return (250, b"OK")
 
     def data(self, body: bytes) -> tuple:
+        self.body = body  # exact wire bytes, for line-ending assertions
         self.calls.append(("data", len(body)))
         return (250, b"OK")
 
@@ -127,8 +138,8 @@ class TestSendBccHandling:
         )
         captured: list = []
 
-        def factory(host, port):
-            f = _FakeSESSMTP(host, port)
+        def factory(host, port, timeout=None):
+            f = _FakeSESSMTP(host, port, timeout)
             captured.append(f)
             return f
 
@@ -146,8 +157,8 @@ class TestSendStartTLS:
         smtp = SmtpConfig(host="smtp.example.com", port=587, username="u", password="p")
         captured: list = []
 
-        def factory(host, port):
-            f = _FakeSMTPBase(host, port)
+        def factory(host, port, timeout=None):
+            f = _FakeSMTPBase(host, port, timeout)
             captured.append(f)
             return f
 
@@ -158,8 +169,8 @@ class TestSendStartTLS:
         smtp = SmtpConfig(host="smtp.example.com", port=25)
         captured: list = []
 
-        def factory(host, port):
-            f = _FakeSMTPBase(host, port)
+        def factory(host, port, timeout=None):
+            f = _FakeSMTPBase(host, port, timeout)
             captured.append(f)
             return f
 
@@ -206,6 +217,131 @@ class TestSesRewriteRoundTrip:
         )
         fcc, result = send(_build_msg(), forced, transport=_FakeGmailSMTP)
         assert result["message_id_sent"] == "<original@local>"
+
+
+class TestRefusedRecipients:
+    """RCPT refusals are surfaced, not silently dropped (issue #62)."""
+
+    def _refusing_factory(self, refuse: dict, captured: list):
+        def factory(host, port, timeout=None):
+            f = _FakeSMTPBase(host, port, timeout)
+            f.refuse = refuse
+            captured.append(f)
+            return f
+
+        return factory
+
+    def test_refused_recipient_reported_with_code_and_reply(self):
+        captured: list = []
+        factory = self._refusing_factory(
+            {"bob@y.com": (550, b"5.1.1 user unknown")}, captured
+        )
+        _, result = send(_build_msg(), SmtpConfig(host="h"), transport=factory)
+
+        assert result["refused_recipients"] == [
+            {"addr": "bob@y.com", "code": 550, "reply": "5.1.1 user unknown"}
+        ]
+        assert "bob@y.com" not in result["accepted_recipients"]
+        assert "alice@x.com" in result["accepted_recipients"]
+        # DATA still ran for the accepted subset.
+        assert any(c[0] == "data" for c in captured[0].calls)
+
+    def test_no_refusals_yields_empty_list(self):
+        captured: list = []
+        factory = self._refusing_factory({}, captured)
+        _, result = send(_build_msg(), SmtpConfig(host="h"), transport=factory)
+        assert result["refused_recipients"] == []
+
+    def test_all_refused_raises_before_data(self):
+        captured: list = []
+        refuse = {
+            "alice@x.com": (550, b"no"),
+            "bob@y.com": (550, b"no"),
+            "carol@z.com": (550, b"no"),
+            "secret@hidden.com": (550, b"no"),
+        }
+        factory = self._refusing_factory(refuse, captured)
+        with pytest.raises(smtplib.SMTPRecipientsRefused):
+            send(_build_msg(), SmtpConfig(host="h"), transport=factory)
+        # Nothing was transmitted: the failure fired before DATA.
+        assert not any(c[0] == "data" for c in captured[0].calls)
+
+
+class TestWireLineEndings:
+    """DATA and FCC bytes are CRLF-normalised (RFC 5321 section 2.3.8)."""
+
+    @staticmethod
+    def _assert_crlf_only(raw: bytes) -> None:
+        stripped = raw.replace(b"\r\n", b"")
+        assert b"\n" not in stripped, "bare LF reached the wire"
+        assert b"\r" not in stripped, "bare CR reached the wire"
+
+    def test_data_payload_has_no_bare_lf(self):
+        captured: list = []
+
+        def factory(host, port, timeout=None):
+            f = _FakeSMTPBase(host, port, timeout)
+            captured.append(f)
+            return f
+
+        msg = _build_msg()
+        fcc_bytes, _ = send(msg, SmtpConfig(host="h"), transport=factory)
+
+        body = captured[0].body
+        assert b"\r\n" in body
+        self._assert_crlf_only(body)
+        # The FCC copy is the same wire bytes: also CRLF.
+        self._assert_crlf_only(fcc_bytes)
+
+    def test_fcc_bytes_stay_crlf_after_ses_rewrite(self):
+        ses = SmtpConfig(
+            host="email-smtp.example.com",
+            port=587,
+            username="AKIA",
+            password="x",
+            rewrite_msgid_from_response=True,
+        )
+        fcc_bytes, result = send(_build_msg(), ses, transport=_FakeSESSMTP)
+        assert result["message_id_sent"] == f"<{SES_TOKEN}@email.amazonses.com>"
+        self._assert_crlf_only(fcc_bytes)
+
+
+class TestSocketTimeout:
+    """The transport factory gets a bounded timeout, matching the IMAP side."""
+
+    def test_factory_receives_ten_second_timeout(self):
+        captured: list = []
+
+        def factory(host, port, timeout=None):
+            f = _FakeSMTPBase(host, port, timeout)
+            captured.append(f)
+            return f
+
+        send(_build_msg(), SmtpConfig(host="h"), transport=factory)
+        assert captured[0].timeout == 10
+
+
+class TestRecipientHeaderParsing:
+    """Recipient headers are parsed with getaddresses, not split on commas."""
+
+    def test_quoted_display_name_with_comma_yields_one_rcpt(self):
+        msg = EmailMessage()
+        msg["From"] = "Sender <sender@example.com>"
+        msg["To"] = '"Smith, John" <js@x.com>'
+        msg["Message-ID"] = "<original@local>"
+        msg.set_content("body")
+        captured: list = []
+
+        def factory(host, port, timeout=None):
+            f = _FakeSMTPBase(host, port, timeout)
+            captured.append(f)
+            return f
+
+        _, result = send(msg, SmtpConfig(host="h"), transport=factory)
+
+        rcpts = [c[1] for c in captured[0].calls if c[0] == "rcpt"]
+        assert rcpts == ["js@x.com"]
+        assert result["accepted_recipients"] == ["js@x.com"]
 
 
 class TestSendValidation:

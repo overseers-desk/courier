@@ -81,6 +81,7 @@ def _result() -> dict:
         "message_id_sent": "<x@local>",
         "smtp_response": "OK",
         "accepted_recipients": ["alice@y.com"],
+        "refused_recipients": [],
     }
 
 
@@ -158,6 +159,87 @@ class TestComposeSendModeA:
         assert result.exit_code == 1
         assert "ghost" in (result.output + (result.stderr or ""))
         send_mock.assert_not_called()
+
+    def test_refused_recipients_downgrade_status_to_partial(self):
+        """A send the server part-refused at RCPT must not report
+        status "success"; the refusals ride along in the envelope."""
+        cfg = _cfg()
+        client = _client()
+        refused = [{"addr": "gone@y.com", "code": 550, "reply": "5.1.1 unknown"}]
+
+        def fake_send(msg, smtp_cfg, transport=None):
+            result = _result()
+            result["refused_recipients"] = refused
+            return (msg.as_bytes(), result)
+
+        with (
+            patch("courier.__main__.load_config", return_value=cfg),
+            patch("courier.__main__._make_client", return_value=client),
+            patch("courier.smtp_transport.send", side_effect=fake_send),
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "compose",
+                    "--to",
+                    "alice@y.com",
+                    "--to",
+                    "gone@y.com",
+                    "--body",
+                    "hi",
+                    "--subject",
+                    "T",
+                    "--send",
+                    "--identity",
+                    "alias",
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        # result.stdout: the refusal warning goes to stderr.
+        out = json.loads(result.stdout)
+        assert out["status"] == "partial"
+        assert out["refused_recipients"] == refused
+        assert out["accepted_recipients"] == ["alice@y.com"]
+        assert "gone@y.com" in result.stderr
+
+    def test_fcc_failure_downgrades_status_to_partial(self):
+        """The message left but the Sent copy failed: status "partial"
+        with fcc_error present, per the result-envelope contract."""
+        from courier.errors import PermanentError
+
+        cfg = _cfg()
+        client = _client()
+        client.append_raw.side_effect = PermanentError("mailbox full")
+
+        def fake_send(msg, smtp_cfg, transport=None):
+            return (msg.as_bytes(), _result())
+
+        with (
+            patch("courier.__main__.load_config", return_value=cfg),
+            patch("courier.__main__._make_client", return_value=client),
+            patch("courier.smtp_transport.send", side_effect=fake_send),
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "compose",
+                    "--to",
+                    "alice@y.com",
+                    "--body",
+                    "hi",
+                    "--subject",
+                    "T",
+                    "--send",
+                    "--identity",
+                    "alias",
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        # result.stdout: the FCC warning goes to stderr.
+        out = json.loads(result.stdout)
+        assert out["status"] == "partial"
+        assert out["fcc_error"] == "mailbox full"
+        assert out["fcc_uid"] is None
 
     def test_no_save_sent_skips_fcc(self):
         cfg = _cfg()

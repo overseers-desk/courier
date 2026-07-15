@@ -966,7 +966,10 @@ def _perform_send(
 
     Returns:
         The standard send-result JSON shape (status, identity, message_ids,
-        smtp_response, accepted_recipients, fcc_folder, fcc_uid).
+        smtp_response, accepted_recipients, refused_recipients, fcc_folder,
+        fcc_uid). ``status`` is ``"success"``, or ``"partial"`` when the
+        server refused some recipients at RCPT TO or the FCC APPEND
+        failed; ``fcc_error`` is present only in the FCC-failure case.
     """
     from courier.imap_client import SENT_FOLDER_CANDIDATES
     from courier.sending import send_with_fcc
@@ -1008,17 +1011,31 @@ def _perform_send(
             f"warning: FCC to {sent['fcc_folder']} failed: {sent['fcc_error']}",
             err=True,
         )
+    refused = sent["refused_recipients"]
+    if refused:
+        typer.echo(
+            "warning: server refused recipient(s): "
+            + ", ".join(f"{r['addr']} ({r['code']})" for r in refused),
+            err=True,
+        )
 
-    return {
-        "status": "success",
+    # Delivered to a subset only, or delivered but the Sent copy failed:
+    # either way "success" would overstate the outcome.
+    partial = bool(refused) or sent["fcc_error"] is not None
+    result = {
+        "status": "partial" if partial else "success",
         "identity": identity.address,
         "message_id_local": sent["message_id_local"],
         "message_id_sent": sent["message_id_sent"],
         "smtp_response": sent["smtp_response"],
         "accepted_recipients": sent["accepted_recipients"],
+        "refused_recipients": refused,
         "fcc_folder": sent["fcc_folder"],
         "fcc_uid": sent["fcc_uid"],
     }
+    if sent["fcc_error"] is not None:
+        result["fcc_error"] = sent["fcc_error"]
+    return result
 
 
 def _resolve_send_route(

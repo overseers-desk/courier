@@ -21,6 +21,7 @@ def _smtp_result() -> dict:
         "message_id_sent": "<x@local>",
         "smtp_response": "OK",
         "accepted_recipients": ["a@y.com"],
+        "refused_recipients": [],
     }
 
 

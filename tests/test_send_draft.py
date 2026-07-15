@@ -75,6 +75,7 @@ def _build_send_result() -> dict:
         "message_id_sent": "<draft@local>",
         "smtp_response": "OK",
         "accepted_recipients": ["recipient@y.com"],
+        "refused_recipients": [],
     }
 
 

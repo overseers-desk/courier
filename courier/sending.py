@@ -44,9 +44,10 @@ def send_with_fcc(
 
     Returns:
         The transport result (``message_id_local``, ``message_id_sent``,
-        ``smtp_response``, ``accepted_recipients``) plus ``fcc_folder``,
-        ``fcc_uid``, ``fcc_uidvalidity``, and ``fcc_error`` (``None`` on a
-        clean append; the exception text on a post-send append failure).
+        ``smtp_response``, ``accepted_recipients``,
+        ``refused_recipients``) plus ``fcc_folder``, ``fcc_uid``,
+        ``fcc_uidvalidity``, and ``fcc_error`` (``None`` on a clean
+        append; the exception text on a post-send append failure).
 
     Raises:
         FccUnresolved: The FCC target cannot be resolved. Raised before
