@@ -119,9 +119,11 @@ def watch(
     event carries the fresh UIDVALIDITY. Backoff resets only after a
     connection has held IDLE for at least one poll cycle, so a server
     that accepts SELECT and then drops the socket cannot force a ~1 Hz
-    reconnect storm. A server NO on the first SELECT raises
-    :class:`FolderNotFound`; a NO after one successful SELECT is
-    retried like a transient failure (the folder may come back).
+    reconnect storm.
+
+    A server NO on the first SELECT raises :class:`FolderNotFound`; a
+    NO after one successful SELECT is retried like a transient failure
+    (the folder may come back).
 
     Refused outright (eagerly, at call time) when ``WORLD_AS_OF`` is
     set: a watch is a live tail of events after the bound, and every
@@ -182,19 +184,13 @@ def _watch_events(
                 try:
                     info = client.select_folder(folder, readonly=True)
                 except ConnectionError as e:
-                    # ImapClient.select_folder re-raises every imapclient
-                    # failure as builtin ConnectionError, so a server NO
-                    # and a mid-SELECT socket abort arrive as the same
-                    # type; the original error is still on __context__.
-                    # Retyping select_folder itself (FolderNotFound for
-                    # a NO) is issue #65's select_folder item, owned by
-                    # a later wave; until it lands, match what reaches
-                    # us today. A NO on the FIRST select is a permanent
-                    # answer (typo'd, deleted, or ACL-denied folder), so
-                    # raise instead of retrying forever; after one
-                    # successful SELECT a NO is treated as transient so
-                    # a daemon watcher waits out a folder that
-                    # temporarily disappears.
+                    # select_folder re-raises every imapclient failure
+                    # as builtin ConnectionError (a server NO and a
+                    # mid-SELECT abort arrive as the same type; original
+                    # error on __context__). select_folder itself should
+                    # raise FolderNotFound for a NO, issue #65's item,
+                    # owned by a later wave; this is the stopgap until
+                    # it lands.
                     cause = e.__context__
                     if (
                         not selected_once

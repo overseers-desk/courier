@@ -71,7 +71,10 @@ _SIZE_UNIT_FACTORS = {"": 1, "k": 1024, "m": 1024**2, "g": 1024**3}
 
 # Nesting cap for the recursive descent: past this the parser would hit
 # Python's recursion limit and escape as RecursionError instead of the
-# contract's QuerySyntaxError. Real queries sit far below it.
+# contract's QuerySyntaxError. 150 is a round value under the measured
+# crash threshold (about 248 nested groups at the default 1000-frame
+# limit), leaving margin for the several frames each level costs. Real
+# queries sit far below it.
 _MAX_DEPTH = 150
 
 # Characters that end a bare run and stand as structural tokens.
