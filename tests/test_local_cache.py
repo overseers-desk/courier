@@ -486,9 +486,7 @@ class TestMuBackendSearch:
             )
 
         with (
-            patch.object(
-                MuBackend, "_store_maildir_root", return_value=block.maildir
-            ),
+            patch.object(MuBackend, "_store_maildir_root", return_value=block.maildir),
             patch("courier.local_cache.subprocess.run", side_effect=fake_run),
         ):
             results = backend.search(block, "from:alice", limit=5)
@@ -657,9 +655,7 @@ class TestScopeQuery:
         """mu root == block maildir: the recursive scope is the wildcard
         form, since maildir:"/" is an exact match on the root only
         (verified on mu 1.12.14)."""
-        assert (
-            MuBackend._scope_query("", "from:alice") == "(from:alice) AND maildir:/*"
-        )
+        assert MuBackend._scope_query("", "from:alice") == "(from:alice) AND maildir:/*"
 
     def test_empty_prefix_inbox_matches_store_root(self):
         """mu root == block maildir: root messages report :maildir "/"."""
@@ -707,9 +703,7 @@ class TestScopePrefix:
         with patch.object(
             MuBackend, "_store_maildir_root", return_value="/home/u/Maildir"
         ):
-            prefix = backend._scope_prefix(
-                _make_block("/home/u/Maildir/accounts/work")
-            )
+            prefix = backend._scope_prefix(_make_block("/home/u/Maildir/accounts/work"))
         assert prefix == "/accounts/work"
 
     def test_trailing_slashes_tolerated(self, tmp_path):
@@ -818,8 +812,7 @@ class TestWorldAsOfBoundsMuQuery:
         expected_stamp = self.BOUND.astimezone().strftime("%Y%m%dT%H%M%S")
         scoped = self._capture_query(tmp_path, "from:alice")
         assert (
-            scoped
-            == f'((from:alice) AND date:..{expected_stamp}) AND maildir:"/work/"'
+            scoped == f'((from:alice) AND date:..{expected_stamp}) AND maildir:"/work/"'
         )
 
     def test_empty_query_is_bound_alone(self, tmp_path):

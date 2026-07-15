@@ -108,8 +108,8 @@ def _to_crlf(raw_bytes: bytes) -> bytes:
     and Exchange Online. The same bytes are APPENDed as the FCC copy,
     which strict IMAP servers also require to be CRLF.
     """
-    return raw_bytes.replace(b"\r\n", b"\n").replace(b"\r", b"\n").replace(
-        b"\n", b"\r\n"
+    return (
+        raw_bytes.replace(b"\r\n", b"\n").replace(b"\r", b"\n").replace(b"\n", b"\r\n")
     )
 
 

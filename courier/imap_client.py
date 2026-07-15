@@ -748,9 +748,9 @@ class ImapClient:
             base = os.path.join(self.block.maildir, folder_glob, subdir)
             # ``[,:]`` bounds the UID so 7 cannot match 77; the second
             # pattern is the bare terminal form.
-            matches = glob.glob(
-                os.path.join(base, f"*,U={uid}[,:]*")
-            ) or glob.glob(os.path.join(base, f"*,U={uid}"))
+            matches = glob.glob(os.path.join(base, f"*,U={uid}[,:]*")) or glob.glob(
+                os.path.join(base, f"*,U={uid}")
+            )
             if not matches:
                 continue
             path = matches[0]

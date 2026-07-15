@@ -182,9 +182,7 @@ class MuBackend:
             return None
         match = re.search(r"\bmaildir\s*\|\s*(\S+)", proc.stdout)
         if not match:
-            logger.warning(
-                "could not parse the maildir row from mu info store output"
-            )
+            logger.warning("could not parse the maildir row from mu info store output")
             return None
         self._mu_root = match.group(1)
         return self._mu_root
@@ -394,9 +392,7 @@ class MuBackend:
         return [rec for rec in formatted if rec is not None]
 
     @staticmethod
-    def _scope_query(
-        prefix: str, translated: str, folder: Optional[str] = None
-    ) -> str:
+    def _scope_query(prefix: str, translated: str, folder: Optional[str] = None) -> str:
         """Wrap a translated query with a maildir predicate scoping the search.
 
         With ``folder`` unset the predicate matches the whole block
