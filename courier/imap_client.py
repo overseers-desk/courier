@@ -654,8 +654,9 @@ class ImapClient:
 
         When the block is opted into the local cache and the index is
         eligible (see :meth:`_disk_cache_eligible`), the call is served
-        from the local synced file at
-        ``<maildir>/<folder>/{cur,new}/*,U=<uid>,*`` and IMAP is not
+        from the local synced file whose name carries the ``,U=<uid>``
+        segment under ``<maildir>/<folder>/{cur,new}/`` (mbsync's colon
+        form and offlineimap's comma form both match) and IMAP is not
         contacted; on disk miss (file not yet synced) the call falls
         back to IMAP.  When the index is stale, ``no_cache`` is set, or
         the block is not opted in, the call goes to live IMAP.  Redact
@@ -716,12 +717,17 @@ class ImapClient:
         return self._apply_redact(email_obj)
 
     def _fetch_email_disk(self, uid: int, folder: str) -> Optional[Email]:
-        """Read a message from the mbsync-synced maildir, if present.
+        """Read a message from the synced maildir, if present.
 
         Searches ``<block.maildir>/<folder>/{cur,new}/`` for a file
-        whose name encodes the IMAP UID via the mbsync ``,U=<uid>,``
-        segment.  Returns ``None`` when the file is absent (the caller
-        falls back to IMAP).
+        whose name encodes the IMAP UID via the ``,U=<uid>`` segment.
+        mbsync's native scheme puts the maildir info suffix straight
+        after it (``,U=<uid>:2,<flags>``), offlineimap follows with a
+        comma (``,U=<uid>,FMD5=...``), and a ``new/`` message may end
+        at the UID with no suffix at all; all three are matched,
+        mirroring the ``_UID_FROM_FILENAME`` contract in the
+        local-cache module.  Returns ``None`` when the file is absent
+        (the caller falls back to IMAP).
 
         Args:
             uid: IMAP UID to resolve.
@@ -739,10 +745,12 @@ class ImapClient:
         # otherwise be read as character classes and never match.
         folder_glob = glob.escape(folder)
         for subdir in ("cur", "new"):
-            pattern = os.path.join(
-                self.block.maildir, folder_glob, subdir, f"*,U={uid},*"
-            )
-            matches = glob.glob(pattern)
+            base = os.path.join(self.block.maildir, folder_glob, subdir)
+            # ``[,:]`` bounds the UID so 7 cannot match 77; the second
+            # pattern is the bare terminal form.
+            matches = glob.glob(
+                os.path.join(base, f"*,U={uid}[,:]*")
+            ) or glob.glob(os.path.join(base, f"*,U={uid}"))
             if not matches:
                 continue
             path = matches[0]

@@ -798,6 +798,80 @@ class TestImapClient:
         assert email_obj.uid == 42
         mock_imap.fetch.assert_not_called()
 
+    def test_fetch_email_disk_hit_mbsync_colon_filename(self, tmp_path):
+        """mbsync's native scheme writes ``,U=<uid>:2,<flags>`` (colon
+        before the maildir info suffix, no trailing comma); the glob
+        must match it or every read silently round-trips to IMAP
+        (issue #64)."""
+        root = _make_maildir_root(tmp_path)
+        name = "1700000000_0.hostname,U=77:2,S"
+        (Path(root) / "INBOX" / "cur" / name).write_bytes(
+            b"From: alice@example.com\r\n"
+            b"Subject: colon form\r\n"
+            b"Message-ID: <colon@example.com>\r\n"
+            b"\r\n"
+            b"body\r\n"
+        )
+        client = ImapClient(_make_block_with_maildir(root), local_cache=_eligible_mu())
+
+        with patch("imapclient.IMAPClient") as mock_cls:
+            mock_imap = MagicMock()
+            mock_cls.return_value = mock_imap
+            email_obj = client.fetch_email(77, folder="INBOX")
+
+        assert email_obj is not None
+        assert email_obj.subject == "colon form"
+        mock_imap.fetch.assert_not_called()
+
+    def test_fetch_email_disk_hit_bare_terminal_uid_in_new(self, tmp_path):
+        """A ``new/`` message has no flags suffix at all, so the
+        filename ends at ``,U=<uid>``; the terminal form must match."""
+        root = _make_maildir_root(tmp_path)
+        name = "1700000000_0.hostname,U=88"
+        (Path(root) / "INBOX" / "new" / name).write_bytes(
+            b"From: alice@example.com\r\n"
+            b"Subject: fresh\r\n"
+            b"Message-ID: <bare@example.com>\r\n"
+            b"\r\n"
+            b"body\r\n"
+        )
+        client = ImapClient(_make_block_with_maildir(root), local_cache=_eligible_mu())
+
+        with patch("imapclient.IMAPClient") as mock_cls:
+            mock_imap = MagicMock()
+            mock_cls.return_value = mock_imap
+            email_obj = client.fetch_email(88, folder="INBOX")
+
+        assert email_obj is not None
+        assert email_obj.subject == "fresh"
+        mock_imap.fetch.assert_not_called()
+
+    def test_fetch_email_disk_uid_prefix_does_not_match(self, tmp_path):
+        """UID 7 must not match a file carrying UID 77: the character
+        after the UID digits must be ``,`` or ``:`` (or end of name)."""
+        root = _make_maildir_root(tmp_path)
+        name = "1700000000_0.hostname,U=77:2,S"
+        (Path(root) / "INBOX" / "cur" / name).write_bytes(
+            b"From: alice@example.com\r\n"
+            b"Subject: colon form\r\n"
+            b"Message-ID: <colon@example.com>\r\n"
+            b"\r\n"
+            b"body\r\n"
+        )
+        client = ImapClient(_make_block_with_maildir(root), local_cache=_eligible_mu())
+
+        with patch("imapclient.IMAPClient") as mock_cls:
+            mock_imap = MagicMock()
+            mock_cls.return_value = mock_imap
+            mock_imap.select_folder.return_value = {b"EXISTS": 1}
+            mock_imap.fetch.return_value = {}
+            client.connect()
+            email_obj = client.fetch_email(7, folder="INBOX")
+
+        # Disk miss -> IMAP fallback (which also has nothing).
+        assert email_obj is None
+        mock_imap.fetch.assert_called_once()
+
     def test_fetch_email_disk_miss_falls_back_to_imap(
         self, tmp_path, mock_imap_client, test_email_response_data
     ):
