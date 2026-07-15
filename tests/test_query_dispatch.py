@@ -102,6 +102,14 @@ class TestScopePlacementRefusals:
         with pytest.raises(QuerySyntaxError, match="anywhere"):
             extract_scope(parse("-in:anywhere from:a"))
 
+    def test_anywhere_with_include_refuses(self):
+        with pytest.raises(QuerySyntaxError, match="cannot be combined"):
+            extract_scope(parse("in:anywhere in:inbox x"))
+
+    def test_anywhere_with_exclude_refuses(self):
+        with pytest.raises(QuerySyntaxError, match="cannot be combined"):
+            extract_scope(parse("in:anywhere -in:trash x"))
+
 
 class TestFolderConflict:
     """A folder argument and an in: scope cannot both steer the search."""

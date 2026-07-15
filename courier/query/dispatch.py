@@ -136,8 +136,9 @@ def extract_scope(parsed: ParseResult) -> Tuple[ParseResult, Scope]:
 
     Raises:
         QuerySyntaxError: When an ``in:`` term sits under ``or``,
-            nested negation, or a group, or when ``in:anywhere`` is
-            negated.
+            nested negation, or a group; when ``in:anywhere`` is
+            negated; or when ``in:anywhere`` is combined with a
+            specific ``in:``/``-in:`` folder (a contradiction).
     """
     root = parsed.ast
     conjuncts = list(root.children) if isinstance(root, And) else [root]
@@ -168,6 +169,11 @@ def extract_scope(parsed: ParseResult) -> Tuple[ParseResult, Scope]:
             continue
         _refuse_nested_in(conjunct)
         remaining.append(conjunct)
+    if anywhere and (include or exclude):
+        raise QuerySyntaxError(
+            "in:anywhere searches every folder, so it cannot be combined "
+            "with in:FOLDER or -in:FOLDER; drop one or the other."
+        )
     scope = Scope(tuple(include), tuple(exclude), anywhere)
     rest: Node
     if not remaining:
