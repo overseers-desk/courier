@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional, Union
 
 from mcp.server.fastmcp import Context, FastMCP
 
-from courier.errors import CourierError, FolderNotFound
+from courier.errors import CourierError, FolderNotFound, TransientError
 from courier.imap_client import ImapClient
 from courier.models import extract_links_batch
 from courier.query.ast import UntranslatableForBackend
@@ -51,6 +51,44 @@ _SEARCH_TOOL_DESCRIPTION = (
     'an {"error": ...} naming the nearest alternative instead of silently '
     "matching nothing."
 )
+
+
+def _failed_text(action: str, exc: CourierError) -> str:
+    """Failure string carrying the server's reason and its retry class.
+
+    MCP returns strings, not exit codes, so the string is the whole
+    contract: a caller choosing between retrying (right for transient)
+    and fixing its request (right for permanent) needs the class, and
+    the server's stated reason tells it what to fix (issue #63).
+
+    Args:
+        action: The action phrase, e.g. ``"move email"``.
+        exc: The typed error the mutation raised.
+
+    Returns:
+        ``Failed to <action> (<class>): <reason>``.
+    """
+    kind = "transient" if isinstance(exc, TransientError) else "permanent"
+    detail = str(exc).strip()
+    suffix = f": {detail}" if detail else ""
+    return f"Failed to {action} ({kind}){suffix}"
+
+
+def _not_found_text(uid: int, folder: str, verb_phrase: str) -> str:
+    """The refusal string for a UID the server no longer has.
+
+    A mutation on an expunged UID is a silent server-side no-op; the
+    success string must never cover it (issue #63).
+
+    Args:
+        uid: The requested UID.
+        folder: The folder searched.
+        verb_phrase: What did not happen, e.g. ``"nothing was moved"``.
+
+    Returns:
+        ``Error: UID <uid> not found in <folder>; <verb_phrase>``.
+    """
+    return f"Error: UID {uid} not found in {folder}; {verb_phrase}"
 
 
 def register_tools(mcp: FastMCP, imap_client: ImapClient) -> None:
@@ -183,11 +221,13 @@ def register_tools(mcp: FastMCP, imap_client: ImapClient) -> None:
         """
         client = get_client_from_context(ctx, imap)
         try:
-            client.move_email(uid, folder, target_folder)
+            result = client.move_email(uid, folder, target_folder)
+            if result["not_found_uids"]:
+                return _not_found_text(uid, folder, "nothing was moved")
             return f"Email moved from {folder} to {target_folder}"
-        except CourierError:
+        except CourierError as e:
             # MCP returns error strings, not exit codes; the text is the contract
-            return "Failed to move email"
+            return _failed_text("move email", e)
         except Exception as e:
             logger.error(f"Error moving email: {e}")
             return f"Error: {e}"
@@ -212,10 +252,12 @@ def register_tools(mcp: FastMCP, imap_client: ImapClient) -> None:
         """
         client = get_client_from_context(ctx, imap)
         try:
-            client.mark_email(uid, folder, r"\Seen", True)
+            result = client.mark_email(uid, folder, r"\Seen", True)
+            if result["not_found_uids"]:
+                return _not_found_text(uid, folder, "nothing was marked")
             return "Email marked as read"
-        except CourierError:
-            return "Failed to mark email as read"
+        except CourierError as e:
+            return _failed_text("mark email as read", e)
         except Exception as e:
             logger.error(f"Error marking email as read: {e}")
             return f"Error: {e}"
@@ -240,10 +282,12 @@ def register_tools(mcp: FastMCP, imap_client: ImapClient) -> None:
         """
         client = get_client_from_context(ctx, imap)
         try:
-            client.mark_email(uid, folder, r"\Seen", False)
+            result = client.mark_email(uid, folder, r"\Seen", False)
+            if result["not_found_uids"]:
+                return _not_found_text(uid, folder, "nothing was marked")
             return "Email marked as unread"
-        except CourierError:
-            return "Failed to mark email as unread"
+        except CourierError as e:
+            return _failed_text("mark email as unread", e)
         except Exception as e:
             logger.error(f"Error marking email as unread: {e}")
             return f"Error: {e}"
@@ -269,12 +313,14 @@ def register_tools(mcp: FastMCP, imap_client: ImapClient) -> None:
             Success message or error message
         """
         client = get_client_from_context(ctx, imap)
-        action = "flagged" if flag else "unflagged"
+        verb = "flag" if flag else "unflag"
         try:
-            client.mark_email(uid, folder, r"\Flagged", flag)
-            return f"Email {action}"
-        except CourierError:
-            return f"Failed to {action.replace('ged','g').replace('ed','')} email"
+            result = client.mark_email(uid, folder, r"\Flagged", flag)
+            if result["not_found_uids"]:
+                return _not_found_text(uid, folder, f"nothing was {verb}ged")
+            return f"Email {verb}ged"
+        except CourierError as e:
+            return _failed_text(f"{verb} email", e)
         except Exception as e:
             logger.error(f"Error flagging email: {e}")
             return f"Error: {e}"
@@ -303,15 +349,17 @@ def register_tools(mcp: FastMCP, imap_client: ImapClient) -> None:
         """
         client = get_client_from_context(ctx, imap)
         try:
-            client.trash_email(uid, folder)
+            result = client.trash_email(uid, folder)
+            if result["not_found_uids"]:
+                return _not_found_text(uid, folder, "nothing was trashed")
             return "Email trashed"
         except FolderNotFound as e:
             # No resolvable Trash/Bin: same "Error: ..." text as the old
             # ValueError path.
             logger.error(f"Error trashing email: {e}")
             return f"Error: {e}"
-        except CourierError:
-            return "Failed to trash email"
+        except CourierError as e:
+            return _failed_text("trash email", e)
         except Exception as e:
             logger.error(f"Error trashing email: {e}")
             return f"Error: {e}"
@@ -341,10 +389,12 @@ def register_tools(mcp: FastMCP, imap_client: ImapClient) -> None:
         """
         client = get_client_from_context(ctx, imap)
         try:
-            client.delete_email(uid, folder)
+            result = client.delete_email(uid, folder)
+            if result["not_found_uids"]:
+                return _not_found_text(uid, folder, "nothing was deleted")
             return "Email deleted"
-        except CourierError:
-            return "Failed to delete email"
+        except CourierError as e:
+            return _failed_text("delete email", e)
         except Exception as e:
             logger.error(f"Error deleting email: {e}")
             return f"Error: {e}"

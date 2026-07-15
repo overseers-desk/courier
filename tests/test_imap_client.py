@@ -11,6 +11,7 @@ from courier.config import ImapBlock
 from courier.errors import (
     CourierError,
     FolderNotFound,
+    MessageNotFound,
     PermanentError,
     TransientError,
 )
@@ -1143,14 +1144,16 @@ class TestImapClient:
         with patch("imapclient.IMAPClient") as mock_client_class:
             mock_client_class.return_value = mock_imap_client
 
-            # Set up mock responses
+            # Set up mock responses (the pre-flight UID SEARCH sees the UID)
             mock_imap_client.select_folder.return_value = {b"EXISTS": 10}
+            mock_imap_client.search.return_value = [12345]
 
             # Connect first
             client.connect()
 
-            # Mark email as seen (returns None; failure raises)
-            client.mark_email(12345, folder="INBOX", flag=r"\Seen", value=True)
+            # Mark email as seen (reports matched/not-found; failure raises)
+            result = client.mark_email(12345, folder="INBOX", flag=r"\Seen", value=True)
+            assert result == {"matched_uids": [12345], "not_found_uids": []}
 
             # Verify select_folder was called with readonly=False for modifying flags
             mock_imap_client.select_folder.assert_called_once_with(
@@ -1191,6 +1194,7 @@ class TestImapClient:
 
             # Set up mock responses
             mock_imap_client.select_folder.return_value = {b"EXISTS": 10}
+            mock_imap_client.search.return_value = [12345]
             mock_imap_client.add_flags.side_effect = Exception("Failed to add flag")
 
             # Connect first
@@ -1224,14 +1228,18 @@ class TestImapClient:
 
             # Set up mock responses
             mock_imap_client.select_folder.return_value = {b"EXISTS": 10}
+            mock_imap_client.search.return_value = [12345]
             # Legacy server: no MOVE, no UIDPLUS (the copy+expunge path)
             mock_imap_client.has_capability.return_value = False
 
             # Connect first
             client.connect()
 
-            # Move email (returns None; failure raises)
-            client.move_email(12345, source_folder="INBOX", target_folder="Archive")
+            # Move email (reports matched/not-found; failure raises)
+            result = client.move_email(
+                12345, source_folder="INBOX", target_folder="Archive"
+            )
+            assert result == {"matched_uids": [12345], "not_found_uids": []}
 
             # Verify select_folder was called with readonly=False for modifying emails
             mock_imap_client.select_folder.assert_called_once_with(
@@ -1264,6 +1272,7 @@ class TestImapClient:
 
             # Set up mock responses
             mock_imap_client.select_folder.return_value = {b"EXISTS": 10}
+            mock_imap_client.search.return_value = [12345]
             mock_imap_client.has_capability.return_value = False
 
             # Connect first
@@ -1309,6 +1318,7 @@ class TestImapClient:
 
             # Set up mock responses
             mock_imap_client.select_folder.return_value = {b"EXISTS": 10}
+            mock_imap_client.search.return_value = [12345]
             mock_imap_client.has_capability.return_value = False
             mock_imap_client.copy.side_effect = Exception("Failed to copy email")
 
@@ -1343,13 +1353,15 @@ class TestImapClient:
 
             # Set up mock responses
             mock_imap_client.select_folder.return_value = {b"EXISTS": 10}
+            mock_imap_client.search.return_value = [12345]
             mock_imap_client.has_capability.return_value = False
 
             # Connect first
             client.connect()
 
-            # Delete email (returns None; failure raises)
-            client.delete_email(12345, folder="INBOX")
+            # Delete email (reports matched/not-found; failure raises)
+            result = client.delete_email(12345, folder="INBOX")
+            assert result == {"matched_uids": [12345], "not_found_uids": []}
 
             # Verify select_folder was called with readonly=False
             mock_imap_client.select_folder.assert_called_once_with(
@@ -1378,6 +1390,7 @@ class TestImapClient:
 
             # Set up mock responses
             mock_imap_client.select_folder.return_value = {b"EXISTS": 10}
+            mock_imap_client.search.return_value = [12345]
             mock_imap_client.add_flags.side_effect = Exception("Failed to add flag")
 
             # Connect first
@@ -1444,6 +1457,7 @@ class TestMutationTypedErrors:
     )
     def test_move_capability_ladder(self, mock_imap_client, caps):
         mock_imap_client.has_capability.side_effect = lambda cap: caps[cap]
+        mock_imap_client.search.return_value = [7, 9]
         client = self._connected_client(mock_imap_client)
 
         client.move_email([7, 9], source_folder="INBOX", target_folder="Archive")
@@ -1487,11 +1501,141 @@ class TestMutationTypedErrors:
         client = self._connected_client(mock_imap_client)
         with (
             patch.object(client, "resolve_trash_folder", return_value="Trash"),
-            patch.object(client, "move_email") as mock_move,
+            patch.object(
+                client,
+                "move_email",
+                return_value={"matched_uids": [10, 11], "not_found_uids": []},
+            ) as mock_move,
         ):
             result = client.trash_email([10, 11], "INBOX")
-        assert result == "Trash"
+        assert result == {
+            "trash_folder": "Trash",
+            "matched_uids": [10, 11],
+            "not_found_uids": [],
+        }
         mock_move.assert_called_once_with([10, 11], "INBOX", "Trash")
+
+
+class TestMutationHonesty:
+    """Mutations pre-verify existence and report per-UID not-found
+    (issue #63): UID STORE/COPY/MOVE on an expunged UID is a silent
+    server-side no-op, so blanket success would record a mutation that
+    never happened."""
+
+    def _connected_client(self, mock_imap_client) -> ImapClient:
+        config = ImapBlock(
+            host="imap.example.com",
+            port=993,
+            username="test@example.com",
+            password="password",
+            use_ssl=True,
+        )
+        client = ImapClient(config)
+        with patch("imapclient.IMAPClient") as mock_client_class:
+            mock_client_class.return_value = mock_imap_client
+            client.connect()
+        return client
+
+    def test_preflight_uid_search_issued(self, mock_imap_client):
+        """Existence is checked with a UID SEARCH against the selected
+        folder before the STORE."""
+        mock_imap_client.search.return_value = [7, 9]
+        client = self._connected_client(mock_imap_client)
+
+        client.mark_email([7, 9], "INBOX", r"\Seen")
+
+        mock_imap_client.search.assert_called_once_with(["UID", "7,9"])
+
+    def test_mark_partial_batch_reports_missing_and_stores_matched(
+        self, mock_imap_client
+    ):
+        """A batch with one stale UID stores only the live ones and
+        names the stale one instead of reporting full success."""
+        mock_imap_client.search.return_value = [7]
+        client = self._connected_client(mock_imap_client)
+
+        result = client.mark_email([7, 9], "INBOX", r"\Seen")
+
+        assert result == {"matched_uids": [7], "not_found_uids": [9]}
+        mock_imap_client.add_flags.assert_called_once_with([7], r"\Seen")
+
+    def test_mark_all_missing_skips_the_store(self, mock_imap_client):
+        mock_imap_client.search.return_value = []
+        client = self._connected_client(mock_imap_client)
+
+        result = client.mark_email([7, 9], "INBOX", r"\Seen")
+
+        assert result == {"matched_uids": [], "not_found_uids": [7, 9]}
+        mock_imap_client.add_flags.assert_not_called()
+
+    def test_move_partial_batch_moves_matched_only(self, mock_imap_client):
+        mock_imap_client.has_capability.return_value = True
+        mock_imap_client.search.return_value = [9]
+        client = self._connected_client(mock_imap_client)
+
+        result = client.move_email([7, 9], "INBOX", "Archive")
+
+        assert result == {"matched_uids": [9], "not_found_uids": [7]}
+        mock_imap_client.move.assert_called_once_with([9], "Archive")
+
+    def test_move_all_missing_skips_the_move(self, mock_imap_client):
+        mock_imap_client.has_capability.return_value = True
+        mock_imap_client.search.return_value = []
+        client = self._connected_client(mock_imap_client)
+
+        result = client.move_email([7], "INBOX", "Archive")
+
+        assert result == {"matched_uids": [], "not_found_uids": [7]}
+        mock_imap_client.move.assert_not_called()
+        mock_imap_client.copy.assert_not_called()
+
+    def test_delete_partial_batch_expunges_matched_only(self, mock_imap_client):
+        mock_imap_client.has_capability.return_value = True  # UIDPLUS
+        mock_imap_client.search.return_value = [4]
+        client = self._connected_client(mock_imap_client)
+
+        result = client.delete_email([4, 5], "INBOX")
+
+        assert result == {"matched_uids": [4], "not_found_uids": [5]}
+        mock_imap_client.add_flags.assert_called_once_with([4], r"\Deleted")
+        mock_imap_client.expunge.assert_called_once_with([4])
+
+    def test_delete_all_missing_skips_the_expunge(self, mock_imap_client):
+        mock_imap_client.search.return_value = []
+        client = self._connected_client(mock_imap_client)
+
+        result = client.delete_email([4, 5], "INBOX")
+
+        assert result == {"matched_uids": [], "not_found_uids": [4, 5]}
+        mock_imap_client.add_flags.assert_not_called()
+        mock_imap_client.expunge.assert_not_called()
+
+    def test_trash_carries_not_found_through(self, mock_imap_client):
+        client = self._connected_client(mock_imap_client)
+        with (
+            patch.object(client, "resolve_trash_folder", return_value="Trash"),
+            patch.object(
+                client,
+                "move_email",
+                return_value={"matched_uids": [10], "not_found_uids": [11]},
+            ),
+        ):
+            result = client.trash_email([10, 11], "INBOX")
+
+        assert result == {
+            "trash_folder": "Trash",
+            "matched_uids": [10],
+            "not_found_uids": [11],
+        }
+
+    def test_preflight_search_failure_maps_to_typed_error(self, mock_imap_client):
+        from imapclient.exceptions import IMAPClientError
+
+        mock_imap_client.search.side_effect = IMAPClientError("SEARCH failed: BAD")
+        client = self._connected_client(mock_imap_client)
+
+        with pytest.raises(PermanentError):
+            client.mark_email([1], "INBOX", r"\Seen")
 
 
 class TestRemoteEmitterDispatch:
@@ -2266,9 +2410,16 @@ class TestProcessEmailAction:
         )
         return ImapClient(config)
 
+    @staticmethod
+    def _touched(uid: int = 1):
+        """The mutation outcome for a UID the server had."""
+        return {"matched_uids": [uid], "not_found_uids": []}
+
     def test_move(self):
         client = self._make_client()
-        with patch.object(client, "move_email") as mock_move:
+        with patch.object(
+            client, "move_email", return_value=self._touched()
+        ) as mock_move:
             result = client.process_email_action(
                 1, "INBOX", "move", target_folder="Archive"
             )
@@ -2277,38 +2428,60 @@ class TestProcessEmailAction:
 
     def test_read(self):
         client = self._make_client()
-        with patch.object(client, "mark_email") as mock_mark:
+        with patch.object(
+            client, "mark_email", return_value=self._touched()
+        ) as mock_mark:
             result = client.process_email_action(1, "INBOX", "read")
             mock_mark.assert_called_once_with(1, "INBOX", r"\Seen", True)
             assert result == "Email marked as read"
 
     def test_unread(self):
         client = self._make_client()
-        with patch.object(client, "mark_email") as mock_mark:
+        with patch.object(
+            client, "mark_email", return_value=self._touched()
+        ) as mock_mark:
             result = client.process_email_action(1, "INBOX", "unread")
             mock_mark.assert_called_once_with(1, "INBOX", r"\Seen", False)
             assert result == "Email marked as unread"
 
     def test_flag(self):
         client = self._make_client()
-        with patch.object(client, "mark_email") as mock_mark:
+        with patch.object(
+            client, "mark_email", return_value=self._touched()
+        ) as mock_mark:
             result = client.process_email_action(1, "INBOX", "flag")
             mock_mark.assert_called_once_with(1, "INBOX", r"\Flagged", True)
             assert result == "Email flagged"
 
     def test_unflag(self):
         client = self._make_client()
-        with patch.object(client, "mark_email") as mock_mark:
+        with patch.object(
+            client, "mark_email", return_value=self._touched()
+        ) as mock_mark:
             result = client.process_email_action(1, "INBOX", "unflag")
             mock_mark.assert_called_once_with(1, "INBOX", r"\Flagged", False)
             assert result == "Email unflagged"
 
     def test_delete(self):
         client = self._make_client()
-        with patch.object(client, "delete_email") as mock_delete:
+        with patch.object(
+            client, "delete_email", return_value=self._touched()
+        ) as mock_delete:
             result = client.process_email_action(1, "INBOX", "delete")
             mock_delete.assert_called_once_with(1, "INBOX")
             assert result == "Email deleted"
+
+    def test_not_found_uid_raises_message_not_found(self):
+        """The success string must never cover a silent no-op: a UID
+        the server no longer has raises MessageNotFound (issue #63)."""
+        client = self._make_client()
+        with patch.object(
+            client,
+            "mark_email",
+            return_value={"matched_uids": [], "not_found_uids": [1]},
+        ):
+            with pytest.raises(MessageNotFound, match="UID 1"):
+                client.process_email_action(1, "INBOX", "read")
 
     def test_move_missing_target_folder(self):
         client = self._make_client()

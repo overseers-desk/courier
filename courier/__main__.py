@@ -873,6 +873,33 @@ def _die_on_courier_error(exc: CourierError) -> NoReturn:
     raise typer.Exit(3 if isinstance(exc, TransientError) else 1)
 
 
+def _emit_mutation_result(result: Dict[str, Any], folder: str, **extra: Any) -> None:
+    """Print a mutation's result envelope; exit 1 naming missing UIDs.
+
+    Mutation verbs share this. The envelope carries ``matched_uids``
+    and ``not_found_uids`` from the client (issue #63): a UID another
+    client already expunged is a silent server-side no-op, so any
+    not-found UID flips ``success`` to false and exits 1 with the UIDs
+    named on stderr — a batch with one stale UID must not report a
+    full success.
+
+    Args:
+        result: The dict the mutation method returned; every field is
+            carried into the envelope.
+        folder: Folder the mutation targeted, for the error text.
+        **extra: Verb-specific envelope fields (e.g. ``flagged``).
+    """
+    not_found = list(result.get("not_found_uids") or [])
+    payload: Dict[str, Any] = {"success": not not_found}
+    payload.update(result)
+    payload.update(extra)
+    _out(payload)
+    if not_found:
+        names = ", ".join(str(u) for u in not_found)
+        typer.echo(f"Error: UID(s) not found in {folder}: {names}", err=True)
+        raise typer.Exit(1)
+
+
 def _email_only(s: str) -> str:
     """Strip display name from ``Display Name <addr@host>``."""
     if "<" in s and ">" in s:
@@ -1966,10 +1993,13 @@ def move(
     client = _make_client()
     try:
         try:
-            client.move_email(uid, folder, target)
+            result = client.move_email(uid, folder, target)
         except CourierError as exc:
             _die_on_courier_error(exc)
-        _out({"success": True, "message": f"Moved from {folder} to {target}"})
+        extra: Dict[str, Any] = {}
+        if not result.get("not_found_uids"):
+            extra["message"] = f"Moved from {folder} to {target}"
+        _emit_mutation_result(result, folder, **extra)
     finally:
         client.disconnect()
 
@@ -2053,10 +2083,10 @@ def mark_read(
     client = _make_client()
     try:
         try:
-            client.mark_email(uid, folder, r"\Seen", True)
+            result = client.mark_email(uid, folder, r"\Seen", True)
         except CourierError as exc:
             _die_on_courier_error(exc)
-        _out({"success": True})
+        _emit_mutation_result(result, folder)
     finally:
         client.disconnect()
 
@@ -2072,10 +2102,10 @@ def mark_unread(
     client = _make_client()
     try:
         try:
-            client.mark_email(uid, folder, r"\Seen", False)
+            result = client.mark_email(uid, folder, r"\Seen", False)
         except CourierError as exc:
             _die_on_courier_error(exc)
-        _out({"success": True})
+        _emit_mutation_result(result, folder)
     finally:
         client.disconnect()
 
@@ -2099,10 +2129,10 @@ def flag(
     client = _make_client()
     try:
         try:
-            client.mark_email(uid, folder, r"\Flagged", not unflag)
+            result = client.mark_email(uid, folder, r"\Flagged", not unflag)
         except CourierError as exc:
             _die_on_courier_error(exc)
-        _out({"success": True, "flagged": not unflag})
+        _emit_mutation_result(result, folder, flagged=not unflag)
     finally:
         client.disconnect()
 
@@ -2131,12 +2161,12 @@ def trash(
     client = _make_client()
     try:
         try:
-            client.trash_email(uid, folder)
+            result = client.trash_email(uid, folder)
         except CourierError as exc:
             # FolderNotFound (no resolvable Trash/Bin) is a PermanentError,
             # so it exits 1 through the shared helper.
             _die_on_courier_error(exc)
-        _out({"success": True})
+        _emit_mutation_result(result, folder)
     except ValueError as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(1)
@@ -2161,10 +2191,10 @@ def delete(
     client = _make_client()
     try:
         try:
-            client.delete_email(uid, folder)
+            result = client.delete_email(uid, folder)
         except CourierError as exc:
             _die_on_courier_error(exc)
-        _out({"success": True})
+        _emit_mutation_result(result, folder)
     finally:
         client.disconnect()
 
@@ -3216,8 +3246,10 @@ def send_draft(
             draft_removed = False
             if not keep_draft:
                 try:
-                    client.delete_email(uid, folder)
-                    draft_removed = True
+                    removal = client.delete_email(uid, folder)
+                    # Honest only when the delete touched the draft:
+                    # a UID the server no longer had is a silent no-op.
+                    draft_removed = uid in removal.get("matched_uids", [])
                 except Exception as exc:
                     typer.echo(f"warning: draft delete failed: {exc}", err=True)
 

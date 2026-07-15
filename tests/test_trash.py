@@ -48,15 +48,25 @@ def test_resolve_trash_returns_none_when_absent():
         assert client.resolve_trash_folder() is None
 
 
+def _touched(uid: int = 12345) -> dict:
+    """The mutation outcome for a UID the server had."""
+    return {"matched_uids": [uid], "not_found_uids": []}
+
+
 def test_trash_moves_to_resolved_bin():
     client = _client()
     with (
         patch.object(client, "ensure_connected"),
         patch.object(client, "resolve_trash_folder", return_value="[Gmail]/Bin"),
-        patch.object(client, "move_email") as mock_move,
+        patch.object(client, "move_email", return_value=_touched()) as mock_move,
         patch.object(client, "delete_email") as mock_delete,
     ):
-        assert client.trash_email(12345, "INBOX") == "[Gmail]/Bin"
+        result = client.trash_email(12345, "INBOX")
+        assert result == {
+            "trash_folder": "[Gmail]/Bin",
+            "matched_uids": [12345],
+            "not_found_uids": [],
+        }
         mock_move.assert_called_once_with(12345, "INBOX", "[Gmail]/Bin")
         mock_delete.assert_not_called()
 
@@ -67,9 +77,10 @@ def test_trash_of_message_already_in_bin_expunges_in_place():
         patch.object(client, "ensure_connected"),
         patch.object(client, "resolve_trash_folder", return_value="[Gmail]/Bin"),
         patch.object(client, "move_email") as mock_move,
-        patch.object(client, "delete_email") as mock_delete,
+        patch.object(client, "delete_email", return_value=_touched()) as mock_delete,
     ):
-        assert client.trash_email(12345, "[Gmail]/Bin") == "[Gmail]/Bin"
+        result = client.trash_email(12345, "[Gmail]/Bin")
+        assert result["trash_folder"] == "[Gmail]/Bin"
         mock_delete.assert_called_once_with(12345, "[Gmail]/Bin")
         mock_move.assert_not_called()
 
@@ -86,7 +97,11 @@ def test_trash_raises_when_no_bin_resolves():
 
 def test_triage_trash_action_routes_to_trash_email():
     client = _client()
-    with patch.object(client, "trash_email", return_value="Trash") as mock_trash:
+    with patch.object(
+        client,
+        "trash_email",
+        return_value={"trash_folder": "Trash", **_touched()},
+    ) as mock_trash:
         message = client.process_email_action(12345, "INBOX", "trash")
         assert message == "Email trashed"
         mock_trash.assert_called_once_with(12345, "INBOX")

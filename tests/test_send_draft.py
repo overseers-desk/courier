@@ -86,7 +86,7 @@ def _client_with_draft(from_addr: str = "alice@x.com") -> MagicMock:
         configured if configured is not None else "Sent"
     )
     client.append_raw.return_value = AppendResult(uid=999, uidvalidity=1)
-    client.delete_email.return_value = True
+    client.delete_email.return_value = {"matched_uids": [42], "not_found_uids": []}
     return client
 
 

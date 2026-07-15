@@ -28,6 +28,7 @@ from courier import world_bound
 from courier.config import ImapBlock
 from courier.errors import (
     FolderNotFound,
+    MessageNotFound,
     PermanentError,
     TransientError,
     WorldBoundRefused,
@@ -1152,13 +1153,50 @@ class ImapClient:
         )
         client.expunge()
 
+    def _uids_present(self, uids: List[int]) -> Tuple[List[int], List[int]]:
+        """Split *uids* into (present, missing) for the selected folder.
+
+        The pre-flight for every mutation: UID STORE/COPY/MOVE on a UID
+        that no longer exists is a silent server-side no-op (RFC 3501
+        §6.4.8, RFC 6851), so existence is verified with a UID SEARCH
+        first and the caller reports per-UID not-found instead of a
+        blanket success (issue #63).  Issued raw against the selected
+        folder — deliberately not through :meth:`search`, whose
+        WORLD_AS_OF bound would misreport recent messages as absent.
+
+        Args:
+            uids: The UIDs the caller asked to mutate.
+
+        Returns:
+            ``(present, missing)``, each in the caller's order.
+
+        Raises:
+            TransientError: On connection-layer failure (retryable)
+            PermanentError: When the server answers NO/BAD
+        """
+        try:
+            found = set(
+                self._client_or_raise().search(["UID", ",".join(str(u) for u in uids)])
+            )
+        except Exception as e:
+            logger.error(f"Pre-flight UID SEARCH failed: {e}")
+            raise as_courier_error(e) from e
+        present = [u for u in uids if u in found]
+        missing = [u for u in uids if u not in found]
+        if missing:
+            logger.warning(
+                f"UID(s) {missing} not found in {self.current_folder}; "
+                f"the mutation applies to {present or 'no messages'}"
+            )
+        return present, missing
+
     def mark_email(
         self,
         uid: Union[int, Sequence[int]],
         folder: str,
         flag: str,
         value: bool = True,
-    ) -> None:
+    ) -> Dict[str, List[int]]:
         """Mark one or more emails with a flag.
 
         Args:
@@ -1166,6 +1204,12 @@ class ImapClient:
             folder: Folder containing the email(s)
             flag: Flag to set or remove
             value: True to set, False to remove
+
+        Returns:
+            Dict with ``matched_uids`` (the requested UIDs present in
+            the folder — the ones the STORE touched) and
+            ``not_found_uids`` (requested minus matched; the server
+            would have ignored them silently).
 
         Raises:
             ConnectionError: If not connected and connection fails
@@ -1175,26 +1219,29 @@ class ImapClient:
         uids = _as_uid_list(uid)
         self.ensure_connected()
         self.select_folder(folder)
+        matched, not_found = self._uids_present(uids)
 
-        try:
-            client = self._client_or_raise()
-            if value:
-                client.add_flags(uids, flag)
-                logger.debug(f"Added flag {flag} to messages {uids}")
-            else:
-                client.remove_flags(uids, flag)
-                logger.debug(f"Removed flag {flag} from messages {uids}")
-        except Exception as e:
-            logger.error(f"Failed to mark email: {e}")
-            raise as_courier_error(e) from e
+        if matched:
+            try:
+                client = self._client_or_raise()
+                if value:
+                    client.add_flags(matched, flag)
+                    logger.debug(f"Added flag {flag} to messages {matched}")
+                else:
+                    client.remove_flags(matched, flag)
+                    logger.debug(f"Removed flag {flag} from messages {matched}")
+            except Exception as e:
+                logger.error(f"Failed to mark email: {e}")
+                raise as_courier_error(e) from e
         self._update_activity()
+        return {"matched_uids": matched, "not_found_uids": not_found}
 
     def move_email(
         self,
         uid: Union[int, Sequence[int]],
         source_folder: str,
         target_folder: str,
-    ) -> None:
+    ) -> Dict[str, List[int]]:
         """Move one or more emails to another folder.
 
         Uses the server's MOVE capability (RFC 6851) when advertised;
@@ -1205,6 +1252,12 @@ class ImapClient:
             uid: Email UID or sequence of UIDs
             source_folder: Source folder
             target_folder: Target folder
+
+        Returns:
+            Dict with ``matched_uids`` (the requested UIDs present in
+            the source folder — the ones that moved) and
+            ``not_found_uids`` (requested minus matched; the server
+            would have ignored them silently).
 
         Raises:
             ConnectionError: If not connected and connection fails
@@ -1224,22 +1277,25 @@ class ImapClient:
 
         # Select source folder
         self.select_folder(source_folder)
+        matched, not_found = self._uids_present(uids)
 
-        try:
-            client = self._client_or_raise()
-            if self.has_capability("MOVE"):
-                client.move(uids, target_folder)
-            else:
-                client.copy(uids, target_folder)
-                client.add_flags(uids, r"\Deleted")
-                self._expunge_uids(uids)
-            logger.debug(
-                f"Moved messages {uids} from {source_folder} to {target_folder}"
-            )
-        except Exception as e:
-            logger.error(f"Failed to move email: {e}")
-            raise as_courier_error(e) from e
+        if matched:
+            try:
+                client = self._client_or_raise()
+                if self.has_capability("MOVE"):
+                    client.move(matched, target_folder)
+                else:
+                    client.copy(matched, target_folder)
+                    client.add_flags(matched, r"\Deleted")
+                    self._expunge_uids(matched)
+                logger.debug(
+                    f"Moved messages {matched} from {source_folder} to {target_folder}"
+                )
+            except Exception as e:
+                logger.error(f"Failed to move email: {e}")
+                raise as_courier_error(e) from e
         self._update_activity()
+        return {"matched_uids": matched, "not_found_uids": not_found}
 
     # Trash/Bin folder names to try when the server does not advertise the
     # \Trash SPECIAL-USE role. Gmail localises the Bin: en-GB/en-AU accounts
@@ -1266,7 +1322,9 @@ class ImapClient:
                 return name
         return None
 
-    def trash_email(self, uid: Union[int, Sequence[int]], folder: str) -> str:
+    def trash_email(
+        self, uid: Union[int, Sequence[int]], folder: str
+    ) -> Dict[str, Any]:
         """Move one or more emails to the server's Trash/Bin.
 
         The recommended removal path. A plain EXPUNGE in the source folder
@@ -1281,7 +1339,9 @@ class ImapClient:
             folder: Folder containing the email(s)
 
         Returns:
-            The resolved Trash/Bin folder name.
+            Dict with ``trash_folder`` (the resolved Trash/Bin folder
+            name) plus the underlying mutation's ``matched_uids`` and
+            ``not_found_uids``.
 
         Raises:
             ConnectionError: If not connected and connection fails
@@ -1299,17 +1359,25 @@ class ImapClient:
                 "`delete` to expunge in place."
             )
         if trash == folder:
-            self.delete_email(uid, folder)
+            outcome = self.delete_email(uid, folder)
         else:
-            self.move_email(uid, folder, trash)
-        return trash
+            outcome = self.move_email(uid, folder, trash)
+        return {"trash_folder": trash, **outcome}
 
-    def delete_email(self, uid: Union[int, Sequence[int]], folder: str) -> None:
+    def delete_email(
+        self, uid: Union[int, Sequence[int]], folder: str
+    ) -> Dict[str, List[int]]:
         """Delete one or more emails (\\Deleted + expunge, in place).
 
         Args:
             uid: Email UID or sequence of UIDs
             folder: Folder containing the email(s)
+
+        Returns:
+            Dict with ``matched_uids`` (the requested UIDs present in
+            the folder — the ones expunged) and ``not_found_uids``
+            (requested minus matched; the server would have ignored
+            them silently).
 
         Raises:
             ConnectionError: If not connected and connection fails
@@ -1319,16 +1387,19 @@ class ImapClient:
         uids = _as_uid_list(uid)
         self.ensure_connected()
         self.select_folder(folder)
+        matched, not_found = self._uids_present(uids)
 
-        try:
-            client = self._client_or_raise()
-            client.add_flags(uids, r"\Deleted")
-            self._expunge_uids(uids)
-            logger.debug(f"Deleted messages {uids} from {folder}")
-        except Exception as e:
-            logger.error(f"Failed to delete email: {e}")
-            raise as_courier_error(e) from e
+        if matched:
+            try:
+                client = self._client_or_raise()
+                client.add_flags(matched, r"\Deleted")
+                self._expunge_uids(matched)
+                logger.debug(f"Deleted messages {matched} from {folder}")
+            except Exception as e:
+                logger.error(f"Failed to delete email: {e}")
+                raise as_courier_error(e) from e
         self._update_activity()
+        return {"matched_uids": matched, "not_found_uids": not_found}
 
     def process_email_action(
         self,
@@ -1350,36 +1421,45 @@ class ImapClient:
 
         Raises:
             ValueError: If *action* is unknown or *target_folder* missing for move
+            MessageNotFound: If the UID does not exist in the folder,
+                so the success message never covers a silent server-side
+                no-op (issue #63)
         """
         action_l = action.lower()
+        outcome: Dict[str, Any]
         if action_l == "move":
             if not target_folder:
                 raise ValueError("target_folder is required for move action")
-            self.move_email(uid, folder, target_folder)
-            return f"Email moved from {folder} to {target_folder}"
+            outcome = self.move_email(uid, folder, target_folder)
+            message = f"Email moved from {folder} to {target_folder}"
         elif action_l == "read":
-            self.mark_email(uid, folder, r"\Seen", True)
-            return "Email marked as read"
+            outcome = self.mark_email(uid, folder, r"\Seen", True)
+            message = "Email marked as read"
         elif action_l == "unread":
-            self.mark_email(uid, folder, r"\Seen", False)
-            return "Email marked as unread"
+            outcome = self.mark_email(uid, folder, r"\Seen", False)
+            message = "Email marked as unread"
         elif action_l == "flag":
-            self.mark_email(uid, folder, r"\Flagged", True)
-            return "Email flagged"
+            outcome = self.mark_email(uid, folder, r"\Flagged", True)
+            message = "Email flagged"
         elif action_l == "unflag":
-            self.mark_email(uid, folder, r"\Flagged", False)
-            return "Email unflagged"
+            outcome = self.mark_email(uid, folder, r"\Flagged", False)
+            message = "Email unflagged"
         elif action_l == "trash":
-            self.trash_email(uid, folder)
-            return "Email trashed"
+            outcome = self.trash_email(uid, folder)
+            message = "Email trashed"
         elif action_l == "delete":
-            self.delete_email(uid, folder)
-            return "Email deleted"
+            outcome = self.delete_email(uid, folder)
+            message = "Email deleted"
         else:
             raise ValueError(
                 f"Unknown action '{action}'. "
                 "Valid: move, read, unread, flag, unflag, trash, delete"
             )
+        if outcome.get("not_found_uids"):
+            raise MessageNotFound(
+                f"UID {uid} not found in folder {folder}; no {action_l} was performed"
+            )
+        return message
 
     def resolve_sent_folder(self, configured: Optional[str] = None) -> Optional[str]:
         """Resolve the FCC target folder, verifying it exists on the server.

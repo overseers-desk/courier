@@ -7,12 +7,18 @@ from unittest.mock import MagicMock, patch
 import pytest
 from mcp.server.fastmcp import Context, FastMCP
 
-from courier.errors import CourierError
+from courier.errors import CourierError, PermanentError, TransientError
 from courier.imap_client import ImapClient
 from courier.models import Email, EmailAddress, EmailContent
 from courier.query import parse
 from courier.query.emit_imap import emit as emit_imap
 from courier.tools import register_tools
+
+
+def _mutation_ok(uid) -> dict:
+    """The mutation outcome when every requested UID was present."""
+    uids = uid if isinstance(uid, list) else [uid]
+    return {"matched_uids": list(uids), "not_found_uids": []}
 
 
 # Patch the get_client_from_context function to use our mock client
@@ -49,11 +55,17 @@ class TestTools:
     def mock_client(self, mock_email):
         """Create a mock IMAP client."""
         client = MagicMock(spec=ImapClient)
-        # Configure default return values (mutations return None, raise on
-        # failure)
-        client.move_email.return_value = None
-        client.mark_email.return_value = None
-        client.delete_email.return_value = None
+        # Configure default return values (mutations echo the requested
+        # UIDs as matched — the issue #63 contract — and raise on failure)
+        client.move_email.side_effect = lambda uid, src, dst: _mutation_ok(uid)
+        client.mark_email.side_effect = (
+            lambda uid, folder, flag, value=True: _mutation_ok(uid)
+        )
+        client.delete_email.side_effect = lambda uid, folder: _mutation_ok(uid)
+        client.trash_email.side_effect = lambda uid, folder: {
+            "trash_folder": "Trash",
+            **_mutation_ok(uid),
+        }
         client.list_folders.return_value = ["INBOX", "Sent", "Archive", "Trash"]
         client.folders_result.return_value = ["INBOX", "Sent", "Archive", "Trash"]
         client.search.return_value = [1, 2, 3]
@@ -142,6 +154,7 @@ class TestTools:
         # Reset mock for this test
         mock_client.mark_email.reset_mock()
         mock_client.mark_email.side_effect = None
+        mock_client.mark_email.return_value = _mutation_ok(123)
 
         # Call the function
         result = await mark_unread("INBOX", 123, mock_context)
@@ -166,6 +179,7 @@ class TestTools:
         # Reset mock for this test
         mock_client.mark_email.reset_mock()
         mock_client.mark_email.side_effect = None
+        mock_client.mark_email.return_value = _mutation_ok(123)
 
         # Test flagging
         result = await flag("INBOX", 123, mock_context, True)
@@ -204,6 +218,53 @@ class TestTools:
         mock_client.delete_email.side_effect = Exception("Permission denied")
         result = await delete("INBOX", 123, mock_context)
         assert "Error" in result
+
+    @pytest.mark.asyncio
+    async def test_mutation_tools_name_a_not_found_uid(
+        self, tools, mock_client, mock_context
+    ):
+        """A UID the server no longer has must not answer with the
+        success string (issue #63): the text names the UID and says
+        nothing happened."""
+        missing = {"matched_uids": [], "not_found_uids": [123]}
+        mock_client.move_email.side_effect = None
+        mock_client.move_email.return_value = missing
+        mock_client.mark_email.side_effect = None
+        mock_client.mark_email.return_value = missing
+        mock_client.delete_email.side_effect = None
+        mock_client.delete_email.return_value = missing
+        mock_client.trash_email.side_effect = None
+        mock_client.trash_email.return_value = {"trash_folder": "Trash", **missing}
+
+        for name in ("move", "mark_read", "mark_unread", "flag", "trash", "delete"):
+            args = (
+                ("INBOX", 123, "Archive", mock_context)
+                if name == "move"
+                else ("INBOX", 123, mock_context)
+            )
+            result = await tools[name](*args)
+            assert "UID 123 not found in INBOX" in result, name
+            assert "Email" not in result, name
+
+    @pytest.mark.asyncio
+    async def test_mutation_failure_text_carries_reason_and_class(
+        self, tools, mock_client, mock_context
+    ):
+        """The failure string carries the server's stated reason and
+        the retryable/permanent marker (issue #63 comment): a caller
+        must be able to tell a missing target folder from a dropped
+        socket."""
+        mock_client.move_email.side_effect = PermanentError(
+            "[TRYCREATE] no such mailbox Recibos"
+        )
+        result = await tools["move"]("INBOX", 123, "Recibos", mock_context)
+        assert result == (
+            "Failed to move email (permanent): [TRYCREATE] no such mailbox Recibos"
+        )
+
+        mock_client.mark_email.side_effect = TransientError("connection reset")
+        result = await tools["mark_read"]("INBOX", 123, mock_context)
+        assert result == ("Failed to mark email as read (transient): connection reset")
 
     @pytest.mark.asyncio
     async def test_search(self, tools, mock_client, mock_context, mock_email):
