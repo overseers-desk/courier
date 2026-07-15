@@ -377,11 +377,11 @@ class _Renderer:
         Gmail silently matches nothing for bare byte counts and for
         the G suffix, while K and M filter correctly. A byte count
         divisible by a working unit emits exactly at the largest such
-        unit; any
-        other count rounds at K toward the over-matching side — down
-        for ``larger:``, up for ``smaller:``, and the direction flips
-        under an odd number of negations so the negated whole still
-        over-matches — with the shift declared in the report.
+        unit; any other count rounds at K toward the over-matching
+        side (down for ``larger:``, up for ``smaller:``, and the
+        direction flips under an odd number of negations so the
+        negated whole still over-matches), with the shift declared in
+        the report.
 
         Args:
             op: ``"larger"`` or ``"smaller"``.

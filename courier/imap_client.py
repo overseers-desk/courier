@@ -2386,8 +2386,16 @@ def copy_email_between_imap_blocks(
     error: Optional[str] = None
     if move:
         try:
-            source.delete_email(uid, from_folder)
-            moved = True
+            removal = source.delete_email(uid, from_folder)
+            # Honest only when the delete touched the UID: one the source
+            # no longer had is a silent no-op, so the copy stands but the
+            # move did not complete.
+            moved = uid in removal.get("matched_uids", [])
+            if not moved:
+                error = (
+                    f"copied, but UID {uid} was gone from the source before "
+                    "the delete, so the original was not removed"
+                )
         except Exception as e:
             logger.warning(f"Copied but failed to delete source message: {e}")
             error = f"copied, but failed to delete source message: {e}"

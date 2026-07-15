@@ -229,11 +229,27 @@ class TestCopyEmailBetweenAccounts:
         source.delete_email.assert_not_called()
 
     def test_copy_with_move(self, source, dest):
+        source.delete_email.return_value = {
+            "matched_uids": [42],
+            "not_found_uids": [],
+        }
         result = copy_email_between_imap_blocks(source, dest, 42, "INBOX", move=True)
 
         assert result["success"] is True
         assert result["moved"] is True
         source.delete_email.assert_called_once_with(42, "INBOX")
+
+    def test_copy_with_move_raced_source_delete_is_not_moved(self, source, dest):
+        """A UID gone before the delete no-ops silently; moved must not lie."""
+        source.delete_email.return_value = {
+            "matched_uids": [],
+            "not_found_uids": [42],
+        }
+        result = copy_email_between_imap_blocks(source, dest, 42, "INBOX", move=True)
+
+        assert result["success"] is True
+        assert result["moved"] is False
+        assert "was gone from the source" in result["error"]
 
     def test_copy_with_move_source_delete_failure_is_reported(self, source, dest):
         """A failed source-delete after a successful append must not propagate."""
