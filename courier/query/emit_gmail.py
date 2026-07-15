@@ -6,8 +6,10 @@ Dialect normalisation happens here, never in the raw query string:
 ``on:`` becomes an ``after:/before:`` pair, relative dates become
 computed absolutes (keeping WORLD_AS_OF replay semantics), ``body:``
 becomes a bare word with a report note (Gmail has no ``body:``),
-``is:flagged`` becomes ``is:starred``, and ``rfc822msgid:`` is built
-from the AST value, never rewritten from raw text.
+``is:flagged`` becomes ``is:starred``, ``rfc822msgid:`` is built
+from the AST value, never rewritten from raw text, and sizes emit in
+the K/M unit forms Gmail actually filters on (bare byte counts and G
+silently match nothing; probed live).
 
 The ``is:answered``/``is:unanswered`` family has no Gmail spelling, so
 those terms emit as the standard ANSWERED/UNANSWERED search keys
@@ -84,6 +86,12 @@ _NATIVE_PREFIXES = frozenset(
 
 # Characters that force a value into Gmail quotes.
 _VALUE_QUOTE_TRIGGERS = set("(){}")
+
+# Size unit factors Gmail actually understands, largest first. Probed
+# live (gmail-live-verify.txt items 5 and 6): bare byte counts and the
+# G suffix both silently match nothing, while K and M filter correctly,
+# so emission never goes above M and never below K.
+_SIZE_UNIT_FACTORS = ((1024**2, "M"), (1024, "K"))
 
 _NOTE_BODY = (
     "Gmail has no body: operator; " "the body: value is searched as ordinary query text"
@@ -229,6 +237,7 @@ class _Renderer:
     def __init__(self, now: datetime) -> None:
         self.now = now
         self.notes: list[str] = []
+        self.neg_depth = 0
 
     def _note(self, note: str) -> None:
         """Record an approximation note once, in first-seen order.
@@ -267,7 +276,11 @@ class _Renderer:
                 parts.append(rendered)
             return "(" + " OR ".join(parts) + ")"
         if isinstance(node, Not):
-            rendered = self.render(node.child)
+            self.neg_depth += 1
+            try:
+                rendered = self.render(node.child)
+            finally:
+                self.neg_depth -= 1
             if isinstance(node.child, Term) and not rendered.startswith("-"):
                 return f"-{rendered}"
             return f"-({rendered})"
@@ -346,7 +359,7 @@ class _Renderer:
             return f"{key}:{_gmail_date(boundary)}"
         if op in ("larger", "smaller"):
             assert isinstance(term.value, int)
-            return f"{op}:{term.value}"
+            return self._size_fragment(op, term.value)
         if op == "msgid":
             assert isinstance(term.value, str)
             return f"rfc822msgid:{_quote_value('msgid:', term.value)}"
@@ -357,6 +370,50 @@ class _Renderer:
                 "The raw query runs " "on the standard IMAP search path instead.",
             )
         raise _refuse(f"{op}:", "the operator has no Gmail mapping")
+
+    def _size_fragment(self, op: str, nbytes: int) -> str:
+        """Render larger:/smaller: in a unit form Gmail understands.
+
+        Probed live: Gmail silently matches nothing for bare byte
+        counts and for the G suffix, while K and M filter correctly
+        (gmail-live-verify.txt items 5 and 6). A byte count divisible
+        by a working unit emits exactly at the largest such unit; any
+        other count rounds at K toward the over-matching side — down
+        for ``larger:``, up for ``smaller:``, and the direction flips
+        under an odd number of negations so the negated whole still
+        over-matches — with the shift declared in the report.
+
+        Args:
+            op: ``"larger"`` or ``"smaller"``.
+            nbytes: The threshold in bytes, from the parsed term.
+
+        Returns:
+            The Gmail query fragment, e.g. ``larger:1M``.
+
+        Raises:
+            UntranslatableForBackend: When over-match rounding would
+                need a threshold under 1K, which Gmail cannot express.
+        """
+        if nbytes > 0:
+            for factor, suffix in _SIZE_UNIT_FACTORS:
+                if nbytes % factor == 0:
+                    return f"{op}:{nbytes // factor}{suffix}"
+        negated = self.neg_depth % 2 == 1
+        round_down = (op == "larger") != negated
+        units = nbytes // 1024 if round_down else -(-nbytes // 1024)
+        if units <= 0:
+            raise _refuse(
+                f"{op}:",
+                "Gmail cannot express a size threshold under 1K (bare "
+                "byte counts silently match nothing)",
+                "Use a threshold of at least 1K, or search another backend.",
+            )
+        self._note(
+            f"{op}: threshold rounded from {nbytes} to {units * 1024} bytes "
+            f"({units}K): Gmail sizes take K/M unit forms only, and the "
+            "rounding direction widens the match"
+        )
+        return f"{op}:{units}K"
 
     def _keyword_fragment(self, keyword: str) -> str:
         """Render a standalone keyword against the reference instant.

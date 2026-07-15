@@ -189,13 +189,65 @@ class TestDates:
 
 
 class TestSizes:
-    """Computed byte counts, never unit suffixes."""
+    """Unit forms only: Gmail silently no-matches bare byte counts.
 
-    def test_larger(self):
-        assert raw_of("larger:1M") == "larger:1048576"
+    Live-refuted golden (gmail-live-verify.txt item 5): larger:1048576
+    gave 0 hits where larger:1M gave 50. Item 6 pins the vocabulary to
+    K and M — G silently no-matches the same way bare bytes do — so
+    exact values emit at the largest dividing unit up to M, and inexact
+    values round at K toward the over-matching side (the direction
+    flips under negation, so the negated whole still over-matches).
+    """
 
-    def test_smaller(self):
-        assert raw_of("smaller:500k") == "smaller:512000"
+    def test_larger_unit_exact_emits_m(self):
+        assert raw_of("larger:1M") == "larger:1M"
+
+    def test_larger_bare_bytes_unit_exact_emits_m(self):
+        assert raw_of("larger:1048576") == "larger:1M"
+
+    def test_smaller_unit_exact_emits_k(self):
+        assert raw_of("smaller:500k") == "smaller:500K"
+
+    def test_g_divisible_emits_m_because_g_no_matches(self):
+        assert raw_of("larger:1G") == "larger:1024M"
+
+    def test_exact_size_adds_no_note(self):
+        assert emission_of("larger:1M").report.approximations == []
+
+    def test_larger_inexact_rounds_down_at_k(self):
+        emission = emission_of("larger:1500")
+        assert emission.criteria == [b"X-GM-RAW", b"larger:1K"]
+        assert any("rounded" in note for note in emission.report.approximations)
+
+    def test_smaller_inexact_rounds_up_at_k(self):
+        emission = emission_of("smaller:1500")
+        assert emission.criteria == [b"X-GM-RAW", b"smaller:2K"]
+        assert any("rounded" in note for note in emission.report.approximations)
+
+    def test_negated_larger_rounds_up_so_negation_over_matches(self):
+        # NOT(size > 2048) covers NOT(size > 1500); rounding down would
+        # under-match after the negation flips the inequality.
+        assert raw_of("-larger:1500") == "-larger:2K"
+
+    def test_negated_smaller_rounds_down(self):
+        assert raw_of("-smaller:1500") == "-smaller:1K"
+
+    def test_double_negation_restores_plain_direction(self):
+        assert raw_of("--larger:1500") == "-(-larger:1K)"
+
+    def test_larger_under_1k_refuses(self):
+        with pytest.raises(UntranslatableForBackend, match="under 1K"):
+            emission_of("larger:500")
+
+    def test_smaller_zero_refuses(self):
+        with pytest.raises(UntranslatableForBackend, match="under 1K"):
+            emission_of("smaller:0")
+
+    def test_rounding_note_names_both_byte_counts(self):
+        emission = emission_of("larger:1500")
+        note = next(n for n in emission.report.approximations if "rounded" in n)
+        assert "1500" in note
+        assert "1024" in note
 
 
 class TestMsgid:
