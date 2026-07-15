@@ -148,7 +148,7 @@ def _gmail_date(d: date) -> str:
     Returns:
         The date as Gmail's query language writes it.
     """
-    return d.strftime("%Y/%m/%d")
+    return f"{d.year:04d}/{d.month:02d}/{d.day:02d}"
 
 
 def _check_value(operator: str, value: str) -> None:
@@ -326,7 +326,14 @@ class _Renderer:
         if op == "on":
             assert isinstance(term.value, date)
             self._note(_NOTE_DATES)
-            next_day = term.value + timedelta(days=1)
+            try:
+                next_day = term.value + timedelta(days=1)
+            except OverflowError:
+                raise _refuse(
+                    "on:",
+                    "the day after this date is outside the representable range",
+                    "Bound the search with after: instead.",
+                ) from None
             return (
                 f"(after:{_gmail_date(term.value)} " f"before:{_gmail_date(next_day)})"
             )

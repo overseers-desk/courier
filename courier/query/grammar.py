@@ -69,6 +69,11 @@ _SIZE_RE = re.compile(r"^(\d+)([kmg]?)b?$", re.IGNORECASE)
 # Binary (1024-based) unit factors for the size grammar.
 _SIZE_UNIT_FACTORS = {"": 1, "k": 1024, "m": 1024**2, "g": 1024**3}
 
+# Nesting cap for the recursive descent: past this the parser would hit
+# Python's recursion limit and escape as RecursionError instead of the
+# contract's QuerySyntaxError. Real queries sit far below it.
+_MAX_DEPTH = 150
+
 # Characters that end a bare run and stand as structural tokens.
 _STRUCTURAL = '(){}"'
 
@@ -435,6 +440,7 @@ class _Parser:
     def __init__(self, tokens: list[_Token]) -> None:
         self.tokens = tokens
         self.pos = 0
+        self.depth = 0
         self.treated_as_text: list[str] = []
 
     def _peek(self) -> Optional[_Token]:
@@ -518,9 +524,24 @@ class _Parser:
             The parsed node, wrapped in :class:`Not` per negation.
 
         Raises:
-            QuerySyntaxError: On a negation with nothing to negate, or
-                an ``or`` with no left operand.
+            QuerySyntaxError: On a negation with nothing to negate, an
+                ``or`` with no left operand, or nesting past
+                :data:`_MAX_DEPTH` (the recursive descent would
+                otherwise escape as ``RecursionError``, outside the
+                parser's stated exception contract).
         """
+        self.depth += 1
+        if self.depth > _MAX_DEPTH:
+            raise QuerySyntaxError(
+                f"Query nesting exceeds {_MAX_DEPTH} levels; flatten the query."
+            )
+        try:
+            return self._parse_unary_inner()
+        finally:
+            self.depth -= 1
+
+    def _parse_unary_inner(self) -> Node:
+        """Body of :meth:`_parse_unary`; split so the depth guard wraps it."""
         token = self._peek()
         if token is None:
             raise QuerySyntaxError("Expected a search term.")
@@ -735,6 +756,10 @@ class _Parser:
             if token.kind is _TokenKind.OR:
                 items.append(None)
             elif token.kind is _TokenKind.PHRASE:
+                if not token.text:
+                    raise QuerySyntaxError(
+                        f"Empty quoted phrase in the {lowered}:(...) value group."
+                    )
                 items.append(token.text)
             elif token.kind is _TokenKind.RUN:
                 self._check_group_value(lowered, token.text)

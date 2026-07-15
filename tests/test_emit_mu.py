@@ -472,3 +472,11 @@ class TestLiveMuIndex:
         assert _find_subjects(mu_index, query) == {
             "Xiamen Airlines - E-ticket Issued Successfully"
         }
+
+
+class TestDateExtremes:
+    """Degenerate dates refuse instead of escaping as OverflowError."""
+
+    def test_before_date_min_refuses(self):
+        with pytest.raises(UntranslatableForBackend):
+            emit(parse("before:0001-01-01"), now=NOW)

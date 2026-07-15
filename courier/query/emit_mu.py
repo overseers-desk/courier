@@ -277,7 +277,14 @@ class _Renderer:
         if op == "before":
             assert isinstance(term.value, date)
             self._note(_NOTE_DATES)
-            prior = term.value - timedelta(days=1)
+            try:
+                prior = term.value - timedelta(days=1)
+            except OverflowError:
+                raise _refuse(
+                    "before:",
+                    "the day before this date is outside the representable range",
+                    "Bound the search with on: or after: instead.",
+                ) from None
             return f"date:..{_mu_date(prior)}"
         if op == "on":
             assert isinstance(term.value, date)
@@ -290,7 +297,15 @@ class _Renderer:
             boundary = (self.now - term.value).date()
             if op == "newer":
                 return f"date:{_mu_date(boundary)}.."
-            return f"date:..{_mu_date(boundary - timedelta(days=1))}"
+            try:
+                upper = boundary - timedelta(days=1)
+            except OverflowError:
+                raise _refuse(
+                    "older:",
+                    "the resolved date is outside the representable range",
+                    "",
+                ) from None
+            return f"date:..{_mu_date(upper)}"
         if op == "larger":
             assert isinstance(term.value, int)
             return f"size:{term.value + 1}.."

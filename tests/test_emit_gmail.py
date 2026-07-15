@@ -387,3 +387,15 @@ class TestReport:
             b"(after:2026/07/01 before:2026/07/02) hello after:2026/07/01",
             b"ANSWERED",
         ]
+
+
+class TestDateExtremes:
+    """Degenerate dates refuse instead of escaping as OverflowError."""
+
+    def test_on_date_max_refuses(self):
+        with pytest.raises(UntranslatableForBackend):
+            emit(parse("on:9999-12-31"), now=NOW)
+
+    def test_year_under_1000_zero_pads(self):
+        emission = emit(parse("before:0999-01-02"), now=NOW)
+        assert b"before:0999/01/02" in emission.criteria[1]

@@ -660,3 +660,47 @@ class TestOrErrors:
         """Callers that guarded the old parser's ValueError keep working."""
         with pytest.raises(ValueError):
             parse("or")
+
+
+class TestValueGroupEmptyPhrase:
+    """Empty phrases inside value groups error like every other empty value.
+
+    An empty-string term value silently matches every message on
+    substring backends, so the probe class here is match-all queries
+    built from a list with an empty element.
+    """
+
+    def test_empty_double_quoted_raises(self):
+        with pytest.raises(QuerySyntaxError, match="[Ee]mpty quoted phrase"):
+            parse('subject:("")')
+
+    def test_empty_single_quoted_raises(self):
+        with pytest.raises(QuerySyntaxError, match="[Ee]mpty quoted phrase"):
+            parse("subject:('')")
+
+    def test_empty_between_values_raises(self):
+        with pytest.raises(QuerySyntaxError, match="[Ee]mpty quoted phrase"):
+            parse('subject:(a "" b)')
+
+    def test_empty_in_or_group_raises(self):
+        with pytest.raises(QuerySyntaxError, match="[Ee]mpty quoted phrase"):
+            parse('subject:("" or a)')
+
+
+class TestNestingDepthCap:
+    """Nesting past the cap raises QuerySyntaxError, not RecursionError."""
+
+    def test_deep_parens_raise_syntax_error(self):
+        with pytest.raises(QuerySyntaxError, match="nesting"):
+            parse("(" * 200 + "a" + ")" * 200)
+
+    def test_deep_braces_raise_syntax_error(self):
+        with pytest.raises(QuerySyntaxError, match="nesting"):
+            parse("{" * 200 + "a" + "}" * 200)
+
+    def test_dash_stack_raises_syntax_error(self):
+        with pytest.raises(QuerySyntaxError, match="nesting"):
+            parse("-" * 300 + "a")
+
+    def test_realistic_depth_parses(self):
+        assert ast_of("(" * 100 + "a" + ")" * 100) == w("a")
