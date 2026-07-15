@@ -22,9 +22,15 @@ import time
 from dataclasses import dataclass
 from typing import Iterator, Optional, Tuple
 
+from imapclient.exceptions import (  # type: ignore[import-untyped]
+    IMAPClientAbortError,
+    IMAPClientError,
+)
+
 from courier.config import ImapBlock
 from courier.errors import (
     CapabilityMissing,
+    FolderNotFound,
     TransientError,
     WorldBoundRefused,
     as_courier_error,
@@ -110,7 +116,12 @@ def watch(
 
     On transient failure/abort the connection is rebuilt with capped
     exponential backoff (1 s doubling to 60 s) and a ``reconnected``
-    event carries the fresh UIDVALIDITY.
+    event carries the fresh UIDVALIDITY. Backoff resets only after a
+    connection has held IDLE for at least one poll cycle, so a server
+    that accepts SELECT and then drops the socket cannot force a ~1 Hz
+    reconnect storm. A server NO on the first SELECT raises
+    :class:`FolderNotFound`; a NO after one successful SELECT is
+    retried like a transient failure (the folder may come back).
 
     Refused outright (eagerly, at call time) when ``WORLD_AS_OF`` is
     set: a watch is a live tail of events after the bound, and every
@@ -128,6 +139,7 @@ def watch(
         WorldBoundRefused: WORLD_AS_OF is set.
         WorldAsOfInvalid: WORLD_AS_OF is set but unparseable or naive.
         CapabilityMissing: The server does not advertise IDLE.
+        FolderNotFound: The server answered NO to the first SELECT.
         PermanentError: The server answered NO/BAD.
     """
     bound = world_as_of()
@@ -157,19 +169,45 @@ def _watch_events(
     client = ImapClient(block)
     kind_next = "started"
     backoff = _BACKOFF_START
+    selected_once = False
     try:
         while stop is None or not stop.is_set():
+            idle_entered: Optional[float] = None
             try:
                 client.connect()
                 if not client.has_capability("IDLE"):
                     raise CapabilityMissing(
                         f"server {block.host} does not advertise IDLE"
                     )
-                # ponytail: a folder the server NOs is retried like a
-                # transient failure (ImapClient.select_folder wraps NO
-                # in ConnectionError); a daemon watcher prefers waiting
-                # for the folder over dying.
-                info = client.select_folder(folder, readonly=True)
+                try:
+                    info = client.select_folder(folder, readonly=True)
+                except ConnectionError as e:
+                    # ImapClient.select_folder re-raises every imapclient
+                    # failure as builtin ConnectionError, so a server NO
+                    # and a mid-SELECT socket abort arrive as the same
+                    # type; the original error is still on __context__.
+                    # Retyping select_folder itself (FolderNotFound for
+                    # a NO) is issue #65's select_folder item, owned by
+                    # a later wave; until it lands, match what reaches
+                    # us today. A NO on the FIRST select is a permanent
+                    # answer (typo'd, deleted, or ACL-denied folder), so
+                    # raise instead of retrying forever; after one
+                    # successful SELECT a NO is treated as transient so
+                    # a daemon watcher waits out a folder that
+                    # temporarily disappears.
+                    cause = e.__context__
+                    if (
+                        not selected_once
+                        and type(e) is ConnectionError
+                        and isinstance(cause, IMAPClientError)
+                        and not isinstance(cause, IMAPClientAbortError)
+                    ):
+                        raise FolderNotFound(
+                            f"cannot watch {folder!r}: the server refused "
+                            f"the first SELECT ({cause})"
+                        ) from e
+                    raise
+                selected_once = True
                 uidvalidity = info.get(b"UIDVALIDITY")
                 yield WatchEvent(
                     kind=kind_next,
@@ -179,17 +217,31 @@ def _watch_events(
                     raw=f"SELECT {folder} UIDVALIDITY {uidvalidity}",
                 )
                 kind_next = "reconnected"
-                backoff = _BACKOFF_START
                 raw_client = client._client_or_raise()
                 raw_client.idle()
+                # Backoff is NOT reset here: a server can accept
+                # login+SELECT and still drop the socket moments into
+                # IDLE (issue #89), and resetting on SELECT turns that
+                # into a ~1 Hz reconnect storm. The failure handler
+                # resets it instead, once a connection has held IDLE
+                # for at least one poll cycle.
                 idle_since = time.monotonic()
+                idle_entered = idle_since
                 while stop is None or not stop.is_set():
                     for resp in raw_client.idle_check(poll_interval):
                         event = _to_event(resp, folder)
                         if event is not None:
                             yield event
                     if time.monotonic() - idle_since >= reissue_after:
-                        raw_client.idle_done()
+                        # idle_done() returns the untagged responses
+                        # that raced the DONE round-trip; the server
+                        # does not re-send them, so they must become
+                        # events like any idle_check batch.
+                        _, pending = raw_client.idle_done()
+                        for resp in pending or []:
+                            event = _to_event(resp, folder)
+                            if event is not None:
+                                yield event
                         raw_client.idle()
                         idle_since = time.monotonic()
                 raw_client.idle_done()
@@ -200,6 +252,14 @@ def _watch_events(
                     if err is e:
                         raise
                     raise err from e
+                if (
+                    idle_entered is not None
+                    and time.monotonic() - idle_entered >= poll_interval
+                ):
+                    # The connection proved it can hold IDLE for a full
+                    # poll cycle before failing; treat this failure as
+                    # fresh rather than part of a storm.
+                    backoff = _BACKOFF_START
                 logger.warning(
                     "watch(%s): transient failure (%s); reconnecting in %.0fs",
                     folder,

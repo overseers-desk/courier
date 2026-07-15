@@ -11,12 +11,12 @@ import time
 from unittest.mock import MagicMock, patch
 
 import pytest
-from imapclient.exceptions import IMAPClientAbortError
+from imapclient.exceptions import IMAPClientAbortError, IMAPClientError
 from typer.testing import CliRunner
 
 from courier.__main__ import app
 from courier.config import ImapBlock
-from courier.errors import CapabilityMissing
+from courier.errors import CapabilityMissing, FolderNotFound
 from courier.watch import WatchEvent, watch
 from tests.conftest import patch_default_cli_config
 
@@ -35,6 +35,9 @@ def _mock_server(uidvalidity: int = 111, exists: int = 3) -> MagicMock:
     inst.has_capability.return_value = True
     inst.select_folder.return_value = {b"UIDVALIDITY": uidvalidity, b"EXISTS": exists}
     inst.idle_check.return_value = []
+    # imapclient's idle_done() returns (tagged text, untagged responses
+    # that raced the DONE round-trip).
+    inst.idle_done.return_value = (b"Idle completed", [])
     return inst
 
 
@@ -126,6 +129,166 @@ class TestWatchEvents:
         assert [e.kind for e in events] == ["started"]
         assert inst.idle.call_count == 2  # initial + reissue
         assert inst.idle_done.call_count == 2  # reissue + stop exit
+
+    def test_idle_done_responses_yielded_before_reissue(self, monkeypatch):
+        """An EXISTS that lands during the DONE round-trip of the
+        15-minute reissue must become an event; the server will not
+        re-send it (issue #65)."""
+        stop = threading.Event()
+        inst = _mock_server()
+        order: list = []
+        calls = {"n": 0}
+
+        def checks(timeout):
+            calls["n"] += 1
+            if calls["n"] >= 2:
+                stop.set()
+            return []
+
+        inst.idle_check.side_effect = checks
+        inst.idle.side_effect = lambda: order.append("idle")
+        inst.idle_done.side_effect = [
+            (b"Idle completed", [(5, b"EXISTS"), (b"OK", b"Still here")]),
+            (b"Idle completed", []),
+        ]
+        # Scripted monotonic readings as in the reissue test above:
+        # idle_since=0, first check sees 1000 (-> reissue), new
+        # idle_since=2000, second check sees 2500 (no reissue).
+        readings = [0, 1000, 2000, 2500]
+
+        def fake_monotonic():
+            return readings.pop(0) if len(readings) > 1 else readings[0]
+
+        monkeypatch.setattr(time, "monotonic", fake_monotonic)
+        with patch("imapclient.IMAPClient", return_value=inst):
+            for event in watch(_block(), stop=stop, poll_interval=0.01):
+                order.append(event.kind)
+
+        # The raced EXISTS is yielded between DONE and the re-IDLE; the
+        # status noise is filtered like any idle_check batch.
+        assert order == ["started", "idle", "exists", "idle"]
+
+    def test_backoff_doubles_when_idle_dies_immediately(self):
+        """A server that accepts SELECT then drops the socket in IDLE
+        must see growing backoff, not a ~1 Hz reconnect storm; a
+        successful SELECT alone no longer resets it (issue #89)."""
+        stop = RecordingStop()
+        insts = [_mock_server(uidvalidity=100 + i) for i in range(4)]
+        for inst in insts[:3]:
+            inst.idle_check.side_effect = IMAPClientAbortError("dropped in IDLE")
+
+        def checks(timeout):
+            stop.set()
+            return []
+
+        insts[3].idle_check.side_effect = checks
+        with patch("imapclient.IMAPClient", side_effect=insts):
+            events = list(watch(_block(), stop=stop, poll_interval=30.0))
+
+        assert [e.kind for e in events] == [
+            "started",
+            "reconnected",
+            "reconnected",
+            "reconnected",
+        ]
+        assert stop.waits == [1.0, 2.0, 4.0]
+
+    def test_backoff_resets_after_stable_idle_window(self, monkeypatch):
+        """Backoff resets once a connection has held IDLE for at least
+        one poll cycle — not on SELECT (issue #89)."""
+        stop = RecordingStop()
+        insts = [_mock_server(uidvalidity=100 + i) for i in range(5)]
+        for inst in insts[:3]:
+            inst.idle_check.side_effect = IMAPClientAbortError("dropped in IDLE")
+        # Fourth connection: one clean poll cycle, then dies.
+        insts[3].idle_check.side_effect = [
+            [],
+            IMAPClientAbortError("dropped after a stable window"),
+        ]
+
+        def checks(timeout):
+            stop.set()
+            return []
+
+        insts[4].idle_check.side_effect = checks
+        # Scripted monotonic: three fast failures (held 0.1s each), then
+        # a connection that holds 2s (>= poll_interval 1.0) before dying.
+        readings = [0, 0.1, 10, 10.1, 20, 20.1, 30, 30.5, 32, 40, 40.1]
+
+        def fake_monotonic():
+            return readings.pop(0) if len(readings) > 1 else readings[0]
+
+        monkeypatch.setattr(time, "monotonic", fake_monotonic)
+        with patch("imapclient.IMAPClient", side_effect=insts):
+            events = list(
+                watch(_block(), stop=stop, poll_interval=1.0, reissue_after=900)
+            )
+
+        assert [e.kind for e in events] == ["started"] + ["reconnected"] * 4
+        # 1, 2, 4 while dying young; back to 1 after the stable window.
+        assert stop.waits == [1.0, 2.0, 4.0, 1.0]
+
+    def test_first_select_no_raises_folder_not_found(self):
+        """A NO on the first SELECT (typo'd, deleted, ACL-denied folder)
+        is permanent: raise instead of retrying forever (issue #65
+        comment)."""
+        inst = _mock_server()
+        inst.select_folder.side_effect = IMAPClientError(
+            "select failed: NO No such mailbox"
+        )
+        # The class mock must present the real Error attribute:
+        # ImapClient.select_folder catches imapclient.IMAPClient.Error.
+        with patch("imapclient.IMAPClient", return_value=inst) as cls_mock:
+            cls_mock.Error = IMAPClientError
+            with pytest.raises(FolderNotFound, match="first SELECT"):
+                list(watch(_block(), folder="Inbxo"))
+        inst.idle.assert_not_called()
+
+    def test_first_select_abort_is_retried(self):
+        """A socket abort during the first SELECT stays transient; only
+        a server NO is permanent."""
+        stop = RecordingStop()
+        inst1 = _mock_server()
+        inst1.select_folder.side_effect = IMAPClientAbortError("EOF during SELECT")
+        inst2 = _mock_server(uidvalidity=222)
+
+        def checks(timeout):
+            stop.set()
+            return []
+
+        inst2.idle_check.side_effect = checks
+        with patch("imapclient.IMAPClient", side_effect=[inst1, inst2]) as cls_mock:
+            cls_mock.Error = IMAPClientError
+            events = list(watch(_block(), stop=stop, poll_interval=0.01))
+
+        assert [e.kind for e in events] == ["started"]
+        assert events[0].uidvalidity == 222
+
+    def test_select_no_after_first_success_is_transient(self):
+        """Once one SELECT has succeeded, a NO is retried like a
+        transient failure: a daemon watcher waits out a folder that
+        temporarily disappears."""
+        stop = RecordingStop()
+        inst1 = _mock_server(uidvalidity=111)
+        inst1.idle_check.side_effect = IMAPClientAbortError("socket EOF")
+        inst2 = _mock_server()
+        inst2.select_folder.side_effect = IMAPClientError("NO folder busy")
+        inst3 = _mock_server(uidvalidity=333)
+
+        def checks(timeout):
+            stop.set()
+            return []
+
+        inst3.idle_check.side_effect = checks
+        with patch(
+            "imapclient.IMAPClient", side_effect=[inst1, inst2, inst3]
+        ) as cls_mock:
+            cls_mock.Error = IMAPClientError
+            events = list(watch(_block(), stop=stop, poll_interval=0.01))
+
+        assert [e.kind for e in events] == ["started", "reconnected"]
+        assert events[1].uidvalidity == 333
+        assert len(stop.waits) == 2
 
     def test_stop_terminates_generator(self):
         stop = threading.Event()
