@@ -1,5 +1,5 @@
 Name:           courier
-Version:        1.1.17
+Version:        1.1.18
 Release:        1%{?dist}
 Summary:        Email toolkit for AI assistants and command-line scripting
 License:        MIT
@@ -67,6 +67,16 @@ install -Dpm 644 debian/courier.1 %{buildroot}%{_mandir}/man1/courier.1
 %{_mandir}/man1/courier.1*
 
 %changelog
+* Wed Jul 15 2026 Weiwu Zhang <a@colourful.land> - 1.1.18-1
+- Gmail-style search translates faithfully to plain IMAP and the local cache: parentheses group, multi-term OR nests, and operators a backend cannot honour refuse with a clear message instead of silently searching for the literal text and returning nothing.
+- Search failures enter the result: a folder that errors or times out is listed in folders_failed, a dead connection reports an error instead of an empty mailbox, and exit codes separate hits, a genuine empty, and a failure.
+- Non-ASCII search terms are sent with a UTF-8 charset.
+- allowed_folders is enforced on the local-cache and disk read paths.
+- A redact policy is honoured wherever a message is copied, exported, or sent.
+- SMTP reports recipients the server refuses, uses CRLF line endings, and sets a connection timeout.
+- mark/move/delete/trash verify the UIDs and report which matched and which were not found.
+- courier watch keeps folder events across its IDLE reissue and backs off correctly on a flaky connection.
+
 * Sun Jul 12 2026 Weiwu Zhang <a@colourful.land> - 1.1.17-1
 - msgid: search operator finds a message by RFC 5322 Message-ID on IMAP, the local cache, and Gmail (alias rfc822msgid:).
 - search --help and the MCP tool description now list the full operator inventory, rendered from the parser.

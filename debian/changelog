@@ -1,3 +1,25 @@
+courier (1.1.18) unstable; urgency=medium
+
+  * Gmail-style search translates faithfully to plain IMAP and the local
+    cache: parentheses group, multi-term OR nests, and operators a backend
+    cannot honour refuse with a clear message instead of silently searching
+    for the literal text and returning nothing.
+  * Search failures enter the result: a folder that errors or times out is
+    listed in folders_failed, a dead connection reports an error instead of
+    an empty mailbox, and exit codes separate hits, a genuine empty, and a
+    failure.
+  * Non-ASCII search terms are sent with a UTF-8 charset.
+  * allowed_folders is enforced on the local-cache and disk read paths.
+  * A redact policy is honoured wherever a message is copied, exported, or sent.
+  * SMTP reports recipients the server refuses, uses CRLF line endings, and
+    sets a connection timeout.
+  * mark/move/delete/trash verify the UIDs and report which matched and which
+    were not found.
+  * courier watch keeps folder events across its IDLE reissue and backs off
+    correctly on a flaky connection.
+
+ -- Weiwu Zhang <a@colourful.land>  Wed, 15 Jul 2026 00:00:00 +0000
+
 courier (1.1.17) unstable; urgency=medium
 
   * msgid: search operator finds a message by RFC 5322 Message-ID on IMAP,
