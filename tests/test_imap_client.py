@@ -8,7 +8,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from courier.config import ImapBlock
-from courier.errors import CourierError, PermanentError, TransientError
+from courier.errors import (
+    CourierError,
+    FolderNotFound,
+    PermanentError,
+    TransientError,
+)
 from courier.imap_client import ImapClient
 from courier.local_cache import EligibilityResult, MuFailure, UntranslatableQuery
 from courier.models import Email
@@ -456,6 +461,82 @@ class TestImapClient:
 
             # Verify select_folder was not called
             mock_imap_client.select_folder.assert_not_called()
+
+    def test_select_folder_server_no_raises_folder_not_found(self, mock_imap_client):
+        """A server NO/BAD on SELECT is a judgement about the folder
+        (missing, ACL-denied, \\Noselect), not about the connection: it
+        maps to FolderNotFound, a PermanentError, so callers stop
+        retrying a command the server will keep refusing (issue #65)."""
+        from imapclient.exceptions import IMAPClientError
+
+        config = ImapBlock(
+            host="imap.example.com",
+            port=993,
+            username="test@example.com",
+            password="password",
+            use_ssl=True,
+        )
+        client = ImapClient(config)
+
+        with patch("imapclient.IMAPClient") as mock_client_class:
+            mock_client_class.return_value = mock_imap_client
+            mock_imap_client.select_folder.side_effect = IMAPClientError(
+                "select failed: NO No such mailbox Inbxo"
+            )
+            client.connect()
+
+            with pytest.raises(FolderNotFound, match="Inbxo"):
+                client.select_folder("Inbxo")
+
+    def test_select_folder_not_found_is_permanent(self, mock_imap_client):
+        """FolderNotFound from SELECT is caught by PermanentError
+        handlers: the CLI's typed exit codes and as_courier_error both
+        classify it as not-retryable."""
+        from imapclient.exceptions import IMAPClientError
+
+        config = ImapBlock(
+            host="imap.example.com",
+            port=993,
+            username="test@example.com",
+            password="password",
+            use_ssl=True,
+        )
+        client = ImapClient(config)
+
+        with patch("imapclient.IMAPClient") as mock_client_class:
+            mock_client_class.return_value = mock_imap_client
+            mock_imap_client.select_folder.side_effect = IMAPClientError(
+                "SELECT failed: NO"
+            )
+            client.connect()
+
+            with pytest.raises(PermanentError):
+                client.select_folder("Nope")
+
+    def test_select_folder_abort_raises_connection_error(self, mock_imap_client):
+        """A dropped socket mid-SELECT is connection-layer trouble, not
+        a judgement about the folder: it stays the builtin
+        ConnectionError so retry loops keep treating it as transient."""
+        from imapclient.exceptions import IMAPClientAbortError
+
+        config = ImapBlock(
+            host="imap.example.com",
+            port=993,
+            username="test@example.com",
+            password="password",
+            use_ssl=True,
+        )
+        client = ImapClient(config)
+
+        with patch("imapclient.IMAPClient") as mock_client_class:
+            mock_client_class.return_value = mock_imap_client
+            mock_imap_client.select_folder.side_effect = IMAPClientAbortError(
+                "socket error: EOF during SELECT"
+            )
+            client.connect()
+
+            with pytest.raises(ConnectionError):
+                client.select_folder("INBOX")
 
     def test_search_with_string_criteria(self, mock_imap_client):
         """Test searching with string criteria."""

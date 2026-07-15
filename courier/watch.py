@@ -22,11 +22,6 @@ import time
 from dataclasses import dataclass
 from typing import Iterator, Optional, Tuple
 
-from imapclient.exceptions import (  # type: ignore[import-untyped]
-    IMAPClientAbortError,
-    IMAPClientError,
-)
-
 from courier.config import ImapBlock
 from courier.errors import (
     CapabilityMissing,
@@ -183,26 +178,21 @@ def _watch_events(
                     )
                 try:
                     info = client.select_folder(folder, readonly=True)
-                except ConnectionError as e:
-                    # select_folder re-raises every imapclient failure
-                    # as builtin ConnectionError (a server NO and a
-                    # mid-SELECT abort arrive as the same type; original
-                    # error on __context__). select_folder itself should
-                    # raise FolderNotFound for a NO, issue #65's item,
-                    # owned by a later wave; this is the stopgap until
-                    # it lands.
-                    cause = e.__context__
-                    if (
-                        not selected_once
-                        and type(e) is ConnectionError
-                        and isinstance(cause, IMAPClientError)
-                        and not isinstance(cause, IMAPClientAbortError)
-                    ):
+                except FolderNotFound as e:
+                    # select_folder types a server NO on SELECT as
+                    # FolderNotFound (issue #65). Before the first
+                    # successful SELECT that is permanent: a typo'd or
+                    # missing folder must raise, not retry forever.
+                    # After one success the folder demonstrably
+                    # existed, so its disappearance is treated as
+                    # transient and the watcher waits it out (the
+                    # wait-for-folder behaviour).
+                    if not selected_once:
                         raise FolderNotFound(
                             f"cannot watch {folder!r}: the server refused "
-                            f"the first SELECT ({cause})"
+                            f"the first SELECT ({e})"
                         ) from e
-                    raise
+                    raise TransientError(str(e)) from e
                 selected_once = True
                 uidvalidity = info.get(b"UIDVALIDITY")
                 yield WatchEvent(

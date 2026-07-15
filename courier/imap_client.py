@@ -20,12 +20,16 @@ from typing import (
 )
 
 import imapclient  # type: ignore[import-untyped]
+from imapclient.exceptions import (  # type: ignore[import-untyped]
+    IMAPClientError,
+)
 
 from courier import world_bound
 from courier.config import ImapBlock
 from courier.errors import (
     FolderNotFound,
     PermanentError,
+    TransientError,
     WorldBoundRefused,
     as_courier_error,
 )
@@ -548,7 +552,11 @@ class ImapClient:
 
         Raises:
             ValueError: If folder is not allowed
-            ConnectionError: If connection error occurs
+            FolderNotFound: The server answered NO/BAD to the SELECT
+                (folder missing, ACL-denied, or ``\\Noselect``);
+                repeating the identical command is useless (issue #65).
+            ConnectionError: The connection dropped mid-SELECT
+                (retryable; no judgement about the folder).
         """
         # Make sure the folder is allowed
         if not self._is_folder_allowed(folder):
@@ -564,9 +572,16 @@ class ImapClient:
             self._update_activity()
             logger.debug(f"Selected folder '{folder}'")
             return result
-        except imapclient.IMAPClient.Error as e:
+        except IMAPClientError as e:
             logger.error(f"Error selecting folder {folder}: {e}")
-            raise ConnectionError(f"Failed to select folder {folder}: {e}")
+            if isinstance(as_courier_error(e), TransientError):
+                # Aborted connection mid-SELECT: connection-layer
+                # trouble, kept as the builtin ConnectionError the
+                # retry loops already treat as transient.
+                raise ConnectionError(f"Failed to select folder {folder}: {e}") from e
+            # The server answered NO/BAD: the folder is missing,
+            # ACL-denied, or \Noselect — permanent for this command.
+            raise FolderNotFound(f"Failed to select folder {folder}: {e}") from e
 
     def search(
         self,
