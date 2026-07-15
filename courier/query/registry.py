@@ -285,8 +285,8 @@ OPERATORS: tuple[Operator, ...] = (
         kind=ValueKind.NONE,
         syntax='"SOME WORDS"',
         meaning=(
-            "Quoted text searches as an exact phrase; quoting also forces "
-            "operator-looking text to be literal"
+            "Quoted text (double or single quotes) searches as an exact "
+            "phrase; quoting also forces operator-looking text to be literal"
         ),
         example='"label:work"',
     ),

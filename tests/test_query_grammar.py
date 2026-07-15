@@ -476,6 +476,52 @@ class TestQuoting:
             parse('""')
 
 
+class TestSingleQuotes:
+    """Single quotes work like double quotes, per the documented CLI
+    behaviour, but only at a token start or directly after prefix:, so
+    apostrophes inside words stay literal."""
+
+    def test_single_quoted_prefix_value(self):
+        assert ast_of("from:'Alice Smith'") == Term("from", "Alice Smith")
+
+    def test_single_quoted_phrase(self):
+        assert ast_of("'phrase words'") == Term(OP_PHRASE, "phrase words")
+
+    def test_unbalanced_single_quote_raises(self):
+        with pytest.raises(QuerySyntaxError, match="single quote"):
+            parse("'oops")
+
+    def test_unbalanced_single_quote_in_value_raises(self):
+        with pytest.raises(QuerySyntaxError, match="single quote"):
+            parse("subject:'unbalanced meeting")
+
+    def test_apostrophe_inside_word_stays_literal(self):
+        assert ast_of("don't") == w("don't")
+
+    def test_trailing_apostrophe_stays_literal(self):
+        assert ast_of("students' notes") == And((w("students'"), w("notes")))
+
+    def test_double_quote_is_literal_inside_single_quotes(self):
+        assert ast_of("'say \"hi\"'") == Term(OP_PHRASE, 'say "hi"')
+
+    def test_escaped_single_quote_inside_single_quotes(self):
+        assert ast_of("'it\\'s here'") == Term(OP_PHRASE, "it's here")
+
+    def test_single_quoting_forces_operator_text_literal(self):
+        assert ast_of("'label:work'") == Term(OP_PHRASE, "label:work")
+
+    def test_negated_single_quoted_phrase(self):
+        assert ast_of("-'draft copy'") == Not(Term(OP_PHRASE, "draft copy"))
+
+    def test_empty_single_quoted_phrase_raises(self):
+        with pytest.raises(QuerySyntaxError, match="[Ee]mpty"):
+            parse("''")
+
+    def test_empty_single_quoted_value_raises(self):
+        with pytest.raises(QuerySyntaxError, match="needs a value"):
+            parse("from:''")
+
+
 class TestEmptyValues:
     """A prefix without a value is an error naming the operator."""
 

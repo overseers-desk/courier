@@ -27,8 +27,14 @@ happens. No operator-looking token ever degrades to literal search
 text: registry-known prefixes parse, near-misses refuse with the
 correction, and only genuinely word-shaped tokens (URLs, clock times)
 stay words, recorded in :attr:`ParseResult.treated_as_text`. An
-unbalanced double quote is a parse error too; the old parser's shlex
-fallback kept the quote as literal text and searched for it.
+unbalanced quote is a parse error too; the old parser's shlex fallback
+kept the quote as literal text and searched for it.
+
+Single quotes are accepted like double quotes, per the documented CLI
+behaviour: ``'phrase words'`` is a phrase and ``from:'Alice Smith'`` a
+quoted operator value. Unlike double quotes, a single quote is only
+structural at a token start or directly after ``prefix:``, so
+apostrophes inside words (``don't``, ``students'``) stay literal.
 """
 
 from __future__ import annotations
@@ -132,9 +138,11 @@ class _Token:
 
 
 def _read_quoted(text: str, start: int) -> tuple[str, int]:
-    """Read a double-quoted string starting at ``text[start]``.
+    """Read a quoted string starting at ``text[start]``.
 
-    Backslash escapes the double quote and the backslash itself; any
+    The character at ``start`` (a double or single quote) is the
+    delimiter; the other quote character is literal inside it.
+    Backslash escapes the delimiter and the backslash itself; any
     other backslash pair is kept literally.
 
     Args:
@@ -148,20 +156,22 @@ def _read_quoted(text: str, start: int) -> tuple[str, int]:
     Raises:
         QuerySyntaxError: When the closing quote is missing.
     """
+    quote = text[start]
     out: list[str] = []
     i = start + 1
     while i < len(text):
         c = text[i]
-        if c == "\\" and i + 1 < len(text) and text[i + 1] in '\\"':
+        if c == "\\" and i + 1 < len(text) and text[i + 1] in ("\\", quote):
             out.append(text[i + 1])
             i += 2
             continue
-        if c == '"':
+        if c == quote:
             return "".join(out), i + 1
         out.append(c)
         i += 1
+    kind = "double" if quote == '"' else "single"
     raise QuerySyntaxError(
-        f"Unbalanced double quote in query: {text[start:]!r} has no closing "
+        f"Unbalanced {kind} quote in query: {text[start:]!r} has no closing "
         "quote. Close it, or drop the quote character."
     )
 
@@ -170,7 +180,9 @@ def _tokenize(text: str) -> list[_Token]:
     """Split a query string into grammar tokens.
 
     Parens, braces, and double quotes are structural everywhere outside
-    a quoted string; a value containing them must be quoted. A dash is
+    a quoted string; a value containing them must be quoted. A single
+    quote is structural only at a token start or directly after
+    ``prefix:``, so apostrophes inside words stay literal. A dash is
     the negation prefix only at a token start directly against the next
     token; standalone it is a word, and inside a word it stays a
     hyphen. A run ending in a colon glues to a directly following
@@ -210,7 +222,7 @@ def _tokenize(text: str) -> list[_Token]:
             tokens.append(_Token(_TokenKind.RBRACE))
             i += 1
             continue
-        if c == '"':
+        if c in "\"'":
             value, i = _read_quoted(text, i)
             tokens.append(_Token(_TokenKind.PHRASE, text=value))
             continue
@@ -224,10 +236,14 @@ def _tokenize(text: str) -> list[_Token]:
             continue
         j = i
         while j < n and not text[j].isspace() and text[j] not in _STRUCTURAL:
+            # A single quote ends the run only right after prefix:, so
+            # from:'Alice Smith' glues while don't stays one word.
+            if text[j] == "'" and text[j - 1] == ":":
+                break
             j += 1
         run = text[i:j]
         if j < n and run.endswith(":"):
-            if text[j] == '"':
+            if text[j] in "\"'":
                 value, j = _read_quoted(text, j)
                 tokens.append(
                     _Token(_TokenKind.PRE_QUOTED, text=value, prefix=run[:-1])
