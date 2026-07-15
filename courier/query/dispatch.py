@@ -8,7 +8,7 @@ The dispatcher's pure decisions live here so the I/O layer
   Both the generic-IMAP and mu emitters refuse ``in:`` unconditionally,
   so the stripped tree is what they receive; the Gmail emitter speaks
   ``in:`` natively and receives the original tree. An ``in:`` anywhere
-  other than a top-level conjunct refuses for every backend — scope is
+  other than a top-level conjunct refuses for every backend: scope is
   a property of the whole search, not of a branch.
 - **Capability gates**: the remote sub-dispatch picks the Gmail emitter
   on ``X-GM-EXT-1`` and offers RFC 5032 ``WITHIN`` to the generic

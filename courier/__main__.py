@@ -837,7 +837,7 @@ def _chain_exit_code(result: Dict[str, Dict[str, Any]]) -> int:
 
     0 when any block produced hits; 1 on a clean zero; 2 when nothing
     was found and something failed (a connection, a folder, or the
-    query on some backend) — zero-with-failures must never impersonate
+    query on some backend). Zero-with-failures must never impersonate
     a clean zero, because the primary caller reads exit 1 as evidence
     of absence.
     """

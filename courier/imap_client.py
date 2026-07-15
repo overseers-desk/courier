@@ -104,7 +104,7 @@ class _RemoteSearch(NamedTuple):
 
     Six values cross one boundary (``_search_emails_imap`` back to
     ``search_emails``); three share the list type, so a bare tuple
-    would transpose silently.  Named fields only, no behaviour — the
+    would transpose silently.  Named fields only, no behaviour, the
     same standard as :class:`AppendResult`.
 
     Attributes:
@@ -1783,8 +1783,8 @@ class ImapClient:
             ``"mu_missing"``, ``"db_missing"``, ``"stale"``,
             ``"untranslatable"``, ``"mu_no_matches"``,
             ``"maildir_not_indexed"``, ``"folder_not_synced"``,
-            ``"folder_not_allowed"``, ``"exception"``), and ``query``
-            — the translation report ``{dialect, approximations,
+            ``"folder_not_allowed"``, ``"exception"``), and ``query``,
+            the translation report ``{dialect, approximations,
             fallbacks, treated_as_text}``.  Remote provenance adds
             ``folders_searched``.  ``total_count`` is the match count
             before the limit cut (``None`` when the local cache cannot
@@ -2062,8 +2062,8 @@ class ImapClient:
         Prefers the SPECIAL-USE ``\\All`` folder when the server
         advertises one (Gmail's ``[Gmail]/All Mail``, Fastmail's
         ``Archive``): one SELECT instead of iterating every folder.
-        ``\\All`` folders exclude Spam and Trash, so those are searched
-        additionally when advertised — a query scoped nowhere means
+        ``\\All`` folders exclude Spam and Trash, so those are also
+        searched when advertised. A query scoped nowhere means
         everywhere, and silently skipping Spam/Trash would turn "no such
         message" into a wrong answer.  Falls back to every selectable
         folder.

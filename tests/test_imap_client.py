@@ -1820,7 +1820,7 @@ class TestSearchFolderScope:
 
     def test_all_shortcut_adds_junk_and_trash(self, mock_imap_client):
         """T9: the \\All shortcut excluded Spam/Trash silently; a
-        folderless search now sweeps them additionally."""
+        folderless search now sweeps them too."""
         client, wire = self._client_with_folders(mock_imap_client, self.GMAIL_FOLDERS)
         result = client.search_emails("from:alice")
         assert result["provenance"]["folders_searched"] == [
@@ -2960,7 +2960,7 @@ class TestRedactOnFetch:
 
 
 class TestFetchSummaries:
-    """Summary-level listing: headers, flags, structure — no bodies."""
+    """Summary-level listing: headers, flags, structure, not bodies."""
 
     def _connected(self, mock_imap_client) -> ImapClient:
         config = ImapBlock(
