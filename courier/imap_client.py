@@ -1690,7 +1690,8 @@ class ImapClient:
             ``fell_back_reason`` (``None`` or one of ``"no_cache"``,
             ``"mu_missing"``, ``"db_missing"``, ``"stale"``,
             ``"untranslatable"``, ``"mu_no_matches"``,
-            ``"maildir_not_indexed"``, ``"exception"``), and ``query``
+            ``"maildir_not_indexed"``, ``"folder_not_synced"``,
+            ``"exception"``), and ``query``
             — the translation report ``{dialect, approximations,
             fallbacks, treated_as_text}``.  Remote provenance adds
             ``folders_searched``.  ``total_count`` is the match count

@@ -624,6 +624,115 @@ class TestMuBackendSearch:
         assert rec["uid"] == 43
 
 
+class TestFolderExistenceCheck:
+    """A folder-scoped search verifies the folder exists in the synced
+    maildir before invoking mu (issue #64 remainder): on a selectively
+    synced maildir, mu answers an absent folder with the same exit it
+    uses for a genuine empty, so the check must run first and fall back
+    to IMAP with an honest, named reason."""
+
+    def _backend(self, tmp_path) -> MuBackend:
+        muhome = _make_xapian_dir(tmp_path)
+        cfg = LocalCacheConfig(mu_index=muhome, max_staleness_seconds=86400)
+        return MuBackend(cfg)
+
+    def _maildir(self, tmp_path, *folders: str) -> str:
+        """Create ``<tmp>/mail/work`` with cur/ dirs for *folders*."""
+        root = tmp_path / "mail" / "work"
+        root.mkdir(parents=True, exist_ok=True)
+        for folder in folders:
+            (root / folder / "cur").mkdir(parents=True)
+        return str(root)
+
+    @staticmethod
+    def _mu_ok(argv, **kwargs):
+        return subprocess.CompletedProcess(
+            args=argv, returncode=0, stdout="[]", stderr=""
+        )
+
+    def test_absent_folder_declines_with_named_reason(self, tmp_path):
+        """A folder missing from the maildir raises MuFailure tagged
+        ``folder_not_synced`` without invoking mu."""
+        backend = self._backend(tmp_path)
+        block = _make_block(self._maildir(tmp_path, "INBOX"))
+
+        with patch("courier.local_cache.subprocess.run") as mock_run:
+            with pytest.raises(MuFailure, match="Archive") as excinfo:
+                backend.search(block, parse("from:alice"), limit=10, folder="Archive")
+            mock_run.assert_not_called()
+
+        assert excinfo.value.fell_back_reason == "folder_not_synced"
+
+    def test_present_folder_proceeds_to_mu(self, tmp_path):
+        """A synced folder passes the check and the search runs."""
+        backend = self._backend(tmp_path)
+        block = _make_block(self._maildir(tmp_path, "Archive"))
+
+        with patch(
+            "courier.local_cache.subprocess.run", side_effect=self._mu_ok
+        ) as mock_run:
+            results, _report, truncated = backend.search(
+                block, parse("from:alice"), limit=10, folder="Archive"
+            )
+
+        assert results == []
+        assert truncated is False
+        assert mock_run.called
+
+    def test_inbox_at_block_root_counts_as_present(self, tmp_path):
+        """The block root being a maildir itself (cur/ present) is the
+        root-as-INBOX layout; INBOX must count as synced."""
+        backend = self._backend(tmp_path)
+        root = tmp_path / "mail" / "work"
+        (root / "cur").mkdir(parents=True)
+        block = _make_block(str(root))
+
+        with patch("courier.local_cache.subprocess.run", side_effect=self._mu_ok):
+            results, _report, _truncated = backend.search(
+                block, parse("from:alice"), limit=10, folder="INBOX"
+            )
+
+        assert results == []
+
+    def test_inbox_subdir_counts_as_present(self, tmp_path):
+        """An INBOX subdirectory is the other layout _derive_folder
+        collapses to INBOX; it must pass too."""
+        backend = self._backend(tmp_path)
+        block = _make_block(self._maildir(tmp_path, "INBOX"))
+
+        with patch("courier.local_cache.subprocess.run", side_effect=self._mu_ok):
+            results, _report, _truncated = backend.search(
+                block, parse("from:alice"), limit=10, folder="INBOX"
+            )
+
+        assert results == []
+
+    def test_inbox_absent_everywhere_declines(self, tmp_path):
+        """No root cur/new and no INBOX subdir: INBOX is not synced."""
+        backend = self._backend(tmp_path)
+        block = _make_block(self._maildir(tmp_path, "Archive"))
+
+        with patch("courier.local_cache.subprocess.run") as mock_run:
+            with pytest.raises(MuFailure) as excinfo:
+                backend.search(block, parse("from:alice"), limit=10, folder="INBOX")
+            mock_run.assert_not_called()
+
+        assert excinfo.value.fell_back_reason == "folder_not_synced"
+
+    def test_unscoped_search_skips_the_check(self, tmp_path):
+        """A whole-block search has no folder to verify; the historical
+        maildir paths in older tests must keep working."""
+        backend = self._backend(tmp_path)
+        block = _make_block(str(tmp_path / "mail" / "does-not-exist"))
+
+        with patch(
+            "courier.local_cache.subprocess.run", side_effect=self._mu_ok
+        ) as mock_run:
+            backend.search(block, parse("from:alice"), limit=10)
+
+        assert mock_run.called
+
+
 class TestScopeQuery:
     """_scope_query maps a scope prefix + folder to a quoted maildir predicate."""
 

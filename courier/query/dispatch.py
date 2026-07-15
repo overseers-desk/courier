@@ -81,6 +81,10 @@ _FALLBACK_PHRASES: Dict[str, str] = {
         "the block's maildir lies outside the mu store root, so the "
         "local cache does not index it"
     ),
+    "folder_not_synced": (
+        "the requested folder is not present in the locally synced "
+        "maildir, so only the server can answer for it"
+    ),
     "exception": "the local cache failed at runtime",
 }
 

@@ -332,13 +332,26 @@ class MuBackend:
             MuFailure: When mu invocation fails (timeout, non-zero
                 exit — including exit 2, which mu uses both for "no
                 matches" and for a query it silently failed to parse —
-                or malformed output), or the block's maildir is not
-                under the mu store root.
+                or malformed output), the block's maildir is not under
+                the mu store root, or a folder-scoped search names a
+                folder absent from the synced maildir (tagged
+                ``"folder_not_synced"``; issue #64).
             ValueError: When ``imap_block.maildir`` is not configured.
         """
         if not imap_block.maildir:
             raise ValueError(
                 "[imap.NAME] block has no maildir configured for local cache."
+            )
+        if folder is not None and not self._folder_synced(imap_block.maildir, folder):
+            # A selectively-synced maildir simply lacks the folder's
+            # directory; mu would answer with the same exit it uses
+            # for a genuine empty, so the absence must be detected
+            # here and handed back as a fallback signal, never served
+            # as authoritative emptiness (issue #64).
+            raise MuFailure(
+                f"folder {folder!r} is not present in the synced maildir "
+                f"{imap_block.maildir!r}",
+                fell_back_reason="folder_not_synced",
             )
         home = self.muhome
         if not home:
@@ -409,6 +422,32 @@ class MuBackend:
         records = [rec for rec in formatted if rec is not None]
         truncated = len(records) > limit
         return records[:limit], emission.report, truncated
+
+    @staticmethod
+    def _folder_synced(maildir: str, folder: str) -> bool:
+        """Whether *folder* is present in the block's synced maildir.
+
+        ``INBOX`` counts as present when the block root is itself a
+        maildir (``cur`` or ``new`` present) or an ``INBOX``
+        subdirectory exists — the two layouts :meth:`_derive_folder`
+        collapses to ``"INBOX"``.  Any other folder must exist as a
+        subdirectory of the block maildir.
+
+        Args:
+            maildir: The block's maildir root path.
+            folder: IMAP folder name, used as the maildir subdirectory.
+
+        Returns:
+            ``True`` when the folder's directory exists on disk.
+        """
+        base = os.path.expanduser(maildir)
+        if folder == "INBOX":
+            return (
+                os.path.isdir(os.path.join(base, "cur"))
+                or os.path.isdir(os.path.join(base, "new"))
+                or os.path.isdir(os.path.join(base, "INBOX"))
+            )
+        return os.path.isdir(os.path.join(base, folder))
 
     @staticmethod
     def _scope_query(prefix: str, translated: str, folder: Optional[str] = None) -> str:
