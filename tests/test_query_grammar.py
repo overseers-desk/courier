@@ -2,8 +2,9 @@
 
 Each row pins one shape of the grammar so a change in precedence,
 negation, grouping, or value typing fails loudly here before it can
-reach an emitter. The precedence counterexample and the required error
-rows come verbatim from the translator plan.
+reach an emitter. The precedence counterexample comes verbatim from the
+translator plan; the required error rows encode the behaviours it
+specifies.
 """
 
 from datetime import date, timedelta

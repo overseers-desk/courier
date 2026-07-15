@@ -255,9 +255,7 @@ OPERATORS: tuple[Operator, ...] = (
         prefixes=("in",),
         kind=ValueKind.TEXT,
         syntax="in:PLACE",
-        meaning=(
-            "Scope the search: inbox, sent, spam, trash, anywhere, " "or a folder name"
-        ),
+        meaning="Scope the search: inbox, sent, spam, trash, anywhere, or a folder name",
         example="in:sent",
     ),
     Operator(
