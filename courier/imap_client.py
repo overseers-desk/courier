@@ -578,8 +578,8 @@ class ImapClient:
 
         Criteria pass through to ``imapclient.IMAPClient.search``
         verbatim (plus the WORLD_AS_OF Layer 1 bound when set); query
-        translation, including the old string presets like ``today``,
-        happens in :mod:`courier.query` before this method is reached.
+        translation, including string presets like ``today``, happens
+        in :mod:`courier.query` before this method is reached.
 
         Args:
             criteria: Search criteria
@@ -622,7 +622,7 @@ class ImapClient:
             folder: The folder holding them.
 
         Returns:
-            One summary dict per surviving UID, newest first, each with
+            One summary dict per surviving UID, newest first by UID, each with
             ``uid``, ``folder``, ``from``, ``to``, ``subject``,
             ``date``, ``flags``, and ``has_attachments``.
 
@@ -1935,7 +1935,7 @@ class ImapClient:
         ``Archive``): one SELECT instead of iterating every folder.
         ``\\All`` folders exclude Spam and Trash, so those are searched
         additionally when advertised — a query scoped nowhere means
-        everywhere, and silently skipping Spam/Trash turned "no such
+        everywhere, and silently skipping Spam/Trash would turn "no such
         message" into a wrong answer.  Falls back to every selectable
         folder.
 

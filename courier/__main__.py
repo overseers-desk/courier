@@ -450,8 +450,8 @@ def _parse_search_args(
 
     ``default_folder`` and ``default_limit`` let the chain dispatcher pass
     chain-level ``-f``/``-n`` values through; per-verb tokens override them.
-    An unknown flag is a loud error: the old parser silently dropped it,
-    so ``--query=X`` became an empty query that translated to match-all.
+    An unknown flag is a loud error: silently dropping it would turn
+    ``--query=X`` into an empty query that translates to match-all.
     A single-dash token that is not a known flag stays query text, since
     the query language itself uses leading dashes (``invoice -draft``).
 

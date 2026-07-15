@@ -87,10 +87,10 @@ _NATIVE_PREFIXES = frozenset(
 # Characters that force a value into Gmail quotes.
 _VALUE_QUOTE_TRIGGERS = set("(){}")
 
-# Size unit factors Gmail actually understands, largest first. Probed
-# live (gmail-live-verify.txt items 5 and 6): bare byte counts and the
-# G suffix both silently match nothing, while K and M filter correctly,
-# so emission never goes above M and never below K.
+# Size unit factors Gmail actually understands, largest first. Gmail
+# silently matches nothing for bare byte counts and for the G suffix,
+# while K and M filter correctly, so emission never goes above M and
+# never below K.
 _SIZE_UNIT_FACTORS = ((1024**2, "M"), (1024, "K"))
 
 _NOTE_BODY = (
@@ -374,10 +374,10 @@ class _Renderer:
     def _size_fragment(self, op: str, nbytes: int) -> str:
         """Render larger:/smaller: in a unit form Gmail understands.
 
-        Probed live: Gmail silently matches nothing for bare byte
-        counts and for the G suffix, while K and M filter correctly
-        (gmail-live-verify.txt items 5 and 6). A byte count divisible
-        by a working unit emits exactly at the largest such unit; any
+        Gmail silently matches nothing for bare byte counts and for
+        the G suffix, while K and M filter correctly. A byte count
+        divisible by a working unit emits exactly at the largest such
+        unit; any
         other count rounds at K toward the over-matching side — down
         for ``larger:``, up for ``smaller:``, and the direction flips
         under an odd number of negations so the negated whole still

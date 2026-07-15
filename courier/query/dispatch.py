@@ -86,8 +86,8 @@ _FALLBACK_PHRASES: Dict[str, str] = {
 
 _IN_PLACEMENT_MESSAGE = (
     "in: scopes which folders are searched, so it must stand on its own "
-    "at the top level of the query; it cannot sit under or, not, or "
-    "inside groups."
+    "at the top level of the query; it cannot sit under or, under a "
+    "doubled negation, or inside groups."
 )
 
 

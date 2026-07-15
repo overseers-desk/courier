@@ -191,12 +191,12 @@ class TestDates:
 class TestSizes:
     """Unit forms only: Gmail silently no-matches bare byte counts.
 
-    Live-refuted golden (gmail-live-verify.txt item 5): larger:1048576
-    gave 0 hits where larger:1M gave 50. Item 6 pins the vocabulary to
-    K and M — G silently no-matches the same way bare bytes do — so
-    exact values emit at the largest dividing unit up to M, and inexact
-    values round at K toward the over-matching side (the direction
-    flips under negation, so the negated whole still over-matches).
+    larger:1048576 gives 0 hits where larger:1M matches; G silently
+    no-matches the same way bare bytes do, so the vocabulary is K and
+    M only. Exact values emit at the largest dividing unit up to M, and
+    inexact values round at K toward the over-matching side (the
+    direction flips under negation, so the negated whole still
+    over-matches).
     """
 
     def test_larger_unit_exact_emits_m(self):
