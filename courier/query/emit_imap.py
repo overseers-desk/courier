@@ -529,9 +529,9 @@ def emit(
     root = parsed.ast
     if isinstance(root, Term) and root.op == OP_IMAP:
         assert isinstance(root.value, str)
-        criteria = _raw_criteria(root.value)
-        charset = "UTF-8" if _needs_charset(criteria) else None
-        return ImapEmission(criteria, charset, report)
+        raw = _raw_criteria(root.value)
+        charset = "UTF-8" if _needs_charset(raw) else None
+        return ImapEmission(raw, charset, report)
     emitter = _Emitter(now, supports_within, bounded)
     keys = emitter.keys(root)
     criteria: List[Atom] = []
