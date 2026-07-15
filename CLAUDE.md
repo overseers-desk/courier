@@ -163,6 +163,17 @@ OAuth2 tokens expire periodically. If integration tests fail with authentication
    uv run python -m courier.auth_setup generate-token --config config.toml
    ```
 
+### Read-only protocol probes against configured accounts
+
+To verify server-side IMAP behaviour (capability quirks, SEARCH key acceptance, Gmail dialect questions) without test credentials and without reading the credential-guarded config, run a read-only search through the `imap:` escape on the configured blocks:
+
+```bash
+courier --all-imap --format json search 'imap:X-GM-RAW before:1784000000' -n 3
+courier --imap <block> --format json search 'imap:X-GM-RAW from:noreply ANSWERED' -n 50
+```
+
+SEARCH changes no server state, the CLI consumes the config itself, and result counts answer most protocol questions (compare counts with and without a criterion to prove a key filters rather than being ignored). Report counts, not message content.
+
 ### Running Integration Tests
 
 1. **Run all tests including integration tests**:
