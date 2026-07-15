@@ -157,7 +157,7 @@ class TestMuBackendSearch:
         assert "date" in argv
         assert "--reverse" in argv
         # The scoped query must AND the translated query with the maildir.
-        assert argv[-1] == "(from:alice) AND maildir:/work/"
+        assert argv[-1] == '(from:alice) AND maildir:"/work/"'
 
     def test_parses_mu_json_output(self, tmp_path):
         """A single mu json record round-trips into the courier result shape."""
@@ -206,8 +206,14 @@ class TestMuBackendSearch:
         assert rec["flags"] == ["seen", "attach"]
         assert rec["has_attachments"] is True
 
-    def test_exit_code_2_returns_empty(self, tmp_path):
-        """mu's exit code 2 (no matches) is not an error — return []."""
+    def test_exit_code_2_raises_mufailure_with_reason(self, tmp_path):
+        """mu exits 2 both for a genuinely empty result and for a query
+        it could not parse (verified on mu 1.12.14: an unknown field
+        like ``filename:`` reaches Xapian as a term that matches
+        nothing, same exit, same message). An empty that cannot be told
+        apart from a rejected query must not be served as authoritative
+        absence; it surfaces as a MuFailure so the caller falls back to
+        IMAP with a named reason (issue #64)."""
         backend = self._backend(tmp_path)
         account_cfg = _make_block()
 
@@ -217,9 +223,10 @@ class TestMuBackendSearch:
                 args=[], returncode=2, stdout="", stderr="no matches\n"
             ),
         ):
-            results = backend.search(account_cfg, "from:nobody", limit=10)
+            with pytest.raises(MuFailure, match="exited 2") as excinfo:
+                backend.search(account_cfg, "from:nobody", limit=10)
 
-        assert results == []
+        assert excinfo.value.fell_back_reason == "mu_no_matches"
 
     def test_timeout_raises_mufailure(self, tmp_path):
         """A subprocess timeout becomes a MuFailure for the caller to fall back."""
@@ -440,6 +447,117 @@ class TestMuBackendSearch:
         assert rec["uid"] == 42
         assert rec["message_id"] == "<m@x>"
 
+    def test_root_equals_block_maildir_layout_served_from_store_root(self, tmp_path):
+        """When mu's store root IS the block maildir (the layout
+        LOCAL_CACHE.md's own init instructions produce), records report
+        ``:maildir`` as ``/`` and ``/Archive``; the scope and folder
+        derivation must work from the store root, not from a basename
+        prefix that matches nothing (issue #64)."""
+        backend = self._backend(tmp_path)
+        block = _make_block("/var/local/mail/work")
+        sample = [
+            {
+                ":path": "/var/local/mail/work/cur/1,U=5,FMD5=a:2,S",
+                ":from": [{":email": "a@b.com"}],
+                ":to": [],
+                ":subject": "at the root",
+                ":date-unix": 1700000000,
+                ":flags": [],
+                ":message-id": "<root@x>",
+                ":maildir": "/",
+            },
+            {
+                ":path": "/var/local/mail/work/Archive/cur/2,U=6,FMD5=b:2,S",
+                ":from": [{":email": "a@b.com"}],
+                ":to": [],
+                ":subject": "archived",
+                ":date-unix": 1700000001,
+                ":flags": [],
+                ":message-id": "<arch@x>",
+                ":maildir": "/Archive",
+            },
+        ]
+        captured: Dict[str, Any] = {}
+
+        def fake_run(argv, **kwargs):
+            captured["argv"] = argv
+            return subprocess.CompletedProcess(
+                args=argv, returncode=0, stdout=json.dumps(sample), stderr=""
+            )
+
+        with (
+            patch.object(
+                MuBackend, "_store_maildir_root", return_value=block.maildir
+            ),
+            patch("courier.local_cache.subprocess.run", side_effect=fake_run),
+        ):
+            results = backend.search(block, "from:alice", limit=5)
+
+        assert captured["argv"][-1] == "(from:alice) AND maildir:/*"
+        assert [r["folder"] for r in results] == ["INBOX", "Archive"]
+
+    def test_redact_block_skips_dead_path_keeps_rest(self, tmp_path, caplog):
+        """One stale on-disk path (the syncer renamed the file since the
+        last index) must not discard the block's whole result set on a
+        redact block: the dead hit is skipped with a warning and the
+        rest are served (issue #64)."""
+        import logging
+
+        backend = self._backend(tmp_path)
+        live_file = tmp_path / "msg,U=44,FMD5=abc:2,S"
+        live_file.write_bytes(
+            b"From: alice@example.com\r\n"
+            b"Subject: still here\r\n"
+            b"Message-ID: <live@x>\r\n"
+            b"\r\n"
+            b"body\r\n"
+        )
+        block = ImapBlock(
+            host="imap.example.com",
+            port=993,
+            username="user@example.com",
+            password="password",
+            use_ssl=True,
+            maildir="/var/local/mail/work",
+            redact_policy=lambda email_obj: False,
+        )
+        dead_path = str(tmp_path / "renamed-away,U=45,FMD5=abc:2,S")
+        sample = [
+            {
+                ":path": dead_path,
+                ":from": [{":email": "a@b.com"}],
+                ":to": [],
+                ":subject": "gone",
+                ":date-unix": 1700000000,
+                ":flags": [],
+                ":message-id": "<dead@x>",
+                ":maildir": "/work",
+            },
+            {
+                ":path": str(live_file),
+                ":from": [{":email": "alice@example.com"}],
+                ":to": [],
+                ":subject": "still here",
+                ":date-unix": 1700000001,
+                ":flags": [],
+                ":message-id": "<live@x>",
+                ":maildir": "/work",
+            },
+        ]
+        with (
+            patch(
+                "courier.local_cache.subprocess.run",
+                return_value=subprocess.CompletedProcess(
+                    args=[], returncode=0, stdout=json.dumps(sample), stderr=""
+                ),
+            ),
+            caplog.at_level(logging.WARNING, logger="courier.local_cache"),
+        ):
+            results = backend.search(block, "from:alice", limit=5)
+
+        assert [r["message_id"] for r in results] == ["<live@x>"]
+        assert any(dead_path in rec.message for rec in caplog.records)
+
     def test_search_passthrough_when_policy_does_not_match(self, tmp_path):
         """A policy that returns False yields the normal record shape,
         unredacted, even though the file was read."""
@@ -490,21 +608,32 @@ class TestMuBackendSearch:
 
 
 class TestScopeQuery:
-    """_scope_query maps a folder to an exact, quoted maildir predicate."""
+    """_scope_query maps a scope prefix + folder to a quoted maildir predicate."""
 
     def test_no_folder_scopes_whole_block_recursively(self):
         """Without a folder the predicate matches the block recursively
-        (trailing slash) and ANDs the translated query."""
+        (trailing slash) and ANDs the translated query. The scope is
+        quoted: an unquoted prefix with whitespace matches nothing
+        (issue #64)."""
         assert (
-            MuBackend._scope_query("/var/local/mail/work", "from:alice")
-            == "(from:alice) AND maildir:/work/"
+            MuBackend._scope_query("/work", "from:alice")
+            == '(from:alice) AND maildir:"/work/"'
+        )
+
+    def test_recursive_scope_with_space_is_quoted(self):
+        """A basename with whitespace survives query parsing only when
+        quoted (verified on mu 1.12.14: the unquoted form returns no
+        matches)."""
+        assert (
+            MuBackend._scope_query("/Work Account", "from:alice")
+            == '(from:alice) AND maildir:"/Work Account/"'
         )
 
     def test_inbox_matches_root_and_inbox_subdir(self):
         """INBOX is matched both at the block root and at an INBOX subdir,
         mirroring the two cases _derive_folder collapses to INBOX."""
         assert (
-            MuBackend._scope_query("/var/local/mail/work", "", "INBOX")
+            MuBackend._scope_query("/work", "", "INBOX")
             == '(maildir:"/work" OR maildir:"/work/INBOX")'
         )
 
@@ -512,7 +641,7 @@ class TestScopeQuery:
         """A named subfolder is matched exactly (no trailing slash) so
         its own subfolders are not swept in."""
         assert (
-            MuBackend._scope_query("/var/local/mail/work", "from:alice", "Work Done")
+            MuBackend._scope_query("/work", "from:alice", "Work Done")
             == '(from:alice) AND maildir:"/work/Work Done"'
         )
 
@@ -520,9 +649,144 @@ class TestScopeQuery:
         """A folder carrying Xapian metacharacters ([Gmail]/Sent Mail) is
         quoted so it survives query parsing intact."""
         assert (
-            MuBackend._scope_query("/var/local/mail/acct", "", "[Gmail]/Sent Mail")
+            MuBackend._scope_query("/acct", "", "[Gmail]/Sent Mail")
             == 'maildir:"/acct/[Gmail]/Sent Mail"'
         )
+
+    def test_empty_prefix_no_folder_matches_whole_store(self):
+        """mu root == block maildir: the recursive scope is the wildcard
+        form, since maildir:"/" is an exact match on the root only
+        (verified on mu 1.12.14)."""
+        assert (
+            MuBackend._scope_query("", "from:alice") == "(from:alice) AND maildir:/*"
+        )
+
+    def test_empty_prefix_inbox_matches_store_root(self):
+        """mu root == block maildir: root messages report :maildir "/"."""
+        assert (
+            MuBackend._scope_query("", "", "INBOX")
+            == '(maildir:"/" OR maildir:"/INBOX")'
+        )
+
+    def test_empty_prefix_subfolder(self):
+        """mu root == block maildir: folders sit directly under "/"."""
+        assert MuBackend._scope_query("", "", "Archive") == 'maildir:"/Archive"'
+
+
+class TestScopePrefix:
+    """_scope_prefix derives the block's scope from the mu store root."""
+
+    def _backend(self, tmp_path) -> MuBackend:
+        muhome = _make_xapian_dir(tmp_path)
+        cfg = LocalCacheConfig(mu_index=muhome, max_staleness_seconds=86400)
+        return MuBackend(cfg)
+
+    def test_block_directly_under_root(self, tmp_path):
+        backend = self._backend(tmp_path)
+        with patch.object(
+            MuBackend, "_store_maildir_root", return_value="/home/u/Maildir"
+        ):
+            prefix = backend._scope_prefix(_make_block("/home/u/Maildir/work"))
+        assert prefix == "/work"
+
+    def test_root_equals_block_maildir(self, tmp_path):
+        """The documented-but-broken layout: mu init run on the block
+        maildir itself (issue #64). The prefix is empty, not the
+        basename that matches nothing."""
+        backend = self._backend(tmp_path)
+        with patch.object(
+            MuBackend, "_store_maildir_root", return_value="/home/u/Maildir/work"
+        ):
+            prefix = backend._scope_prefix(_make_block("/home/u/Maildir/work"))
+        assert prefix == ""
+
+    def test_nested_block_maildir(self, tmp_path):
+        """A block nested more than one level under the store root gets
+        the full relative prefix, not just the basename."""
+        backend = self._backend(tmp_path)
+        with patch.object(
+            MuBackend, "_store_maildir_root", return_value="/home/u/Maildir"
+        ):
+            prefix = backend._scope_prefix(
+                _make_block("/home/u/Maildir/accounts/work")
+            )
+        assert prefix == "/accounts/work"
+
+    def test_trailing_slashes_tolerated(self, tmp_path):
+        backend = self._backend(tmp_path)
+        with patch.object(
+            MuBackend, "_store_maildir_root", return_value="/home/u/Maildir/"
+        ):
+            prefix = backend._scope_prefix(_make_block("/home/u/Maildir/work/"))
+        assert prefix == "/work"
+
+    def test_block_outside_root_declines_with_named_reason(self, tmp_path):
+        """A block maildir mu does not index cannot be served locally;
+        decline honestly instead of returning a clean empty."""
+        backend = self._backend(tmp_path)
+        with patch.object(
+            MuBackend, "_store_maildir_root", return_value="/home/u/Maildir"
+        ):
+            with pytest.raises(MuFailure) as excinfo:
+                backend._scope_prefix(_make_block("/srv/mail/work"))
+        assert excinfo.value.fell_back_reason == "maildir_not_indexed"
+
+    def test_unknown_root_keeps_legacy_basename_prefix(self, tmp_path):
+        """When the store root cannot be read (old mu output), keep the
+        historical assumption: the block sits directly under the root."""
+        backend = self._backend(tmp_path)
+        with patch.object(MuBackend, "_store_maildir_root", return_value=None):
+            prefix = backend._scope_prefix(_make_block("/var/local/mail/work"))
+        assert prefix == "/work"
+
+
+class TestStoreMaildirRoot:
+    """_store_maildir_root reads the maildir row from mu info store."""
+
+    _INFO_STORE_OUTPUT = (
+        "+-------------------+----------------------+\n"
+        "| property          | value                |\n"
+        "+-------------------+----------------------+\n"
+        "| maildir           | /home/u/Maildir      |\n"
+        "+-------------------+----------------------+\n"
+        "| database-path     | /home/u/.mu/xapian   |\n"
+        "+-------------------+----------------------+\n"
+    )
+
+    def _backend(self, tmp_path) -> MuBackend:
+        muhome = _make_xapian_dir(tmp_path)
+        cfg = LocalCacheConfig(mu_index=muhome, max_staleness_seconds=86400)
+        return MuBackend(cfg)
+
+    def test_parses_maildir_row(self, tmp_path):
+        backend = self._backend(tmp_path)
+        captured: Dict[str, Any] = {}
+
+        def fake_run(argv, **kwargs):
+            captured["argv"] = argv
+            return subprocess.CompletedProcess(
+                args=argv, returncode=0, stdout=self._INFO_STORE_OUTPUT, stderr=""
+            )
+
+        with patch("courier.local_cache.subprocess.run", side_effect=fake_run):
+            root = backend._store_maildir_root()
+
+        assert root == "/home/u/Maildir"
+        assert captured["argv"][:3] == ["mu", "info", "store"]
+        assert f"--muhome={backend.muhome}" in captured["argv"]
+
+    def test_unparseable_output_returns_none_and_caches(self, tmp_path):
+        backend = self._backend(tmp_path)
+        with patch(
+            "courier.local_cache.subprocess.run",
+            return_value=subprocess.CompletedProcess(
+                args=[], returncode=0, stdout="no table here", stderr=""
+            ),
+        ) as mock_run:
+            assert backend._store_maildir_root() is None
+            assert backend._store_maildir_root() is None
+        # The miss is cached: one subprocess call for two lookups.
+        assert mock_run.call_count == 1
 
 
 class TestWorldAsOfBoundsMuQuery:
@@ -554,13 +818,14 @@ class TestWorldAsOfBoundsMuQuery:
         expected_stamp = self.BOUND.astimezone().strftime("%Y%m%dT%H%M%S")
         scoped = self._capture_query(tmp_path, "from:alice")
         assert (
-            scoped == f"((from:alice) AND date:..{expected_stamp}) AND maildir:/work/"
+            scoped
+            == f'((from:alice) AND date:..{expected_stamp}) AND maildir:"/work/"'
         )
 
     def test_empty_query_is_bound_alone(self, tmp_path):
         expected_stamp = self.BOUND.astimezone().strftime("%Y%m%dT%H%M%S")
         scoped = self._capture_query(tmp_path, "")
-        assert scoped == f"(date:..{expected_stamp}) AND maildir:/work/"
+        assert scoped == f'(date:..{expected_stamp}) AND maildir:"/work/"'
 
     def test_relative_terms_resolve_against_bound(self, tmp_path):
         scoped = self._capture_query(tmp_path, "newer:7d")
@@ -579,4 +844,4 @@ class TestWorldAsOfBoundsMuQuery:
 
         with patch("courier.local_cache.subprocess.run", side_effect=fake_run):
             backend.search(account_cfg, "from:alice", limit=10)
-        assert captured["argv"][-1] == "(from:alice) AND maildir:/work/"
+        assert captured["argv"][-1] == '(from:alice) AND maildir:"/work/"'

@@ -1665,7 +1665,8 @@ class ImapClient:
             (``"local"`` or ``"remote"``), ``indexed_at`` (ISO 8601 or
             ``None``), and ``fell_back_reason`` (``None`` or one of
             ``"no_cache"``, ``"mu_missing"``, ``"db_missing"``,
-            ``"stale"``, ``"untranslatable"``, ``"exception"``).  When
+            ``"stale"``, ``"untranslatable"``, ``"mu_no_matches"``,
+            ``"maildir_not_indexed"``, ``"exception"``).  When
             the client is bounded, ``provenance`` also carries a
             ``world_as_of`` block (see :meth:`_world_as_of_provenance`).
 
@@ -1816,7 +1817,12 @@ class ImapClient:
             return None, "untranslatable"
         except (MuFailure, ValueError) as e:
             logger.warning(f"Local cache search failed, falling back to IMAP: {e}")
-            return None, "exception"
+            # MuFailure can carry a more precise tag (e.g. the block's
+            # maildir is outside the mu store root, or mu answered the
+            # ambiguous "no matches" exit); keep "exception" for the
+            # untagged cases.
+            reason = getattr(e, "fell_back_reason", None) or "exception"
+            return None, reason
         return results, None
 
     def _search_emails_imap(

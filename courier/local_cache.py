@@ -37,9 +37,20 @@ class MuFailure(Exception):
 
     Eligibility failures (mu missing, db missing, stale index) are
     reported via :class:`EligibilityResult`; this exception is reserved
-    for runtime failures (timeout, non-zero exit, malformed output)
-    that should trigger an IMAP fallback at the caller.
+    for runtime failures (timeout, non-zero exit, malformed output, an
+    unservable maildir scope) that should trigger an IMAP fallback at
+    the caller.
+
+    Attributes:
+        fell_back_reason: Optional tag from the
+            ``provenance.fell_back_reason`` vocabulary naming the
+            fallback condition more precisely than the caller's generic
+            ``"exception"``; ``None`` when no specific tag applies.
     """
+
+    def __init__(self, message: str, *, fell_back_reason: Optional[str] = None):
+        super().__init__(message)
+        self.fell_back_reason = fell_back_reason
 
 
 @dataclass
@@ -80,6 +91,8 @@ class MuBackend:
         self.cfg = cfg
         self._muhome: Optional[str] = cfg.mu_index
         self._muhome_resolved: bool = cfg.mu_index is not None
+        self._mu_root: Optional[str] = None
+        self._mu_root_resolved: bool = False
 
     @property
     def muhome(self) -> Optional[str]:
@@ -102,6 +115,9 @@ class MuBackend:
     def _discover_muhome(self) -> str:
         """Run ``mu info store`` to learn the muhome.
 
+        Also records the store's maildir root when the output carries
+        it, saving :meth:`_store_maildir_root` a second invocation.
+
         Returns:
             The muhome (the parent directory of the xapian database).
 
@@ -120,11 +136,100 @@ class MuBackend:
             )
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
             raise MuFailure(f"mu info store failed: {e}") from e
+        root_match = re.search(r"\bmaildir\s*\|\s*(\S+)", proc.stdout)
+        if root_match:
+            self._mu_root = root_match.group(1)
+            self._mu_root_resolved = True
         match = re.search(r"database-path\s*\|\s*(\S+)", proc.stdout)
         if not match:
             raise MuFailure("could not parse database-path from mu info store output")
         db_path = match.group(1)
         return os.path.dirname(db_path)
+
+    def _store_maildir_root(self) -> Optional[str]:
+        """Return the maildir root of the mu store, discovering it lazily.
+
+        Reads the ``maildir`` row from ``mu info store`` (the same
+        output muhome discovery parses). The result — including a
+        miss — is cached for the backend's lifetime.
+
+        Returns:
+            The store's root maildir path, or ``None`` when it cannot
+            be determined (mu invocation failed, or the output carries
+            no ``maildir`` row). Callers fall back to the historical
+            assumption that the block's maildir sits directly under
+            the store root.
+        """
+        if self._mu_root_resolved:
+            return self._mu_root
+        home = self.muhome  # may resolve the root as a side effect
+        if self._mu_root_resolved:
+            return self._mu_root
+        self._mu_root_resolved = True
+        argv = ["mu", "info", "store"]
+        if home:
+            argv.append(f"--muhome={home}")
+        try:
+            proc = subprocess.run(
+                argv,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=True,
+            )
+        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+            logger.warning(f"Could not read the mu store's maildir root: {e}")
+            return None
+        match = re.search(r"\bmaildir\s*\|\s*(\S+)", proc.stdout)
+        if not match:
+            logger.warning(
+                "could not parse the maildir row from mu info store output"
+            )
+            return None
+        self._mu_root = match.group(1)
+        return self._mu_root
+
+    def _scope_prefix(self, imap_block: ImapBlock) -> str:
+        """Derive the block's maildir scope prefix from the store root.
+
+        mu reports each message's ``:maildir`` relative to the store
+        root, so the scope prefix depends on where the block's maildir
+        sits inside that root — not on its basename. ``mu init
+        --maildir=<block maildir>`` (the layout the docs' own setup
+        instructions produce) makes the two equal, in which case the
+        prefix is empty and folders sit directly under ``/``.
+
+        Args:
+            imap_block: [imap.NAME] block; ``maildir`` must be set.
+
+        Returns:
+            ``""`` when the store root and the block maildir are the
+            same directory; otherwise ``"/<relative path>"`` of the
+            block maildir inside the root. When the root cannot be
+            determined, falls back to ``"/<basename>"`` (the historical
+            assumption).
+
+        Raises:
+            MuFailure: The block's maildir lies outside the store root,
+                so mu cannot serve it; carries ``fell_back_reason``
+                ``"maildir_not_indexed"``.
+        """
+        configured = (imap_block.maildir or "").rstrip("/")
+        root = self._store_maildir_root()
+        if root is None:
+            return "/" + os.path.basename(configured)
+        block_real = os.path.realpath(os.path.expanduser(configured))
+        root_real = os.path.realpath(os.path.expanduser(root.rstrip("/")))
+        if block_real == root_real:
+            return ""
+        if block_real.startswith(root_real + os.sep):
+            rel = os.path.relpath(block_real, root_real)
+            return "/" + rel.replace(os.sep, "/")
+        raise MuFailure(
+            f"block maildir {imap_block.maildir!r} is not under the mu "
+            f"store root {root!r}; mu does not index it",
+            fell_back_reason="maildir_not_indexed",
+        )
 
     def _xapian_dir(self) -> Optional[str]:
         """Return the path to the xapian database directory, if known."""
@@ -205,13 +310,19 @@ class MuBackend:
 
         Returns:
             A list of result dicts mirroring the IMAP search shape minus
-            ``uid``, plus ``message_id`` and ``path``.
+            ``uid``, plus ``message_id`` and ``path``.  On a redact
+            block, a hit whose on-disk file has vanished since the last
+            index is skipped with a warning rather than aborting the
+            whole result set.
 
         Raises:
             UntranslatableQuery: When the query cannot be expressed in
                 mu (re-raised from the query translator).
             MuFailure: When mu invocation fails (timeout, non-zero
-                exit, malformed output).
+                exit — including exit 2, which mu uses both for "no
+                matches" and for a query it silently failed to parse —
+                or malformed output), or the block's maildir is not
+                under the mu store root.
             ValueError: When ``imap_block.maildir`` is not configured.
         """
         if not imap_block.maildir:
@@ -228,7 +339,8 @@ class MuBackend:
             # local time (mu evaluates date: terms in the local zone).
             clause = f"date:..{world_as_of.astimezone().strftime('%Y%m%dT%H%M%S')}"
             translated = f"({translated}) AND {clause}" if translated else clause
-        scoped = self._scope_query(imap_block.maildir, translated, folder)
+        prefix = self._scope_prefix(imap_block)
+        scoped = self._scope_query(prefix, translated, folder)
 
         # ``--muhome`` is parsed by ``mu find`` (the subcommand), not the
         # outer ``mu`` driver, so it must follow ``find`` in the argv.
@@ -254,11 +366,23 @@ class MuBackend:
             )
         except subprocess.TimeoutExpired as e:
             raise MuFailure(f"mu find timed out: {e}") from e
-        # mu returns exit 2 when no matches; treat as empty result, not
-        # an error.  Other non-zero codes are real failures.
-        if proc.returncode not in (0, 2):
+        if proc.returncode == 2:
+            # mu exits 2 both for a genuinely empty result and for a
+            # query it silently failed to parse (verified on mu
+            # 1.12.14: an unknown field like ``filename:x`` gives the
+            # same exit and the same "no matches" message as a real
+            # miss).  An empty that cannot be told apart from a
+            # rejected query must not be served as authoritative
+            # absence, so it surfaces here and the caller confirms the
+            # empty against IMAP (issue #64).
+            raise MuFailure(
+                f"mu find exited 2 (no matches, or a query mu could not "
+                f"parse): {proc.stderr.strip()}",
+                fell_back_reason="mu_no_matches",
+            )
+        if proc.returncode != 0:
             raise MuFailure(f"mu find exited {proc.returncode}: {proc.stderr.strip()}")
-        if proc.returncode == 2 or not proc.stdout.strip():
+        if not proc.stdout.strip():
             return []
         try:
             raw = json.loads(proc.stdout)
@@ -266,26 +390,36 @@ class MuBackend:
             raise MuFailure(f"could not decode mu json output: {e}") from e
         if not isinstance(raw, list):
             raise MuFailure("mu json output was not a list")
-        return [self._format_result(imap_block, rec) for rec in raw]
+        formatted = (self._format_result(imap_block, rec, prefix) for rec in raw)
+        return [rec for rec in formatted if rec is not None]
 
     @staticmethod
     def _scope_query(
-        maildir: str, translated: str, folder: Optional[str] = None
+        prefix: str, translated: str, folder: Optional[str] = None
     ) -> str:
         """Wrap a translated query with a maildir predicate scoping the search.
 
         With ``folder`` unset the predicate matches the whole block
-        recursively (``maildir:/<basename>/``).  With ``folder`` set it
-        matches that one IMAP folder exactly: mu's ``maildir:`` term is
-        an exact match when the trailing slash is omitted, so subfolders
-        are not swept in.  ``"INBOX"`` is matched both at the block root
-        and at an ``INBOX`` subdir, mirroring the two cases
-        :meth:`_derive_folder` collapses to ``"INBOX"``.  The folder
-        value is quoted so spaces and Xapian metacharacters (``[``,
-        ``&``, ``+``) survive query parsing.
+        recursively (``maildir:"<prefix>/"`` — mu treats the quoted
+        trailing-slash form as the folder plus everything below it;
+        verified on mu 1.12.14).  With ``folder`` set it matches that
+        one IMAP folder exactly: mu's ``maildir:`` term is an exact
+        match when the trailing slash is omitted, so subfolders are not
+        swept in.  ``"INBOX"`` is matched both at the block root and at
+        an ``INBOX`` subdir, mirroring the two cases
+        :meth:`_derive_folder` collapses to ``"INBOX"``.  Every scope is
+        quoted so spaces and Xapian metacharacters (``[``, ``&``,
+        ``+``) survive query parsing — the recursive form included: an
+        unquoted ``maildir:/Work Account/`` matches nothing.
+
+        An empty *prefix* is the mu-root-equals-block-maildir layout:
+        the recursive scope becomes the wildcard ``maildir:/*``
+        (``maildir:"/"`` is an exact match on root-level messages
+        only), and folders sit directly under ``/``.
 
         Args:
-            maildir: The block's configured maildir path.
+            prefix: The block's scope prefix from :meth:`_scope_prefix`
+                (``""`` or ``"/<relative path>"``).
             translated: The query already translated to mu syntax.
             folder: IMAP folder name to scope to, or ``None`` for the
                 whole block.
@@ -294,20 +428,20 @@ class MuBackend:
             A mu query string combining the translated query with the
             maildir scope predicate.
         """
-        basename = os.path.basename(maildir.rstrip("/"))
         if folder is None:
-            scope = f"maildir:/{basename}/"
+            scope = "maildir:/*" if not prefix else f'maildir:"{prefix}/"'
         elif folder == "INBOX":
-            scope = f'(maildir:"/{basename}" OR maildir:"/{basename}/INBOX")'
+            root_term = prefix or "/"
+            scope = f'(maildir:"{root_term}" OR maildir:"{prefix}/INBOX")'
         else:
-            scope = f'maildir:"/{basename}/{folder}"'
+            scope = f'maildir:"{prefix}/{folder}"'
         if translated:
             return f"({translated}) AND {scope}"
         return scope
 
     def _format_result(
-        self, imap_block: ImapBlock, rec: Dict[str, Any]
-    ) -> Dict[str, Any]:
+        self, imap_block: ImapBlock, rec: Dict[str, Any], scope_prefix: str
+    ) -> Optional[Dict[str, Any]]:
         """Translate a single mu json record into courier result shape.
 
         UID is parsed from the mbsync-style ``,U=N,`` segment of the
@@ -320,11 +454,15 @@ class MuBackend:
         against the resulting :class:`Email`.  Matching records get the
         redacted shape (blank from/to/subject, ``redacted_by`` set, no
         ``path``); non-matching records pass through untouched.  When
-        no policy is set the file is not opened.
+        no policy is set the file is not opened.  Returns ``None``
+        (with a warning) when the file has vanished since the last
+        index — a routine state while the syncer renames files on flag
+        changes — so one stale path degrades that record alone instead
+        of discarding the block's whole result set.
         """
         flags = rec.get(":flags") or []
         path = rec.get(":path", "")
-        folder = self._derive_folder(imap_block.maildir, rec.get(":maildir"))
+        folder = self._derive_folder(scope_prefix, rec.get(":maildir"))
 
         base: Dict[str, Any] = {
             "message_id": rec.get(":message-id", ""),
@@ -349,7 +487,11 @@ class MuBackend:
             with open(path, "rb") as fh:
                 raw = fh.read()
         except OSError as e:
-            raise MuFailure(f"could not read maildir file {path!r}: {e}") from e
+            logger.warning(
+                f"skipping search hit whose maildir file is gone "
+                f"(stale index path {path!r}): {e}"
+            )
+            return None
         message = email_pkg.message_from_bytes(raw)
         email_obj = Email.from_message(message, uid=uid, folder=folder)
         email_obj.flags = list(flags)
@@ -438,25 +580,23 @@ class MuBackend:
             return None
 
     @staticmethod
-    def _derive_folder(block_maildir: Optional[str], mu_maildir: Any) -> str:
+    def _derive_folder(scope_prefix: str, mu_maildir: Any) -> str:
         """Derive the relative folder name from mu's ``:maildir`` field.
 
         mu reports ``:maildir`` as a path relative to its store root
-        (e.g. ``/work/Deleted Messages``).  Strip the leading
-        ``/<basename>/`` of the block's maildir to get the folder
-        relative to the block; report ``"INBOX"`` for messages sitting
-        at the block root.
+        (e.g. ``/work/Deleted Messages``).  Strip the block's scope
+        prefix (from :meth:`_scope_prefix`) to get the folder relative
+        to the block; report ``"INBOX"`` for messages sitting at the
+        block root.  With an empty prefix (mu root == block maildir)
+        the block root is reported as ``/`` and folders sit directly
+        under it.
         """
         if not isinstance(mu_maildir, str):
             return ""
-        if not block_maildir:
-            return mu_maildir.lstrip("/")
-        basename = os.path.basename(block_maildir.rstrip("/"))
-        prefix = f"/{basename}"
-        if mu_maildir == prefix:
+        if mu_maildir == (scope_prefix or "/"):
             return "INBOX"
-        if mu_maildir.startswith(prefix + "/"):
-            return mu_maildir[len(prefix) + 1 :]
+        if mu_maildir.startswith(scope_prefix + "/"):
+            return mu_maildir[len(scope_prefix) + 1 :]
         return mu_maildir.lstrip("/")
 
 
