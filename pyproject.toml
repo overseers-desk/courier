@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "courier"
-version = "1.1.17"
+version = "1.1.18"
 description = "Email toolkit for AI assistants and command-line scripting"
 readme = "README.md"
 requires-python = ">=3.11"
