@@ -187,7 +187,9 @@ class TestMuBackendSearch:
                 stderr="",
             ),
         ):
-            results, _report, _truncated = backend.search(account_cfg, parse("from:alice"), limit=5)
+            results, _report, _truncated = backend.search(
+                account_cfg, parse("from:alice"), limit=5
+            )
 
         assert len(results) == 1
         rec = results[0]
@@ -325,7 +327,9 @@ class TestMuBackendSearch:
                 args=[], returncode=0, stdout=json.dumps(sample), stderr=""
             ),
         ):
-            results, _report, _truncated = backend.search(block, parse("from:alice"), limit=5)
+            results, _report, _truncated = backend.search(
+                block, parse("from:alice"), limit=5
+            )
 
         assert len(results) == 1
         assert results[0]["uid"] == 691
@@ -354,7 +358,9 @@ class TestMuBackendSearch:
                 args=[], returncode=0, stdout=json.dumps(sample), stderr=""
             ),
         ):
-            results, _report, _truncated = backend.search(block, parse("from:alice"), limit=5)
+            results, _report, _truncated = backend.search(
+                block, parse("from:alice"), limit=5
+            )
 
         assert len(results) == 1
         assert "uid" not in results[0]
@@ -386,7 +392,9 @@ class TestMuBackendSearch:
                 args=[], returncode=0, stdout=json.dumps(sample), stderr=""
             ),
         ):
-            results, _report, _truncated = backend.search(block, parse("from:alice"), limit=5)
+            results, _report, _truncated = backend.search(
+                block, parse("from:alice"), limit=5
+            )
 
         assert len(results) == 1
         assert results[0]["subject"] == "Hi"
@@ -437,7 +445,9 @@ class TestMuBackendSearch:
                 args=[], returncode=0, stdout=json.dumps(sample), stderr=""
             ),
         ):
-            results, _report, _truncated = backend.search(block, parse("from:alice"), limit=5)
+            results, _report, _truncated = backend.search(
+                block, parse("from:alice"), limit=5
+            )
 
         assert len(results) == 1
         rec = results[0]
@@ -492,7 +502,9 @@ class TestMuBackendSearch:
             patch.object(MuBackend, "_store_maildir_root", return_value=block.maildir),
             patch("courier.local_cache.subprocess.run", side_effect=fake_run),
         ):
-            results, _report, _truncated = backend.search(block, parse("from:alice"), limit=5)
+            results, _report, _truncated = backend.search(
+                block, parse("from:alice"), limit=5
+            )
 
         assert captured["argv"][-1] == "(from:alice) AND maildir:/*"
         assert [r["folder"] for r in results] == ["INBOX", "Archive"]
@@ -554,7 +566,9 @@ class TestMuBackendSearch:
             ),
             caplog.at_level(logging.WARNING, logger="courier.local_cache"),
         ):
-            results, _report, _truncated = backend.search(block, parse("from:alice"), limit=5)
+            results, _report, _truncated = backend.search(
+                block, parse("from:alice"), limit=5
+            )
 
         assert [r["message_id"] for r in results] == ["<live@x>"]
         assert any(dead_path in rec.message for rec in caplog.records)
@@ -598,7 +612,9 @@ class TestMuBackendSearch:
                 args=[], returncode=0, stdout=json.dumps(sample), stderr=""
             ),
         ):
-            results, _report, _truncated = backend.search(block, parse("from:alice"), limit=5)
+            results, _report, _truncated = backend.search(
+                block, parse("from:alice"), limit=5
+            )
 
         assert len(results) == 1
         rec = results[0]

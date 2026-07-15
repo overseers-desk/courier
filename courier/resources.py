@@ -143,9 +143,7 @@ def register_resources(mcp: FastMCP, imap_client: ImapClient) -> None:
             backend could express, a refused charset).
         """
         try:
-            result = imap_client.search_emails(
-                query, folder=None, limit=_SEARCH_LIMIT
-            )
+            result = imap_client.search_emails(query, folder=None, limit=_SEARCH_LIMIT)
             return json.dumps(result, indent=2, default=str)
         except Exception as e:
             logger.error(

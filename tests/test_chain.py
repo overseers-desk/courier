@@ -964,9 +964,7 @@ class TestChainTextFormatFailures:
                 "acct1": {
                     "results": [],
                     "provenance": {"source": "remote", "indexed_at": None},
-                    "folders_failed": [
-                        {"folder": "INBOX", "error": "read timeout"}
-                    ],
+                    "folders_failed": [{"folder": "INBOX", "error": "read timeout"}],
                 }
             }
         }

@@ -1449,9 +1449,7 @@ class TestRemoteEmitterDispatch:
             client.connect()
         return mock_imap_client
 
-    def test_gmail_capability_routes_header_search_via_x_gm_raw(
-        self, mock_imap_client
-    ):
+    def test_gmail_capability_routes_header_search_via_x_gm_raw(self, mock_imap_client):
         """Wire form for the #17 regression: X-GM-RAW, not bare TO."""
         client = self._make_client()
         wire = self._connect(client, mock_imap_client, gmail=True)
@@ -1466,9 +1464,7 @@ class TestRemoteEmitterDispatch:
         client = self._make_client(host="imap.gmail.com")
         wire = self._connect(client, mock_imap_client, gmail=False)
         client.search_emails("to:foo@example.com")
-        wire.search.assert_called_once_with(
-            [b"TO", b"foo@example.com"], charset=None
-        )
+        wire.search.assert_called_once_with([b"TO", b"foo@example.com"], charset=None)
 
     def test_pure_flag_query_also_uses_gmail_dialect(self, mock_imap_client):
         """The old dispatch sent flag-only queries as standard keys on
@@ -1476,9 +1472,7 @@ class TestRemoteEmitterDispatch:
         client = self._make_client()
         wire = self._connect(client, mock_imap_client, gmail=True)
         client.search_emails("is:unread")
-        wire.search.assert_called_once_with(
-            [b"X-GM-RAW", b"is:unread"], charset=None
-        )
+        wire.search.assert_called_once_with([b"X-GM-RAW", b"is:unread"], charset=None)
 
     def test_imap_escape_takes_standard_path_on_gmail(self, mock_imap_client):
         client = self._make_client()
@@ -1602,9 +1596,7 @@ class TestSearchFolderScope:
     def test_all_shortcut_adds_junk_and_trash(self, mock_imap_client):
         """T9: the \\All shortcut excluded Spam/Trash silently; a
         folderless search now sweeps them additionally."""
-        client, wire = self._client_with_folders(
-            mock_imap_client, self.GMAIL_FOLDERS
-        )
+        client, wire = self._client_with_folders(mock_imap_client, self.GMAIL_FOLDERS)
         result = client.search_emails("from:alice")
         assert result["provenance"]["folders_searched"] == [
             "[Gmail]/All Mail",
@@ -1614,9 +1606,7 @@ class TestSearchFolderScope:
         assert wire.search.call_count == 3
 
     def test_in_sent_resolves_special_use(self, mock_imap_client):
-        client, wire = self._client_with_folders(
-            mock_imap_client, self.GMAIL_FOLDERS
-        )
+        client, wire = self._client_with_folders(mock_imap_client, self.GMAIL_FOLDERS)
         result = client.search_emails("in:sent from:alice")
         assert result["provenance"]["folders_searched"] == ["[Gmail]/Sent Mail"]
         (criteria,), _ = wire.search.call_args
@@ -1641,9 +1631,7 @@ class TestSearchFolderScope:
         with pytest.raises(FolderNotFound, match="Sent"):
             client.search_emails("in:sent from:alice")
 
-    def test_gmail_path_keeps_in_scope_inside_the_raw_string(
-        self, mock_imap_client
-    ):
+    def test_gmail_path_keeps_in_scope_inside_the_raw_string(self, mock_imap_client):
         """Gmail speaks in: natively, so the raw string carries the
         scope and the physical sweep stays the default set."""
         client, wire = self._client_with_folders(
@@ -1723,9 +1711,7 @@ class TestSearchFailureEnvelope:
         with pytest.raises(PermanentError, match="non-ASCII"):
             client.search_emails("from:josé")
 
-    def test_total_count_and_truncated_report_the_limit_cut(
-        self, mock_imap_client
-    ):
+    def test_total_count_and_truncated_report_the_limit_cut(self, mock_imap_client):
         client = self._client(
             mock_imap_client,
             [((b"\\HasNoChildren",), b"/", "INBOX")],
@@ -1845,9 +1831,7 @@ class TestSearchEmailsDispatch:
 
         mock_imap.assert_not_called()
         remaining, _ = extract_scope(parse("from:alice"))
-        mu.search.assert_called_once_with(
-            block, remaining, 10, None, world_as_of=None
-        )
+        mu.search.assert_called_once_with(block, remaining, 10, None, world_as_of=None)
         assert result["results"] == canned
         assert result["provenance"]["source"] == "local"
         assert result["provenance"]["indexed_at"] == "2025-04-01T12:00:00+00:00"
@@ -2618,19 +2602,23 @@ class TestFetchSummaries:
         ]
         assert summaries[0]["date"].startswith("2026-04-01")
 
-    def test_attachment_disposition_detected_from_structure(
-        self, mock_imap_client
-    ):
+    def test_attachment_disposition_detected_from_structure(self, mock_imap_client):
         client = self._connected(mock_imap_client)
         structure = (
+            (b"text", b"plain", (b"charset", b"utf-8"), None, None, b"7bit", 5, 1),
             (
-                (b"text", b"plain", (b"charset", b"utf-8"), None, None,
-                 b"7bit", 5, 1),
-                (b"application", b"pdf", (b"name", b"q3.pdf"), None, None,
-                 b"base64", 1000, None,
-                 (b"attachment", (b"filename", b"q3.pdf")), None),
-                b"mixed",
-            )
+                b"application",
+                b"pdf",
+                (b"name", b"q3.pdf"),
+                None,
+                None,
+                b"base64",
+                1000,
+                None,
+                (b"attachment", (b"filename", b"q3.pdf")),
+                None,
+            ),
+            b"mixed",
         )
         mock_imap_client.fetch.return_value = {
             8: {

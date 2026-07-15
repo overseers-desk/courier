@@ -6,6 +6,7 @@ suspicious emails without downloading the full HTML content.
 """
 
 import json
+
 from courier.models import Email, EmailAddress, EmailContent
 
 

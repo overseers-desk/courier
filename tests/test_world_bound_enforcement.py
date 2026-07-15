@@ -136,9 +136,7 @@ class TestSearchLayerOne:
         wire = _wire(client)
         wire.search.return_value = []
         client.search_emails("from:alice", folder="INBOX")
-        wire.search.assert_called_once_with(
-            [b"X-GM-RAW", b"from:alice"], charset=None
-        )
+        wire.search.assert_called_once_with([b"X-GM-RAW", b"from:alice"], charset=None)
 
 
 class TestFetchRefusal:
@@ -426,7 +424,6 @@ class TestLocalCachePathBoundedLikeImap:
 
     def _local_client(self, results):
         from courier.local_cache import EligibilityResult
-
         from courier.query.ast import TranslationReport
 
         mu = MagicMock()

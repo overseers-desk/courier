@@ -31,8 +31,9 @@ from courier.errors import (
 )
 from courier.models import Email
 from courier.oauth2 import get_access_token
-from courier.query import ParseResult, parse
+from courier.query import ParseResult
 from courier.query import dispatch as query_dispatch
+from courier.query import parse
 from courier.query.ast import (
     OP_IMAP,
     Term,
@@ -632,9 +633,7 @@ class ImapClient:
             return []
         self.ensure_connected()
         self.select_folder(folder, readonly=True)
-        items = self._bound_fetch_items(
-            ["BODY.PEEK[HEADER]", "FLAGS", "BODYSTRUCTURE"]
-        )
+        items = self._bound_fetch_items(["BODY.PEEK[HEADER]", "FLAGS", "BODYSTRUCTURE"])
         data = self._client_or_raise().fetch(uids, items)
         self._update_activity()
         summaries: List[Dict[str, Any]] = []
@@ -2120,9 +2119,7 @@ class ImapClient:
                 logger.warning(
                     f"{self.block.label} Error searching folder {current_folder}: {e}"
                 )
-                folders_failed.append(
-                    {"folder": current_folder, "error": str(e)}
-                )
+                folders_failed.append({"folder": current_folder, "error": str(e)})
 
         total_count = len(candidates)
 
