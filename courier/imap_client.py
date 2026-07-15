@@ -581,7 +581,7 @@ class ImapClient:
                 # retry loops already treat as transient.
                 raise ConnectionError(f"Failed to select folder {folder}: {e}") from e
             # The server answered NO/BAD: the folder is missing,
-            # ACL-denied, or \Noselect — permanent for this command.
+            # ACL-denied, or \Noselect; permanent for this command.
             raise FolderNotFound(f"Failed to select folder {folder}: {e}") from e
 
     def search(
@@ -1161,7 +1161,7 @@ class ImapClient:
         §6.4.8, RFC 6851), so existence is verified with a UID SEARCH
         first and the caller reports per-UID not-found instead of a
         blanket success (issue #63).  Issued raw against the selected
-        folder — deliberately not through :meth:`search`, whose
+        folder, deliberately not through :meth:`search`, whose
         WORLD_AS_OF bound would misreport recent messages as absent.
 
         Args:
@@ -1207,7 +1207,7 @@ class ImapClient:
 
         Returns:
             Dict with ``matched_uids`` (the requested UIDs present in
-            the folder — the ones the STORE touched) and
+            the folder, the ones the STORE touched) and
             ``not_found_uids`` (requested minus matched; the server
             would have ignored them silently).
 
@@ -1255,7 +1255,7 @@ class ImapClient:
 
         Returns:
             Dict with ``matched_uids`` (the requested UIDs present in
-            the source folder — the ones that moved) and
+            the source folder, the ones that moved) and
             ``not_found_uids`` (requested minus matched; the server
             would have ignored them silently).
 
@@ -1375,7 +1375,7 @@ class ImapClient:
 
         Returns:
             Dict with ``matched_uids`` (the requested UIDs present in
-            the folder — the ones expunged) and ``not_found_uids``
+            the folder, the ones expunged) and ``not_found_uids``
             (requested minus matched; the server would have ignored
             them silently).
 
@@ -1990,7 +1990,7 @@ class ImapClient:
         if cache_folder is not None and not self._is_folder_allowed(cache_folder):
             # The whitelist must hold on every serving path (issue
             # #60): the cache declines and the IMAP leg answers
-            # exactly as it would with no cache — select_folder, the
+            # exactly as it would with no cache: select_folder, the
             # shared authorization gate, refuses the folder there.
             logger.info(
                 f"{self.block.label} local cache declined: folder "

@@ -880,7 +880,7 @@ def _emit_mutation_result(result: Dict[str, Any], folder: str, **extra: Any) -> 
     and ``not_found_uids`` from the client (issue #63): a UID another
     client already expunged is a silent server-side no-op, so any
     not-found UID flips ``success`` to false and exits 1 with the UIDs
-    named on stderr — a batch with one stale UID must not report a
+    named on stderr: a batch with one stale UID must not report a
     full success.
 
     Args:

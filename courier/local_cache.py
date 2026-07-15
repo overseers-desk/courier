@@ -436,7 +436,7 @@ class MuBackend:
 
         ``INBOX`` counts as present when the block root is itself a
         maildir (``cur`` or ``new`` present) or an ``INBOX``
-        subdirectory exists — the two layouts :meth:`_derive_folder`
+        subdirectory exists, the two layouts :meth:`_derive_folder`
         collapses to ``"INBOX"``.  Any other folder must exist as a
         subdirectory of the block maildir.
 
@@ -490,7 +490,7 @@ class MuBackend:
         With ``folder`` unset the predicate matches the whole block
         recursively (``maildir:"<prefix>/"`` — mu treats the quoted
         trailing-slash form as the folder plus everything below it;
-        verified on mu 1.12.14) — unless ``allowed_folders`` narrows
+        verified on mu 1.12.14), unless ``allowed_folders`` narrows
         it to the union of that whitelist's exact folder scopes
         (issue #60).  With ``folder`` set it matches that one IMAP
         folder exactly (see :meth:`_folder_scope`).  Every scope is

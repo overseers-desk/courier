@@ -56,7 +56,7 @@ class TestTools:
         """Create a mock IMAP client."""
         client = MagicMock(spec=ImapClient)
         # Configure default return values (mutations echo the requested
-        # UIDs as matched — the issue #63 contract — and raise on failure)
+        # UIDs as matched, per the issue #63 contract, and raise on failure)
         client.move_email.side_effect = lambda uid, src, dst: _mutation_ok(uid)
         client.mark_email.side_effect = (
             lambda uid, folder, flag, value=True: _mutation_ok(uid)
