@@ -135,6 +135,7 @@ def mock_imap_client():
         ]
         client_instance.select_folder.return_value = {b"EXISTS": 5}
         client_instance.search.return_value = [1, 2, 3, 4, 5]
+        client_instance.capabilities.return_value = (b"IMAP4REV1", b"IDLE")
 
         yield client_instance
 

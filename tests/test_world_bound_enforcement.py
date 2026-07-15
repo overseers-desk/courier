@@ -50,10 +50,12 @@ def _raw_message(uid: int, subject: str = "Test") -> bytes:
     ).encode("utf-8")
 
 
-def _connected_client(bound=BOUND, block=None) -> ImapClient:
+def _connected_client(bound=BOUND, block=None, gmail=False) -> ImapClient:
     """A bounded ImapClient whose wire is a MagicMock."""
     client = ImapClient(block or _block(), world_as_of=bound)
     mock_server = MagicMock()
+    caps = [b"IMAP4REV1"] + ([b"X-GM-EXT-1"] if gmail else [])
+    mock_server.capabilities.return_value = caps
     with patch("imapclient.IMAPClient", return_value=mock_server):
         client.connect()
     return client
@@ -93,7 +95,7 @@ class TestSearchLayerOne:
     def test_string_criteria_gain_before_clause(self):
         client = _connected_client()
         _wire(client).search.return_value = []
-        client.search("all", folder="INBOX")
+        client.search("ALL", folder="INBOX")
         _wire(client).search.assert_called_once_with(
             "ALL BEFORE 13-Jul-2026", charset=None
         )
@@ -109,7 +111,7 @@ class TestSearchLayerOne:
     def test_unbounded_criteria_unchanged(self):
         client = _connected_client(bound=None)
         _wire(client).search.return_value = []
-        client.search("all", folder="INBOX")
+        client.search("ALL", folder="INBOX")
         _wire(client).search.assert_called_once_with("ALL", charset=None)
 
     def test_apply_search_bound_is_over_inclusive_by_a_day(self):
@@ -118,13 +120,25 @@ class TestSearchLayerOne:
         assert _apply_search_bound("ALL", BOUND) == "ALL BEFORE 13-Jul-2026"
 
     def test_gmail_raw_gains_epoch_before(self):
-        client = ImapClient(_block(host="imap.gmail.com"), world_as_of=BOUND)
-        spec = client._build_search_spec("from:alice")
-        assert spec == [b"X-GM-RAW", f"from:alice before:{int(BOUND.timestamp())}"]
+        client = _connected_client(gmail=True)
+        wire = _wire(client)
+        wire.search.return_value = []
+        client.search_emails("from:alice", folder="INBOX")
+        raw = f"from:alice before:{int(BOUND.timestamp())}".encode("utf-8")
+        # The epoch clause rides inside X-GM-RAW; the day-granular
+        # BEFORE (Layer 1) is still ANDed on beside it.
+        wire.search.assert_called_once_with(
+            [b"X-GM-RAW", raw, "BEFORE", date(2026, 7, 13)], charset=None
+        )
 
     def test_gmail_raw_unbounded_unchanged(self):
-        client = ImapClient(_block(host="imap.gmail.com"), world_as_of=None)
-        assert client._build_search_spec("from:alice") == [b"X-GM-RAW", "from:alice"]
+        client = _connected_client(bound=None, gmail=True)
+        wire = _wire(client)
+        wire.search.return_value = []
+        client.search_emails("from:alice", folder="INBOX")
+        wire.search.assert_called_once_with(
+            [b"X-GM-RAW", b"from:alice"], charset=None
+        )
 
 
 class TestFetchRefusal:
@@ -366,19 +380,23 @@ class TestCliReadSurfacing:
 class TestRelativeTermsAnchorToBound:
     """ImapClient threads its bound into relative-date resolution."""
 
-    def test_build_search_spec_anchors_newer_to_bound(self):
-        client = ImapClient(_block(), world_as_of=BOUND)
-        assert client._build_search_spec("newer:7d") == [
-            "SINCE",
-            date(2026, 7, 5),
-        ]
-
-    def test_search_today_preset_anchors_to_bound(self):
+    def test_search_emails_anchors_newer_to_bound(self):
         client = _connected_client()
-        _wire(client).search.return_value = []
-        client.search("today", folder="INBOX")
-        _wire(client).search.assert_called_once_with(
-            ["SINCE", date(2026, 7, 12), "BEFORE", date(2026, 7, 13)],
+        wire = _wire(client)
+        wire.search.return_value = []
+        client.search_emails("newer:7d", folder="INBOX")
+        wire.search.assert_called_once_with(
+            [b"SINCE", date(2026, 7, 5), "BEFORE", date(2026, 7, 13)],
+            charset=None,
+        )
+
+    def test_search_emails_today_keyword_anchors_to_bound(self):
+        client = _connected_client()
+        wire = _wire(client)
+        wire.search.return_value = []
+        client.search_emails("today", folder="INBOX")
+        wire.search.assert_called_once_with(
+            [b"SINCE", date(2026, 7, 12), "BEFORE", date(2026, 7, 13)],
             charset=None,
         )
 
@@ -410,9 +428,11 @@ class TestLocalCachePathBoundedLikeImap:
     def _local_client(self, results):
         from courier.local_cache import EligibilityResult
 
+        from courier.query.ast import TranslationReport
+
         mu = MagicMock()
         mu.is_eligible.return_value = EligibilityResult(True)
-        mu.search.return_value = results
+        mu.search.return_value = (results, TranslationReport(dialect="mu"), False)
         mu.index_mtime_iso.return_value = "2026-07-12T00:00:00+00:00"
         return (
             ImapClient(
@@ -437,10 +457,12 @@ class TestLocalCachePathBoundedLikeImap:
         }
 
     def test_bound_threaded_to_backend(self):
+        from courier.query import parse
+
         client, mu = self._local_client([])
         client.search_emails("from:alice")
         mu.search.assert_called_once_with(
-            client.block, "from:alice", 10, None, world_as_of=BOUND
+            client.block, parse("from:alice"), 10, None, world_as_of=BOUND
         )
 
     def test_post_filter_drops_and_counts(self):

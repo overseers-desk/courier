@@ -21,11 +21,17 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from .config import ImapBlock, LocalCacheConfig
 from .models import Email
-from .query_parser import UntranslatableQuery, parse_query_to_mu
+from .query.ast import TranslationReport, UntranslatableForBackend
+from .query.emit_mu import emit as emit_mu
+from .query.grammar import ParseResult
+
+# Backwards-compatible name: the cache-fallback catch and external
+# callers knew the old translator's exception by this name.
+UntranslatableQuery = UntranslatableForBackend
 
 _UID_FROM_FILENAME = re.compile(r",U=(\d+)[,:]")
 
@@ -284,17 +290,19 @@ class MuBackend:
     def search(
         self,
         imap_block: ImapBlock,
-        query: str,
+        parsed: ParseResult,
         limit: int,
         folder: Optional[str] = None,
         world_as_of: Optional[datetime] = None,
-    ) -> List[Dict[str, Any]]:
+    ) -> Tuple[List[Dict[str, Any]], TranslationReport, bool]:
         """Run a search against the local mu store, scoped to the block.
 
         Args:
             imap_block: [imap.NAME] block whose ``maildir`` defines the
                 search scope.  Must have ``maildir`` configured.
-            query: User query string in courier syntax.
+            parsed: The parsed query with any top-level ``in:`` scope
+                already stripped by the dispatcher (the mu emitter
+                refuses ``in:`` unconditionally).
             limit: Maximum number of results to return.
             folder: When given, narrow the search to that one IMAP folder
                 (exact, non-recursive); when ``None``, search the whole
@@ -307,15 +315,20 @@ class MuBackend:
                 and post-filters on the result's date field (Layer 2).
 
         Returns:
-            A list of result dicts mirroring the IMAP search shape minus
-            ``uid``, plus ``message_id`` and ``path``.  On a redact
-            block, a hit whose on-disk file has vanished since the last
-            index is skipped with a warning rather than aborting the
-            whole result set.
+            ``(results, report, truncated)``.  ``results`` is a list of
+            result dicts mirroring the IMAP search shape minus ``uid``,
+            plus ``message_id`` and ``path``; on a redact block, a hit
+            whose on-disk file has vanished since the last index is
+            skipped with a warning rather than aborting the whole result
+            set.  ``report`` is the mu emission's translation report for
+            ``provenance.query``.  ``truncated`` is ``True`` when the
+            index holds more matches than ``limit`` (probed by asking mu
+            for one extra record).
 
         Raises:
-            UntranslatableQuery: When the query cannot be expressed in
-                mu (re-raised from the query translator).
+            UntranslatableForBackend: When the query cannot be expressed
+                in mu (raised by the mu emitter; also importable under
+                its old name ``UntranslatableQuery``).
             MuFailure: When mu invocation fails (timeout, non-zero
                 exit — including exit 2, which mu uses both for "no
                 matches" and for a query it silently failed to parse —
@@ -331,7 +344,9 @@ class MuBackend:
         if not home:
             raise MuFailure("muhome could not be resolved")
 
-        translated = parse_query_to_mu(query, now=world_as_of)
+        now = world_as_of if world_as_of is not None else datetime.now()
+        emission = emit_mu(parsed, now=now)
+        translated = emission.query
         if world_as_of is not None:
             # Layer 1: bound the indexed date at second precision, in
             # local time (mu evaluates date: terms in the local zone).
@@ -342,13 +357,15 @@ class MuBackend:
 
         # ``--muhome`` is parsed by ``mu find`` (the subcommand), not the
         # outer ``mu`` driver, so it must follow ``find`` in the argv.
+        # One extra record is requested so a full page can be told apart
+        # from a truncated one.
         argv = [
             "mu",
             "find",
             f"--muhome={home}",
             "--format=json",
             "--maxnum",
-            str(limit),
+            str(limit + 1),
             "--sortfield",
             "date",
             "--reverse",
@@ -381,7 +398,7 @@ class MuBackend:
         if proc.returncode != 0:
             raise MuFailure(f"mu find exited {proc.returncode}: {proc.stderr.strip()}")
         if not proc.stdout.strip():
-            return []
+            return [], emission.report, False
         try:
             raw = json.loads(proc.stdout)
         except json.JSONDecodeError as e:
@@ -389,7 +406,9 @@ class MuBackend:
         if not isinstance(raw, list):
             raise MuFailure("mu json output was not a list")
         formatted = (self._format_result(imap_block, rec, prefix) for rec in raw)
-        return [rec for rec in formatted if rec is not None]
+        records = [rec for rec in formatted if rec is not None]
+        truncated = len(records) > limit
+        return records[:limit], emission.report, truncated
 
     @staticmethod
     def _scope_query(prefix: str, translated: str, folder: Optional[str] = None) -> str:

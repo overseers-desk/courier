@@ -1,6 +1,7 @@
 """Tests for the IMAP client."""
 
 from dataclasses import replace
+from datetime import date, datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -9,9 +10,16 @@ import pytest
 from courier.config import ImapBlock
 from courier.errors import CourierError, PermanentError, TransientError
 from courier.imap_client import ImapClient
-from courier.local_cache import EligibilityResult, MuFailure
+from courier.local_cache import EligibilityResult, MuFailure, UntranslatableQuery
 from courier.models import Email
-from courier.query_parser import UntranslatableQuery
+from courier.query import parse
+from courier.query.ast import TranslationReport
+from courier.query.dispatch import extract_scope
+
+
+def _mu_hit(results, truncated: bool = False):
+    """Wrap canned cache results in MuBackend.search's return shape."""
+    return (results, TranslationReport(dialect="mu"), truncated)
 
 
 def _make_maildir_root(tmp_path, folder: str = "INBOX") -> str:
@@ -470,8 +478,9 @@ class TestImapClient:
             # Connect first
             client.connect()
 
-            # Search with predefined string criteria
-            result = client.search("unseen", folder="INBOX")
+            # String criteria pass through verbatim; presets like
+            # "today" now resolve in the query translator, not here.
+            result = client.search("UNSEEN", folder="INBOX")
 
             # Verify select_folder was called with readonly=True (safe for search)
             mock_imap_client.select_folder.assert_called_once_with(
@@ -488,23 +497,15 @@ class TestImapClient:
             mock_imap_client.select_folder.reset_mock()
             mock_imap_client.search.reset_mock()
 
-            # Test another predefined criteria
-            result = client.search("today", folder="INBOX")
+            # List criteria also pass through untouched.
+            result = client.search(["SINCE", "01-Jul-2026"], folder="INBOX")
 
             # Verify select_folder was called with readonly=True
             mock_imap_client.select_folder.assert_called_once_with(
                 "INBOX", readonly=True
             )
-
-            # Verify search was called with correct criteria (SINCE today's date)
-            mock_imap_client.search.assert_called_once()
-            args = mock_imap_client.search.call_args[0][0]
-            assert args[0] == "SINCE"
-            # Since we can't predict the exact type, we'll just check it's a date-like object
-            assert (
-                hasattr(args[1], "year")
-                and hasattr(args[1], "month")
-                and hasattr(args[1], "day")
+            mock_imap_client.search.assert_called_once_with(
+                ["SINCE", "01-Jul-2026"], charset=None
             )
 
     def test_search_with_complex_criteria(self, mock_imap_client):
@@ -1412,18 +1413,20 @@ class TestMutationTypedErrors:
         mock_move.assert_called_once_with([10, 11], "INBOX", "Trash")
 
 
-class TestGmailSearchDispatch:
-    """Regression tests for issue #17 — Gmail X-GM-RAW dispatch.
+class TestRemoteEmitterDispatch:
+    """Capability-gated remote dispatch (issues #17 and T3).
 
-    Standard IMAP ``SEARCH TO foo@example.com`` against Gmail's All Mail
-    folder empirically does not filter by To header (returns the full
-    folder).  ``search_emails`` must therefore route header searches
-    through Gmail's ``X-GM-RAW`` extension when the configured host is
-    Gmail; non-Gmail hosts and the ``imap:`` raw escape continue to use
-    the standard ``parse_query`` emitter.
+    The Gmail emitter is selected when the server advertises
+    ``X-GM-EXT-1``, never from hostname substrings, so
+    ``imap.googlemail.com`` and any host proxying Gmail dispatch
+    correctly, and non-Gmail servers get RFC 3501 criteria.  Standard
+    IMAP ``SEARCH TO foo@example.com`` against Gmail's All Mail matches
+    every recent message rather than filtering by the To header (issue
+    #17), which is why the Gmail emitter must win whenever the
+    capability is present.
     """
 
-    def _make_client(self, host: str = "imap.gmail.com") -> ImapClient:
+    def _make_client(self, host: str = "imap.example.com") -> ImapClient:
         config = ImapBlock(
             host=host,
             port=993,
@@ -1431,151 +1434,311 @@ class TestGmailSearchDispatch:
             password="password",
             use_ssl=True,
         )
-        return ImapClient(config)
+        return ImapClient(config, world_as_of=None)
 
-    def test_gmail_to_uses_x_gm_raw(self):
-        client = self._make_client()
-        spec = client._build_search_spec("to:foo@example.com")
-        assert spec == [b"X-GM-RAW", "to:foo@example.com"]
-
-    def test_gmail_from_uses_x_gm_raw(self):
-        client = self._make_client()
-        spec = client._build_search_spec("from:alice@example.com")
-        assert spec == [b"X-GM-RAW", "from:alice@example.com"]
-
-    def test_gmail_cc_uses_x_gm_raw(self):
-        client = self._make_client()
-        spec = client._build_search_spec("cc:team@example.com")
-        assert spec == [b"X-GM-RAW", "cc:team@example.com"]
-
-    def test_gmail_bcc_uses_x_gm_raw(self):
-        client = self._make_client()
-        spec = client._build_search_spec("bcc:bob@example.com")
-        assert spec == [b"X-GM-RAW", "bcc:bob@example.com"]
-
-    def test_gmail_or_with_to_uses_x_gm_raw(self):
-        client = self._make_client()
-        spec = client._build_search_spec("from:foo@example.com OR to:foo@example.com")
-        assert spec == [
-            b"X-GM-RAW",
-            "from:foo@example.com OR to:foo@example.com",
+    def _connect(self, client, mock_imap_client, gmail: bool):
+        caps = [b"IMAP4REV1", b"IDLE"]
+        if gmail:
+            caps.append(b"X-GM-EXT-1")
+        mock_imap_client.capabilities.return_value = caps
+        mock_imap_client.list_folders.return_value = [
+            ((b"\\HasNoChildren", b"\\All"), b"/", "[Gmail]/All Mail"),
         ]
-
-    def test_gmail_negated_to_uses_x_gm_raw(self):
-        client = self._make_client()
-        spec = client._build_search_spec("-to:foo@example.com")
-        assert spec == [b"X-GM-RAW", "-to:foo@example.com"]
-
-    def test_gmail_pure_flag_query_uses_imap(self):
-        """is:unread alone has no header prefix → standard IMAP search."""
-        client = self._make_client()
-        spec = client._build_search_spec("is:unread")
-        assert spec == "UNSEEN"
-
-    def test_gmail_pure_subject_query_uses_imap(self):
-        """SUBJECT search works correctly on standard IMAP — no need for X-GM-RAW."""
-        client = self._make_client()
-        spec = client._build_search_spec("subject:invoice")
-        assert spec == ["SUBJECT", "invoice"]
-
-    def test_gmail_imap_escape_uses_imap(self):
-        client = self._make_client()
-        spec = client._build_search_spec("imap:UNSEEN")
-        assert spec == "UNSEEN"
-
-    def test_gmail_bare_word_uses_imap(self):
-        client = self._make_client()
-        spec = client._build_search_spec("hello")
-        assert spec == ["TEXT", "hello"]
-
-    def test_non_gmail_to_uses_imap(self):
-        """Non-Gmail hosts go through the parser unchanged."""
-        client = self._make_client(host="imap.fastmail.com")
-        spec = client._build_search_spec("to:foo@example.com")
-        assert spec == ["TO", "foo@example.com"]
-
-    def test_non_gmail_from_uses_imap(self):
-        client = self._make_client(host="mail.example.com")
-        spec = client._build_search_spec("from:foo@example.com")
-        assert spec == ["FROM", "foo@example.com"]
-
-    def test_gmail_quoted_value_with_to_uses_x_gm_raw(self):
-        """Quoted address values still trip the dispatch."""
-        client = self._make_client()
-        spec = client._build_search_spec('to:"Bob Smith <bob@example.com>"')
-        assert spec == [b"X-GM-RAW", 'to:"Bob Smith <bob@example.com>"']
-
-    def test_gmail_to_with_extra_terms_uses_x_gm_raw(self):
-        """Mixed header + flag/date queries route via X-GM-RAW; Gmail
-        understands these prefixes natively."""
-        client = self._make_client()
-        spec = client._build_search_spec("to:foo@example.com is:unread")
-        assert spec == [b"X-GM-RAW", "to:foo@example.com is:unread"]
-
-    def test_gmail_standalone_msgid_uses_imap(self):
-        """msgid: alone has no raw-trigger prefix → standard IMAP HEADER."""
-        client = self._make_client()
-        spec = client._build_search_spec("msgid:abc@host")
-        assert spec == ["HEADER", "Message-ID", "abc@host"]
-
-    def test_gmail_msgid_with_from_canonicalized_in_raw(self):
-        """A msgid token in a raw-routed query becomes rfc822msgid: with
-        the id stripped of angle brackets."""
-        client = self._make_client()
-        spec = client._build_search_spec("from:alice msgid:<abc@host>")
-        assert spec == [b"X-GM-RAW", "from:alice rfc822msgid:abc@host"]
-
-    def test_gmail_rfc822msgid_with_from_normalized_in_raw(self):
-        """The rfc822msgid: alias is normalized without a doubled prefix."""
-        client = self._make_client()
-        spec = client._build_search_spec("from:alice rfc822msgid:<abc@host>")
-        assert spec == [b"X-GM-RAW", "from:alice rfc822msgid:abc@host"]
-
-    def test_gmail_raw_without_msgid_passes_through_verbatim(self):
-        """A raw-routed query with no msgid token is untouched byte-for-byte."""
-        client = self._make_client()
-        spec = client._build_search_spec("from:foo@example.com OR to:foo@example.com")
-        assert spec == [
-            b"X-GM-RAW",
-            "from:foo@example.com OR to:foo@example.com",
-        ]
-
-    def test_gmail_has_attachment_uses_x_gm_raw(self):
-        """has:attachment routes through X-GM-RAW for native exact semantics."""
-        client = self._make_client()
-        spec = client._build_search_spec("has:attachment")
-        assert spec == [b"X-GM-RAW", "has:attachment"]
-
-    def test_gmail_larger_with_has_uses_x_gm_raw_verbatim(self):
-        """A mixed larger:/has: query routes raw and is passed verbatim."""
-        client = self._make_client()
-        spec = client._build_search_spec("larger:1M has:attachment")
-        assert spec == [b"X-GM-RAW", "larger:1M has:attachment"]
-
-    def test_gmail_larger_alone_uses_imap(self):
-        """larger: has no raw-trigger prefix → standard IMAP LARGER."""
-        client = self._make_client()
-        spec = client._build_search_spec("larger:1M")
-        assert spec == ["LARGER", 1048576]
-
-    def test_search_emails_to_on_gmail_invokes_x_gm_raw(self, mock_imap_client):
-        """End-to-end behaviour test: ``search_emails('to:foo@example.com')``
-        on a Gmail host must pass ``X-GM-RAW`` (not bare ``TO``) to the
-        underlying imapclient.search call.  Bare ``TO`` is the wire form
-        that triggers issue #17.
-        """
-        client = self._make_client()
-        with patch("imapclient.IMAPClient") as mock_client_class:
-            mock_client_class.return_value = mock_imap_client
-            mock_imap_client.list_folders.return_value = [
-                ((b"\\HasNoChildren", b"\\All"), b"/", "[Gmail]/All Mail"),
-            ]
-            mock_imap_client.search.return_value = []
+        mock_imap_client.search.return_value = []
+        with patch("imapclient.IMAPClient", return_value=mock_imap_client):
             client.connect()
-            client.search_emails("to:foo@example.com")
-            mock_imap_client.search.assert_called_once_with(
-                [b"X-GM-RAW", "to:foo@example.com"], charset=None
-            )
+        return mock_imap_client
+
+    def test_gmail_capability_routes_header_search_via_x_gm_raw(
+        self, mock_imap_client
+    ):
+        """Wire form for the #17 regression: X-GM-RAW, not bare TO."""
+        client = self._make_client()
+        wire = self._connect(client, mock_imap_client, gmail=True)
+        client.search_emails("to:foo@example.com")
+        wire.search.assert_called_once_with(
+            [b"X-GM-RAW", b"to:foo@example.com"], charset=None
+        )
+
+    def test_dispatch_ignores_hostname(self, mock_imap_client):
+        """A gmail hostname without the capability gets RFC 3501 keys
+        (and a capable non-gmail hostname got X-GM-RAW above)."""
+        client = self._make_client(host="imap.gmail.com")
+        wire = self._connect(client, mock_imap_client, gmail=False)
+        client.search_emails("to:foo@example.com")
+        wire.search.assert_called_once_with(
+            [b"TO", b"foo@example.com"], charset=None
+        )
+
+    def test_pure_flag_query_also_uses_gmail_dialect(self, mock_imap_client):
+        """The old dispatch sent flag-only queries as standard keys on
+        Gmail; the capability gate routes every translatable query."""
+        client = self._make_client()
+        wire = self._connect(client, mock_imap_client, gmail=True)
+        client.search_emails("is:unread")
+        wire.search.assert_called_once_with(
+            [b"X-GM-RAW", b"is:unread"], charset=None
+        )
+
+    def test_imap_escape_takes_standard_path_on_gmail(self, mock_imap_client):
+        client = self._make_client()
+        wire = self._connect(client, mock_imap_client, gmail=True)
+        client.search_emails("imap:UNSEEN")
+        wire.search.assert_called_once_with([b"UNSEEN"], charset=None)
+
+    def test_answered_family_hybrid_on_the_wire(self, mock_imap_client):
+        """is:answered has no Gmail spelling; it rides beside X-GM-RAW
+        as a standard key (live-verified composition)."""
+        client = self._make_client()
+        wire = self._connect(client, mock_imap_client, gmail=True)
+        client.search_emails("from:alice is:answered")
+        wire.search.assert_called_once_with(
+            [b"X-GM-RAW", b"from:alice", b"ANSWERED"], charset=None
+        )
+
+    def test_msgid_canonicalises_from_the_ast_value(self, mock_imap_client):
+        """T12: a quoted msgid loses its quotes and angle brackets."""
+        client = self._make_client()
+        wire = self._connect(client, mock_imap_client, gmail=True)
+        client.search_emails('from:alice msgid:"<abc@host>"')
+        wire.search.assert_called_once_with(
+            [b"X-GM-RAW", b"from:alice rfc822msgid:abc@host"], charset=None
+        )
+
+    def test_non_ascii_value_sends_utf8_charset(self, mock_imap_client):
+        """Acceptance row: from:josé produces UTF-8 criteria (T2)."""
+        client = self._make_client()
+        wire = self._connect(client, mock_imap_client, gmail=False)
+        client.search_emails("from:josé")
+        wire.search.assert_called_once_with(
+            [b"FROM", "josé".encode("utf-8")], charset="UTF-8"
+        )
+
+    def test_issue_58_query_emits_nested_criteria(self, mock_imap_client):
+        """Acceptance row: the #58 parenthesized OR query reaches the
+        wire as nested criteria, not literal paren words."""
+        client = self._make_client()
+        wire = self._connect(client, mock_imap_client, gmail=False)
+        client.search_emails("after:2026-07-13 (ticket OR booking OR itinerary)")
+        (criteria,), _ = wire.search.call_args
+        assert criteria == [
+            b"SINCE",
+            date(2026, 7, 13),
+            b"OR",
+            b"TEXT",
+            b"ticket",
+            b"OR",
+            b"TEXT",
+            b"booking",
+            b"TEXT",
+            b"itinerary",
+        ]
+        assert b"TEXT" in criteria  # words are terms, never literal parens
+        assert not any(
+            isinstance(atom, bytes) and atom.startswith(b"(") for atom in criteria
+        )
+
+    def test_issue_35_or_chain_right_folds_binary(self, mock_imap_client):
+        """Acceptance row: OR is binary, so the n-ary chain right-folds
+        (flat splice is unambiguous prefix notation for single keys)."""
+        client = self._make_client()
+        wire = self._connect(client, mock_imap_client, gmail=False)
+        client.search_emails("from:a or from:b or from:c")
+        (criteria,), _ = wire.search.call_args
+        assert criteria == [
+            b"OR",
+            b"FROM",
+            b"a",
+            b"OR",
+            b"FROM",
+            b"b",
+            b"FROM",
+            b"c",
+        ]
+
+    def test_issue_35_multi_key_or_operand_nests(self, mock_imap_client):
+        """The #35 root: a multi-key OR operand becomes one nested
+        group instead of silently regrouping as the old flat chain."""
+        client = self._make_client()
+        wire = self._connect(client, mock_imap_client, gmail=False)
+        client.search_emails("(from:a subject:x) or from:b")
+        (criteria,), _ = wire.search.call_args
+        assert criteria == [
+            b"OR",
+            [b"FROM", b"a", b"SUBJECT", b"x"],
+            b"FROM",
+            b"b",
+        ]
+
+
+class TestSearchFolderScope:
+    """in: scope and the everywhere-means-everywhere folder set (T9)."""
+
+    def _client_with_folders(self, mock_imap_client, folders, gmail=False):
+        config = ImapBlock(
+            host="imap.example.com",
+            port=993,
+            username="test@example.com",
+            password="password",
+            use_ssl=True,
+        )
+        client = ImapClient(config, world_as_of=None)
+        caps = [b"IMAP4REV1"] + ([b"X-GM-EXT-1"] if gmail else [])
+        mock_imap_client.capabilities.return_value = caps
+        mock_imap_client.list_folders.return_value = folders
+        mock_imap_client.search.return_value = []
+        with patch("imapclient.IMAPClient", return_value=mock_imap_client):
+            client.connect()
+        return client, mock_imap_client
+
+    GMAIL_FOLDERS = [
+        ((b"\\HasNoChildren", b"\\All"), b"/", "[Gmail]/All Mail"),
+        ((b"\\HasNoChildren", b"\\Junk"), b"/", "[Gmail]/Spam"),
+        ((b"\\HasNoChildren", b"\\Trash"), b"/", "[Gmail]/Bin"),
+        ((b"\\HasNoChildren", b"\\Sent"), b"/", "[Gmail]/Sent Mail"),
+        ((b"\\HasNoChildren",), b"/", "INBOX"),
+    ]
+
+    def test_all_shortcut_adds_junk_and_trash(self, mock_imap_client):
+        """T9: the \\All shortcut excluded Spam/Trash silently; a
+        folderless search now sweeps them additionally."""
+        client, wire = self._client_with_folders(
+            mock_imap_client, self.GMAIL_FOLDERS
+        )
+        result = client.search_emails("from:alice")
+        assert result["provenance"]["folders_searched"] == [
+            "[Gmail]/All Mail",
+            "[Gmail]/Spam",
+            "[Gmail]/Bin",
+        ]
+        assert wire.search.call_count == 3
+
+    def test_in_sent_resolves_special_use(self, mock_imap_client):
+        client, wire = self._client_with_folders(
+            mock_imap_client, self.GMAIL_FOLDERS
+        )
+        result = client.search_emails("in:sent from:alice")
+        assert result["provenance"]["folders_searched"] == ["[Gmail]/Sent Mail"]
+        (criteria,), _ = wire.search.call_args
+        assert criteria == [b"FROM", b"alice"]
+
+    def test_negated_in_trash_subtracts_from_the_sweep(self, mock_imap_client):
+        client, _ = self._client_with_folders(mock_imap_client, self.GMAIL_FOLDERS)
+        result = client.search_emails("-in:trash from:alice")
+        assert result["provenance"]["folders_searched"] == [
+            "[Gmail]/All Mail",
+            "[Gmail]/Spam",
+        ]
+
+    def test_in_sent_without_special_use_raises_folder_not_found(
+        self, mock_imap_client
+    ):
+        from courier.errors import FolderNotFound
+
+        client, _ = self._client_with_folders(
+            mock_imap_client, [((b"\\HasNoChildren",), b"/", "INBOX")]
+        )
+        with pytest.raises(FolderNotFound, match="Sent"):
+            client.search_emails("in:sent from:alice")
+
+    def test_gmail_path_keeps_in_scope_inside_the_raw_string(
+        self, mock_imap_client
+    ):
+        """Gmail speaks in: natively, so the raw string carries the
+        scope and the physical sweep stays the default set."""
+        client, wire = self._client_with_folders(
+            mock_imap_client, self.GMAIL_FOLDERS, gmail=True
+        )
+        result = client.search_emails("in:sent from:alice")
+        (criteria,), _ = wire.search.call_args
+        assert criteria == [b"X-GM-RAW", b"in:sent from:alice"]
+        assert result["provenance"]["folders_searched"] == [
+            "[Gmail]/All Mail",
+            "[Gmail]/Spam",
+            "[Gmail]/Bin",
+        ]
+
+    def test_folder_argument_with_in_scope_refuses(self, mock_imap_client):
+        client, _ = self._client_with_folders(mock_imap_client, self.GMAIL_FOLDERS)
+        with pytest.raises(ValueError, match="not both"):
+            client.search_emails("in:sent from:alice", folder="INBOX")
+
+
+class TestSearchFailureEnvelope:
+    """Per-folder failures land in folders_failed; BADCHARSET aborts."""
+
+    def _client(self, mock_imap_client, folders, search_side_effect):
+        config = ImapBlock(
+            host="imap.example.com",
+            port=993,
+            username="test@example.com",
+            password="password",
+            use_ssl=True,
+        )
+        client = ImapClient(config, world_as_of=None)
+        mock_imap_client.capabilities.return_value = [b"IMAP4REV1"]
+        mock_imap_client.list_folders.return_value = folders
+        mock_imap_client.search.side_effect = search_side_effect
+        with patch("imapclient.IMAPClient", return_value=mock_imap_client):
+            client.connect()
+        return client
+
+    TWO_FOLDERS = [
+        ((b"\\HasNoChildren",), b"/", "INBOX"),
+        ((b"\\HasNoChildren",), b"/", "Archive"),
+    ]
+
+    def test_folder_failure_enters_the_envelope(self, mock_imap_client):
+        """#57: a rejected SEARCH or read timeout is envelope-visible,
+        not syslog-only, and absent means no folder failed."""
+        calls = iter([Exception("read timeout"), []])
+
+        def side_effect(*args, **kwargs):
+            item = next(calls)
+            if isinstance(item, Exception):
+                raise item
+            return item
+
+        client = self._client(mock_imap_client, self.TWO_FOLDERS, side_effect)
+        result = client.search_emails("from:alice")
+        assert result["folders_failed"] == [
+            {"folder": "INBOX", "error": "read timeout"}
+        ]
+        assert result["results"] == []
+
+    def test_clean_search_has_no_folders_failed_key(self, mock_imap_client):
+        client = self._client(mock_imap_client, self.TWO_FOLDERS, lambda *a, **k: [])
+        result = client.search_emails("from:alice")
+        assert "folders_failed" not in result
+
+    def test_badcharset_raises_a_block_error(self, mock_imap_client):
+        """T2 follow-through: a refused CHARSET is a per-account error,
+        never a clean-empty envelope."""
+        from courier.errors import PermanentError
+
+        def side_effect(*args, **kwargs):
+            raise Exception("SEARCH command error: BAD [BADCHARSET (US-ASCII)]")
+
+        client = self._client(mock_imap_client, self.TWO_FOLDERS, side_effect)
+        with pytest.raises(PermanentError, match="non-ASCII"):
+            client.search_emails("from:josé")
+
+    def test_total_count_and_truncated_report_the_limit_cut(
+        self, mock_imap_client
+    ):
+        client = self._client(
+            mock_imap_client,
+            [((b"\\HasNoChildren",), b"/", "INBOX")],
+            lambda *a, **k: [1, 2, 3],
+        )
+        mock_imap_client.fetch.return_value = {
+            uid: {b"INTERNALDATE": datetime(2026, 7, uid, 12, 0, 0)}
+            for uid in (1, 2, 3)
+        }
+        with patch.object(client, "fetch_emails", return_value={}):
+            result = client.search_emails("from:alice", folder="INBOX", limit=2)
+        assert result["total_count"] == 3
+        assert result["truncated"] is True
 
 
 class TestSearchEmailsDispatch:
@@ -1608,24 +1771,49 @@ class TestSearchEmailsDispatch:
             maildir=maildir,
         )
 
+    @staticmethod
+    def _remote_outcome(results=None, folders=("INBOX",)):
+        from courier.imap_client import _RemoteSearch
+
+        results = results or []
+        return _RemoteSearch(
+            results,
+            0,
+            [],
+            len(results),
+            TranslationReport(dialect="imap"),
+            list(folders),
+        )
+
     def test_search_emails_wraps_with_provenance_imap_path(self):
         """No local_cache configured → IMAP path runs and result is wrapped."""
         config = self._make_config()
         client = ImapClient(config)
 
         with patch.object(
-            client, "_search_emails_imap", return_value=([], 0)
+            client, "_search_emails_imap", return_value=self._remote_outcome()
         ) as mock_imap:
             result = client.search_emails("from:alice")
 
-        mock_imap.assert_called_once_with("from:alice", None, 10, False)
+        parsed = parse("from:alice")
+        remaining, scope = extract_scope(parsed)
+        mock_imap.assert_called_once_with(parsed, remaining, scope, None, 10, False)
         assert result == {
             "results": [],
             "provenance": {
                 "source": "remote",
                 "indexed_at": None,
                 "fell_back_reason": None,
+                "query": {
+                    "dialect": "imap",
+                    "approximations": [],
+                    "fallbacks": [],
+                    "treated_as_text": [],
+                },
+                "folders_searched": ["INBOX"],
             },
+            "total_count": 0,
+            "truncated": False,
         }
 
     def test_search_emails_dispatches_to_mu_when_eligible(self):
@@ -1647,7 +1835,7 @@ class TestSearchEmailsDispatch:
         ]
         mu = MagicMock()
         mu.is_eligible.return_value = EligibilityResult(True)
-        mu.search.return_value = canned
+        mu.search.return_value = _mu_hit(canned)
         mu.index_mtime_iso.return_value = "2025-04-01T12:00:00+00:00"
 
         client = ImapClient(block, local_cache=mu)
@@ -1656,13 +1844,30 @@ class TestSearchEmailsDispatch:
             result = client.search_emails("from:alice")
 
         mock_imap.assert_not_called()
+        remaining, _ = extract_scope(parse("from:alice"))
         mu.search.assert_called_once_with(
-            block, "from:alice", 10, None, world_as_of=None
+            block, remaining, 10, None, world_as_of=None
         )
         assert result["results"] == canned
         assert result["provenance"]["source"] == "local"
         assert result["provenance"]["indexed_at"] == "2025-04-01T12:00:00+00:00"
         assert result["provenance"]["fell_back_reason"] is None
+        assert result["provenance"]["query"]["dialect"] == "mu"
+        assert result["total_count"] == 1
+        assert result["truncated"] is False
+
+    def test_search_emails_truncated_cache_page_has_no_total(self):
+        """A cache page cut at the limit cannot know the match count."""
+        block = self._make_block_with_maildir()
+
+        mu = MagicMock()
+        mu.is_eligible.return_value = EligibilityResult(True)
+        mu.search.return_value = _mu_hit([{"subject": "x", "flags": []}], True)
+
+        client = ImapClient(block, local_cache=mu)
+        result = client.search_emails("from:alice", limit=1)
+        assert result["truncated"] is True
+        assert result["total_count"] is None
 
     def test_search_emails_falls_back_on_mu_exception(self):
         """A MuFailure from the backend triggers an IMAP fallback."""
@@ -1675,13 +1880,16 @@ class TestSearchEmailsDispatch:
         client = ImapClient(block, local_cache=mu)
 
         with patch.object(
-            client, "_search_emails_imap", return_value=([], 0)
+            client, "_search_emails_imap", return_value=self._remote_outcome()
         ) as mock_imap:
             result = client.search_emails("from:alice")
 
-        mock_imap.assert_called_once_with("from:alice", None, 10, False)
+        mock_imap.assert_called_once()
         assert result["provenance"]["source"] == "remote"
         assert result["provenance"]["fell_back_reason"] == "exception"
+        assert result["provenance"]["query"]["fallbacks"] == [
+            {"backend": "cache", "reason": "exception"}
+        ]
 
     def test_search_emails_falls_back_on_untranslatable(self):
         """An UntranslatableQuery from the backend triggers an IMAP fallback."""
@@ -1689,12 +1897,14 @@ class TestSearchEmailsDispatch:
 
         mu = MagicMock()
         mu.is_eligible.return_value = EligibilityResult(True)
-        mu.search.side_effect = UntranslatableQuery("untranslatable")
+        mu.search.side_effect = UntranslatableQuery(
+            "mu", "imap:", "raw IMAP expressions cannot run against the local cache"
+        )
 
         client = ImapClient(block, local_cache=mu)
 
         with patch.object(
-            client, "_search_emails_imap", return_value=([], 0)
+            client, "_search_emails_imap", return_value=self._remote_outcome()
         ) as mock_imap:
             result = client.search_emails("imap:UNSEEN")
 
@@ -1709,22 +1919,57 @@ class TestSearchEmailsDispatch:
 
         mu = MagicMock()
         mu.is_eligible.return_value = EligibilityResult(True)
-        mu.search.return_value = []
+        mu.search.return_value = _mu_hit([])
         mu.index_mtime_iso.return_value = "2025-04-01T12:00:00+00:00"
 
         client = ImapClient(block, local_cache=mu)
 
         with patch.object(
-            client, "_search_emails_imap", return_value=([], 0)
+            client, "_search_emails_imap", return_value=self._remote_outcome()
         ) as mock_imap:
             result = client.search_emails("from:alice", folder="INBOX")
 
         mock_imap.assert_not_called()
+        remaining, _ = extract_scope(parse("from:alice"))
         mu.search.assert_called_once_with(
-            block, "from:alice", 10, "INBOX", world_as_of=None
+            block, remaining, 10, "INBOX", world_as_of=None
         )
         assert result["provenance"]["source"] == "local"
         assert result["provenance"]["fell_back_reason"] is None
+
+    def test_search_emails_in_scope_serves_from_cache(self):
+        """A cache-expressible in: scope becomes the exact mu folder."""
+        block = self._make_block_with_maildir()
+
+        mu = MagicMock()
+        mu.is_eligible.return_value = EligibilityResult(True)
+        mu.search.return_value = _mu_hit([])
+        mu.index_mtime_iso.return_value = "2025-04-01T12:00:00+00:00"
+
+        client = ImapClient(block, local_cache=mu)
+        client.search_emails("in:inbox from:alice")
+
+        remaining, _ = extract_scope(parse("in:inbox from:alice"))
+        mu.search.assert_called_once_with(
+            block, remaining, 10, "INBOX", world_as_of=None
+        )
+
+    def test_search_emails_special_use_scope_declines_cache(self):
+        """in:sent needs the server's SPECIAL-USE; the cache declines."""
+        block = self._make_block_with_maildir()
+
+        mu = MagicMock()
+        mu.is_eligible.return_value = EligibilityResult(True)
+
+        client = ImapClient(block, local_cache=mu)
+        with patch.object(
+            client, "_search_emails_imap", return_value=self._remote_outcome()
+        ) as mock_imap:
+            result = client.search_emails("in:sent from:alice")
+
+        mu.search.assert_not_called()
+        mock_imap.assert_called_once()
+        assert result["provenance"]["fell_back_reason"] == "untranslatable"
 
     def test_search_emails_no_cache_forces_imap(self):
         """``no_cache`` bypasses an eligible cache and reports the reason."""
@@ -1736,11 +1981,13 @@ class TestSearchEmailsDispatch:
         client = ImapClient(block, local_cache=mu)
 
         with patch.object(
-            client, "_search_emails_imap", return_value=([], 0)
+            client, "_search_emails_imap", return_value=self._remote_outcome()
         ) as mock_imap:
             result = client.search_emails("from:alice", no_cache=True)
 
-        mock_imap.assert_called_once_with("from:alice", None, 10, True)
+        parsed = parse("from:alice")
+        remaining, scope = extract_scope(parsed)
+        mock_imap.assert_called_once_with(parsed, remaining, scope, None, 10, True)
         mu.search.assert_not_called()
         mu.is_eligible.assert_not_called()
         assert result["provenance"]["source"] == "remote"
@@ -1756,13 +2003,35 @@ class TestSearchEmailsDispatch:
         client = ImapClient(block, local_cache=mu)
 
         with patch.object(
-            client, "_search_emails_imap", return_value=([], 0)
+            client, "_search_emails_imap", return_value=self._remote_outcome()
         ) as mock_imap:
             result = client.search_emails("from:alice")
 
         mock_imap.assert_called_once()
         mu.search.assert_not_called()
         assert result["provenance"]["fell_back_reason"] == "mu_missing"
+
+    def test_terminal_refusal_names_the_cache_decline(self):
+        """Untranslatable everywhere: the error names each backend's
+        reason, eligibility declines included."""
+        block = self._make_block_with_maildir()
+
+        mu = MagicMock()
+        mu.is_eligible.return_value = EligibilityResult(False, "stale")
+
+        client = ImapClient(block, local_cache=mu)
+        with patch.object(
+            client,
+            "_search_emails_imap",
+            side_effect=UntranslatableQuery(
+                "imap", "label:", "labels are Gmail-only on this backend"
+            ),
+        ):
+            with pytest.raises(PermanentError) as excinfo:
+                client.search_emails("label:work")
+        message = str(excinfo.value)
+        assert "label:" in message
+        assert "your local cache exists but its index is stale" in message
 
 
 class TestProcessEmailAction:
@@ -1869,12 +2138,20 @@ class TestSearchEmailsImapResultShape:
             uid=42,
         )
 
+    @staticmethod
+    def _run_remote(client, query, folder=None, limit=10):
+        """Call _search_emails_imap through the parse/scope front door."""
+        parsed = parse(query)
+        remaining, scope = extract_scope(parsed)
+        return client._search_emails_imap(parsed, remaining, scope, folder, limit)
+
     def test_imap_search_includes_message_id(self):
         """Every dict returned by `_search_emails_imap` carries `message_id`."""
         client = self._make_client()
 
         with (
-            patch.object(client, "_build_search_spec", return_value="ALL"),
+            patch.object(client, "ensure_connected"),
+            patch.object(client, "get_capabilities", return_value=["IMAP4REV1"]),
             patch.object(client, "find_special_use_folder", return_value=None),
             patch.object(client, "list_folders", return_value=["INBOX"]),
             patch.object(client, "search", return_value=[42]),
@@ -1891,9 +2168,7 @@ class TestSearchEmailsImapResultShape:
             mock_clientor.return_value.fetch.return_value = {
                 42: {b"INTERNALDATE": datetime(2026, 4, 1, 10, 0, 0)}
             }
-            results, _ = client._search_emails_imap(
-                "from:alice", folder="INBOX", limit=10
-            )
+            results = self._run_remote(client, "from:alice", folder="INBOX").results
 
         assert len(results) == 1
         assert results[0]["message_id"] == "<m1@example.com>"
@@ -1919,7 +2194,8 @@ class TestSearchEmailsImapResultShape:
         client = self._make_client()
 
         with (
-            patch.object(client, "_build_search_spec", return_value="ALL"),
+            patch.object(client, "ensure_connected"),
+            patch.object(client, "get_capabilities", return_value=["IMAP4REV1"]),
             patch.object(
                 client, "find_special_use_folder", return_value="[Gmail]/All Mail"
             ),
@@ -1932,7 +2208,7 @@ class TestSearchEmailsImapResultShape:
             mock_clientor.return_value.fetch.return_value = {
                 1: {b"INTERNALDATE": datetime(2026, 4, 1, 10, 0, 0)}
             }
-            client._search_emails_imap("from:alice", folder=None, limit=10)
+            self._run_remote(client, "from:alice")
 
         mock_list.assert_not_called()
 
@@ -1943,13 +2219,14 @@ class TestSearchEmailsImapResultShape:
 
         client = self._make_client()
 
-        def search_side_effect(spec, folder=None):
+        def search_side_effect(spec, folder=None, charset=None):
             if folder == "Broken":
                 raise RuntimeError("server hiccup")
             return [42]
 
         with (
-            patch.object(client, "_build_search_spec", return_value="ALL"),
+            patch.object(client, "ensure_connected"),
+            patch.object(client, "get_capabilities", return_value=["IMAP4REV1"]),
             patch.object(client, "find_special_use_folder", return_value=None),
             patch.object(client, "list_folders", return_value=["Broken", "INBOX"]),
             patch.object(client, "search", side_effect=search_side_effect),
@@ -1965,7 +2242,7 @@ class TestSearchEmailsImapResultShape:
             mock_clientor.return_value.fetch.return_value = {
                 42: {b"INTERNALDATE": datetime(2026, 4, 1, 10, 0, 0)}
             }
-            results, _ = client._search_emails_imap("from:alice", folder=None, limit=10)
+            results = self._run_remote(client, "from:alice").results
 
         assert len(results) == 1
         assert results[0]["folder"] == "INBOX"
@@ -1984,7 +2261,8 @@ class TestSearchEmailsImapResultShape:
             return {uids[0]: self._make_email()}
 
         with (
-            patch.object(client, "_build_search_spec", return_value="ALL"),
+            patch.object(client, "ensure_connected"),
+            patch.object(client, "get_capabilities", return_value=["IMAP4REV1"]),
             patch.object(client, "find_special_use_folder", return_value=None),
             patch.object(client, "list_folders", return_value=["Broken", "INBOX"]),
             patch.object(client, "search", return_value=[1]),
@@ -1996,7 +2274,7 @@ class TestSearchEmailsImapResultShape:
             mock_clientor.return_value.fetch.return_value = {
                 1: {b"INTERNALDATE": datetime(2026, 4, 1, 10, 0, 0)}
             }
-            results, _ = client._search_emails_imap("from:alice", folder=None, limit=10)
+            results = self._run_remote(client, "from:alice").results
 
         # INBOX result returned; Broken folder skipped
         assert len(results) == 1
@@ -2014,7 +2292,8 @@ class TestSearchEmailsImapResultShape:
         email_obj.redacted_by = "newsletter-rule"
 
         with (
-            patch.object(client, "_build_search_spec", return_value="ALL"),
+            patch.object(client, "ensure_connected"),
+            patch.object(client, "get_capabilities", return_value=["IMAP4REV1"]),
             patch.object(client, "find_special_use_folder", return_value=None),
             patch.object(client, "list_folders", return_value=["INBOX"]),
             patch.object(client, "search", return_value=[42]),
@@ -2025,9 +2304,7 @@ class TestSearchEmailsImapResultShape:
             mock_clientor.return_value.fetch.return_value = {
                 42: {b"INTERNALDATE": datetime(2026, 4, 1, 10, 0, 0)}
             }
-            results, _ = client._search_emails_imap(
-                "from:alice", folder="INBOX", limit=10
-            )
+            results = self._run_remote(client, "from:alice", folder="INBOX").results
 
         assert results[0]["redacted_by"] == "newsletter-rule"
 
@@ -2043,14 +2320,15 @@ class TestSearchEmailsImapResultShape:
         email_b = self._make_email("<b@example.com>")
         email_b.uid = 20
 
-        def search_side_effect(spec, folder=None):
+        def search_side_effect(spec, folder=None, charset=None):
             return {"FolderA": [10], "FolderB": [20]}[folder]
 
         def fetch_emails_side_effect(uids, folder="INBOX", no_cache=False):
             return {10: email_a} if folder == "FolderA" else {20: email_b}
 
         with (
-            patch.object(client, "_build_search_spec", return_value="ALL"),
+            patch.object(client, "ensure_connected"),
+            patch.object(client, "get_capabilities", return_value=["IMAP4REV1"]),
             patch.object(client, "find_special_use_folder", return_value=None),
             patch.object(client, "list_folders", return_value=["FolderA", "FolderB"]),
             patch.object(client, "search", side_effect=search_side_effect),
@@ -2063,7 +2341,7 @@ class TestSearchEmailsImapResultShape:
                 {10: {b"INTERNALDATE": datetime(2026, 1, 1, 10, 0, 0)}},
                 {20: {b"INTERNALDATE": datetime(2026, 4, 1, 10, 0, 0)}},
             ]
-            results, _ = client._search_emails_imap("from:alice", folder=None, limit=1)
+            results = self._run_remote(client, "from:alice", limit=1).results
 
         assert len(results) == 1
         assert results[0]["folder"] == "FolderB"

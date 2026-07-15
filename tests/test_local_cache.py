@@ -11,7 +11,7 @@ import pytest
 
 from courier.config import ImapBlock, LocalCacheConfig
 from courier.local_cache import MuBackend, MuFailure
-from courier.query_parser import UntranslatableQuery
+from courier.query import parse
 
 
 def _make_block(maildir: str = "/var/local/mail/work") -> ImapBlock:
@@ -142,7 +142,7 @@ class TestMuBackendSearch:
             )
 
         with patch("courier.local_cache.subprocess.run", side_effect=fake_run):
-            backend.search(account_cfg, "from:alice", limit=10)
+            backend.search(account_cfg, parse("from:alice"), limit=10)
 
         argv = captured["argv"]
         assert argv[0] == "mu"
@@ -152,7 +152,8 @@ class TestMuBackendSearch:
         assert argv.index(f"--muhome={muhome}") > argv.index("find")
         assert "--format=json" in argv
         assert "--maxnum" in argv
-        assert "10" in argv
+        # One extra record is requested so truncation is detectable.
+        assert "11" in argv
         assert "--sortfield" in argv
         assert "date" in argv
         assert "--reverse" in argv
@@ -186,7 +187,7 @@ class TestMuBackendSearch:
                 stderr="",
             ),
         ):
-            results = backend.search(account_cfg, "from:alice", limit=5)
+            results, _report, _truncated = backend.search(account_cfg, parse("from:alice"), limit=5)
 
         assert len(results) == 1
         rec = results[0]
@@ -224,7 +225,7 @@ class TestMuBackendSearch:
             ),
         ):
             with pytest.raises(MuFailure, match="exited 2") as excinfo:
-                backend.search(account_cfg, "from:nobody", limit=10)
+                backend.search(account_cfg, parse("from:nobody"), limit=10)
 
         assert excinfo.value.fell_back_reason == "mu_no_matches"
 
@@ -238,7 +239,7 @@ class TestMuBackendSearch:
 
         with patch("courier.local_cache.subprocess.run", side_effect=boom):
             with pytest.raises(MuFailure, match="timed out"):
-                backend.search(account_cfg, "from:alice", limit=10)
+                backend.search(account_cfg, parse("from:alice"), limit=10)
 
     def test_nonzero_exit_other_than_2_raises(self, tmp_path):
         """Any non-zero exit other than 2 is a real failure."""
@@ -252,7 +253,7 @@ class TestMuBackendSearch:
             ),
         ):
             with pytest.raises(MuFailure, match="exited 1"):
-                backend.search(account_cfg, "from:alice", limit=10)
+                backend.search(account_cfg, parse("from:alice"), limit=10)
 
     def test_malformed_json_raises_mufailure(self, tmp_path):
         """Garbage stdout becomes a MuFailure rather than a JSONDecodeError."""
@@ -266,18 +267,20 @@ class TestMuBackendSearch:
             ),
         ):
             with pytest.raises(MuFailure, match="decode"):
-                backend.search(account_cfg, "from:alice", limit=10)
+                backend.search(account_cfg, parse("from:alice"), limit=10)
 
     def test_imap_prefix_raises_untranslatable(self, tmp_path):
-        """An imap: token in the query surfaces UntranslatableQuery to the
-        caller (re-raised from parse_query_to_mu)."""
+        """The imap: escape surfaces the emitter's refusal to the caller
+        (importable under its old name UntranslatableQuery)."""
+        from courier.local_cache import UntranslatableQuery
+
         backend = self._backend(tmp_path)
         account_cfg = _make_block()
 
         # subprocess.run should never be called for an untranslatable query.
         with patch("courier.local_cache.subprocess.run") as mock_run:
             with pytest.raises(UntranslatableQuery):
-                backend.search(account_cfg, "imap:UNSEEN", limit=10)
+                backend.search(account_cfg, parse("imap:UNSEEN"), limit=10)
             mock_run.assert_not_called()
 
     def test_no_maildir_raises_value_error(self, tmp_path):
@@ -293,7 +296,7 @@ class TestMuBackendSearch:
         )
 
         with pytest.raises(ValueError, match="maildir"):
-            backend.search(block, "from:alice", limit=10)
+            backend.search(block, parse("from:alice"), limit=10)
 
     def test_search_surfaces_uid_from_filename(self, tmp_path):
         """When the maildir filename embeds ``,U=N,`` (mbsync convention)
@@ -322,7 +325,7 @@ class TestMuBackendSearch:
                 args=[], returncode=0, stdout=json.dumps(sample), stderr=""
             ),
         ):
-            results = backend.search(block, "from:alice", limit=5)
+            results, _report, _truncated = backend.search(block, parse("from:alice"), limit=5)
 
         assert len(results) == 1
         assert results[0]["uid"] == 691
@@ -351,7 +354,7 @@ class TestMuBackendSearch:
                 args=[], returncode=0, stdout=json.dumps(sample), stderr=""
             ),
         ):
-            results = backend.search(block, "from:alice", limit=5)
+            results, _report, _truncated = backend.search(block, parse("from:alice"), limit=5)
 
         assert len(results) == 1
         assert "uid" not in results[0]
@@ -383,7 +386,7 @@ class TestMuBackendSearch:
                 args=[], returncode=0, stdout=json.dumps(sample), stderr=""
             ),
         ):
-            results = backend.search(block, "from:alice", limit=5)
+            results, _report, _truncated = backend.search(block, parse("from:alice"), limit=5)
 
         assert len(results) == 1
         assert results[0]["subject"] == "Hi"
@@ -434,7 +437,7 @@ class TestMuBackendSearch:
                 args=[], returncode=0, stdout=json.dumps(sample), stderr=""
             ),
         ):
-            results = backend.search(block, "from:alice", limit=5)
+            results, _report, _truncated = backend.search(block, parse("from:alice"), limit=5)
 
         assert len(results) == 1
         rec = results[0]
@@ -489,7 +492,7 @@ class TestMuBackendSearch:
             patch.object(MuBackend, "_store_maildir_root", return_value=block.maildir),
             patch("courier.local_cache.subprocess.run", side_effect=fake_run),
         ):
-            results = backend.search(block, "from:alice", limit=5)
+            results, _report, _truncated = backend.search(block, parse("from:alice"), limit=5)
 
         assert captured["argv"][-1] == "(from:alice) AND maildir:/*"
         assert [r["folder"] for r in results] == ["INBOX", "Archive"]
@@ -551,7 +554,7 @@ class TestMuBackendSearch:
             ),
             caplog.at_level(logging.WARNING, logger="courier.local_cache"),
         ):
-            results = backend.search(block, "from:alice", limit=5)
+            results, _report, _truncated = backend.search(block, parse("from:alice"), limit=5)
 
         assert [r["message_id"] for r in results] == ["<live@x>"]
         assert any(dead_path in rec.message for rec in caplog.records)
@@ -595,7 +598,7 @@ class TestMuBackendSearch:
                 args=[], returncode=0, stdout=json.dumps(sample), stderr=""
             ),
         ):
-            results = backend.search(block, "from:alice", limit=5)
+            results, _report, _truncated = backend.search(block, parse("from:alice"), limit=5)
 
         assert len(results) == 1
         rec = results[0]
@@ -805,7 +808,7 @@ class TestWorldAsOfBoundsMuQuery:
             )
 
         with patch("courier.local_cache.subprocess.run", side_effect=fake_run):
-            backend.search(account_cfg, query, limit=10, world_as_of=self.BOUND)
+            backend.search(account_cfg, parse(query), limit=10, world_as_of=self.BOUND)
         return captured["argv"][-1]
 
     def test_query_gains_date_upper_bound(self, tmp_path):
@@ -836,5 +839,57 @@ class TestWorldAsOfBoundsMuQuery:
             )
 
         with patch("courier.local_cache.subprocess.run", side_effect=fake_run):
-            backend.search(account_cfg, "from:alice", limit=10)
+            backend.search(account_cfg, parse("from:alice"), limit=10)
         assert captured["argv"][-1] == '(from:alice) AND maildir:"/work/"'
+
+
+class TestSearchTruncationProbe:
+    """maxnum limit+1 tells a full page apart from a truncated one."""
+
+    def _backend(self, tmp_path) -> MuBackend:
+        muhome = _make_xapian_dir(tmp_path)
+        cfg = LocalCacheConfig(mu_index=muhome, max_staleness_seconds=86400)
+        return MuBackend(cfg)
+
+    def _record(self, n: int) -> Dict[str, Any]:
+        return {
+            ":path": f"/var/local/mail/work/cur/{n}",
+            ":from": [{":email": "a@b.com"}],
+            ":to": [{":email": "c@d.com"}],
+            ":subject": f"m{n}",
+            ":date-unix": 1700000000 + n,
+            ":flags": [],
+            ":message-id": f"<m{n}@x>",
+            ":maildir": "/work",
+        }
+
+    def _search(self, tmp_path, records, limit):
+        backend = self._backend(tmp_path)
+        block = _make_block("/var/local/mail/work")
+        with patch(
+            "courier.local_cache.subprocess.run",
+            return_value=subprocess.CompletedProcess(
+                args=[], returncode=0, stdout=json.dumps(records), stderr=""
+            ),
+        ):
+            return backend.search(block, parse("from:alice"), limit=limit)
+
+    def test_extra_record_marks_truncated_and_is_cut(self, tmp_path):
+        results, _report, truncated = self._search(
+            tmp_path, [self._record(n) for n in range(3)], limit=2
+        )
+        assert truncated is True
+        assert len(results) == 2
+
+    def test_full_page_without_extra_is_not_truncated(self, tmp_path):
+        results, _report, truncated = self._search(
+            tmp_path, [self._record(n) for n in range(2)], limit=2
+        )
+        assert truncated is False
+        assert len(results) == 2
+
+    def test_report_carries_the_mu_dialect(self, tmp_path):
+        _results, report, _truncated = self._search(
+            tmp_path, [self._record(1)], limit=5
+        )
+        assert report.dialect == "mu"

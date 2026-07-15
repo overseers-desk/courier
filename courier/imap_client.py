@@ -5,7 +5,6 @@ import glob
 import logging
 import os
 import re
-import shlex
 from datetime import date, datetime, timedelta
 from typing import (
     TYPE_CHECKING,
@@ -24,10 +23,24 @@ import imapclient  # type: ignore[import-untyped]
 
 from courier import world_bound
 from courier.config import ImapBlock
-from courier.errors import FolderNotFound, WorldBoundRefused, as_courier_error
+from courier.errors import (
+    FolderNotFound,
+    PermanentError,
+    WorldBoundRefused,
+    as_courier_error,
+)
 from courier.models import Email
 from courier.oauth2 import get_access_token
-from courier.query_parser import parse_query
+from courier.query import ParseResult, parse
+from courier.query import dispatch as query_dispatch
+from courier.query.ast import (
+    OP_IMAP,
+    Term,
+    TranslationReport,
+    UntranslatableForBackend,
+)
+from courier.query.emit_gmail import emit as emit_gmail
+from courier.query.emit_imap import emit as emit_imap
 
 if TYPE_CHECKING:
     from courier.local_cache import MuBackend
@@ -78,6 +91,33 @@ class AppendResult(NamedTuple):
 # APPENDUID <uidvalidity> <uid> (RFC 4315). Both groups are kept: the UID
 # alone is ambiguous across mailbox re-creations.
 _APPENDUID_RE = re.compile(rb"APPENDUID\s+(\d+)\s+(\d+)")
+
+
+class _RemoteSearch(NamedTuple):
+    """One remote search execution, before envelope assembly.
+
+    Six values cross one boundary (``_search_emails_imap`` back to
+    ``search_emails``); three share the list type, so a bare tuple
+    would transpose silently.  Named fields only, no behaviour — the
+    same standard as :class:`AppendResult`.
+
+    Attributes:
+        results: Result dicts sorted by date descending.
+        dropped_after_bound: Hits dropped by the WORLD_AS_OF Layer 2
+            cut, counted before the limit cut.
+        folders_failed: ``{"folder", "error"}`` records for folders
+            whose search or result fetch failed.
+        total_count: Match count before the limit cut.
+        report: The emission's translation report.
+        folders_searched: The folders actually searched, in order.
+    """
+
+    results: List[Dict[str, Any]]
+    dropped_after_bound: int
+    folders_failed: List[Dict[str, str]]
+    total_count: int
+    report: TranslationReport
+    folders_searched: List[str]
 
 
 def _as_uid_list(uid: Union[int, Sequence[int]]) -> List[int]:
@@ -510,6 +550,11 @@ class ImapClient:
     ) -> List[int]:
         """Search for messages.
 
+        Criteria pass through to ``imapclient.IMAPClient.search``
+        verbatim (plus the WORLD_AS_OF Layer 1 bound when set); query
+        translation, including the old string presets like ``today``,
+        happens in :mod:`courier.query` before this method is reached.
+
         Args:
             criteria: Search criteria
             folder: Folder to search in
@@ -525,36 +570,6 @@ class ImapClient:
         self.select_folder(folder, readonly=True)
 
         resolved_criteria: Union[str, List[Any], Tuple[Any, ...]] = criteria
-        if isinstance(criteria, str):
-            # Relative presets resolve against the bound when set, so a
-            # replayed "today" is the bound's day, not the wall clock's.
-            now = self.world_as_of if self.world_as_of is not None else datetime.now()
-            # Predefined criteria strings
-            criteria_map: Dict[str, Union[str, List[Any]]] = {
-                "all": "ALL",
-                "unseen": "UNSEEN",
-                "seen": "SEEN",
-                "answered": "ANSWERED",
-                "unanswered": "UNANSWERED",
-                "deleted": "DELETED",
-                "undeleted": "UNDELETED",
-                "flagged": "FLAGGED",
-                "unflagged": "UNFLAGGED",
-                "recent": "RECENT",
-                "today": ["SINCE", now.date()],
-                "yesterday": [
-                    "SINCE",
-                    (now - timedelta(days=1)).date(),
-                    "BEFORE",
-                    now.date(),
-                ],
-                "week": ["SINCE", (now - timedelta(days=7)).date()],
-                "month": ["SINCE", (now - timedelta(days=30)).date()],
-            }
-
-            if criteria.lower() in criteria_map:
-                resolved_criteria = criteria_map[criteria.lower()]
-
         if self.world_as_of is not None:
             # Layer 1: every search the client issues gains the coarse
             # server-side BEFORE prefilter; Layer 2 post-filters exactly.
@@ -1518,115 +1533,6 @@ class ImapClient:
         self._update_activity()
         return result
 
-    # Prefixes whose presence triggers the Gmail X-GM-RAW dispatch.  Standard
-    # IMAP SEARCH FROM/TO/CC/BCC against Gmail's All Mail empirically does not
-    # filter by header content for values that contain "@"/"."; X-GM-RAW
-    # evaluates the query the way Gmail's web UI does and produces the expected
-    # filter (issue #17).  ``has:`` is here so has:attachment gets Gmail's
-    # native exact attachment search instead of the parse-time error the
-    # operator raises on backends with no server-side attachment predicate.
-    _GMAIL_RAW_TRIGGER_PREFIXES = ("from:", "to:", "cc:", "bcc:", "has:")
-
-    # Matches a msgid:/rfc822msgid: token in an X-GM-RAW query: the leading
-    # boundary (start or whitespace) and an optional negation dash are
-    # captured so both can be preserved when rewriting to Gmail's spelling.
-    _GMAIL_RAW_MSGID_RE = re.compile(
-        r"(?P<lead>^|\s)(?P<neg>-?)(?:rfc822msgid|msgid):(?P<val>\S+)",
-        re.IGNORECASE,
-    )
-
-    def _build_search_spec(self, query: str) -> Union[str, List[Any]]:
-        """Translate a user query into IMAP search criteria.
-
-        For Gmail accounts the function returns ``[b"X-GM-RAW", query]`` when
-        the query contains a header search prefix, so Gmail evaluates the
-        query with web-UI semantics.  All other queries (and the ``imap:``
-        raw escape) go through the standard ``parse_query`` emitter.
-
-        Args:
-            query: Raw user query string.
-
-        Returns:
-            A criteria value suitable for ``imapclient.IMAPClient.search``.
-
-        Raises:
-            ValueError: Propagated from ``parse_query`` on malformed queries.
-        """
-        if self._should_use_gmail_raw(query):
-            raw_query = self._canonicalize_gmail_raw(query.strip())
-            if self.world_as_of is not None:
-                # Gmail's before: accepts epoch seconds, a second-precision
-                # Layer 1 tighter than the day-granular SEARCH BEFORE that
-                # is also ANDed on. Layer 2 still decides.
-                raw_query = f"{raw_query} before:{int(self.world_as_of.timestamp())}"
-            return [b"X-GM-RAW", raw_query]
-        # Relative terms resolve against the bound when set (wall clock
-        # otherwise), so a replayed newer:7d is anchored to the bound.
-        return parse_query(query, now=self.world_as_of)
-
-    def _canonicalize_gmail_raw(self, query: str) -> str:
-        """Rewrite any msgid token in an ``X-GM-RAW`` query to Gmail syntax.
-
-        Gmail's web query language spells the Message-ID operator
-        ``rfc822msgid:`` and expects a bare id (no angle brackets).  A mixed
-        query such as ``from:alice msgid:<x@h>`` routes through ``X-GM-RAW``
-        because of the ``from:`` prefix, so its ``msgid:``/``rfc822msgid:``
-        token must be rewritten to ``rfc822msgid:`` plus the id stripped of
-        its surrounding ``<>``.  A leading negation dash is preserved.  A
-        query with no such token is returned unchanged, so the raw branch
-        stays byte-for-byte verbatim for every other query.
-
-        Args:
-            query: The stripped query string destined for ``X-GM-RAW``.
-
-        Returns:
-            The query with each msgid token canonicalised to Gmail's
-            ``rfc822msgid:`` form; identical to the input when none is present.
-        """
-
-        def _rewrite(match: re.Match[str]) -> str:
-            val = match.group("val").strip("<>")
-            return f"{match.group('lead')}{match.group('neg')}rfc822msgid:{val}"
-
-        return self._GMAIL_RAW_MSGID_RE.sub(_rewrite, query)
-
-    def _should_use_gmail_raw(self, query: str) -> bool:
-        """Decide whether a query should be sent via ``X-GM-RAW``.
-
-        Returns ``True`` only when the server is Gmail, the query is not a
-        raw IMAP escape, and at least one whitespace-separated token starts
-        with a header search prefix (``from:``/``to:``/``cc:``/``bcc:``).
-        Pure flag/date queries continue to use standard IMAP search so
-        non-Gmail capability assumptions (no ``X-GM-EXT-1`` requirement)
-        and existing tests remain unchanged.
-
-        Args:
-            query: Raw user query string.
-
-        Returns:
-            ``True`` when the Gmail X-GM-RAW dispatch should be used.
-        """
-        host = (self.block.host or "").lower()
-        if "gmail" not in host:
-            return False
-        stripped = query.strip()
-        if stripped.lower().startswith("imap:"):
-            return False
-        try:
-            tokens = shlex.split(stripped)
-        except ValueError:
-            tokens = stripped.split()
-        for tok in tokens:
-            tok_lower = tok.lower()
-            if any(tok_lower.startswith(p) for p in self._GMAIL_RAW_TRIGGER_PREFIXES):
-                return True
-            # Also catch negated prefixes like -to:foo.
-            if tok_lower.startswith("-") and any(
-                tok_lower[1:].startswith(p) for p in self._GMAIL_RAW_TRIGGER_PREFIXES
-            ):
-                return True
-        return False
-
     def search_emails(
         self,
         query: str,
@@ -1639,18 +1545,17 @@ class ImapClient:
         Uses Gmail-style query syntax::
 
             from:alice subject:invoice is:unread after:2025-03-01
-            meeting notes                     # bare words → TEXT search
+            meeting notes                     # bare words, one term each
             imap:OR TEXT foo SUBJECT bar       # raw IMAP passthrough
 
-        On Gmail accounts (host contains ``gmail``), the query is dispatched
-        through Gmail's ``X-GM-RAW`` extension whenever it contains a header
-        search prefix (``from:``/``to:``/``cc:``/``bcc:``).  Standard IMAP
-        ``SEARCH TO foo@example.com`` against Gmail's All Mail folder
-        empirically matches every recent message rather than filtering by
-        the To header (issue #17); ``X-GM-RAW`` evaluates the query with
-        the same semantics as Gmail's web UI and filters correctly.
-        Queries without header prefixes (pure flag/date searches) and the
-        ``imap:`` raw escape continue to use standard IMAP search.
+        The query parses once (syntax errors surface before any I/O),
+        top-level ``in:`` conjuncts become folder scope, and the first
+        backend whose emitter expresses every term wins: the local mu
+        cache when eligible, then the remote server.  On the remote
+        side the Gmail emitter is chosen when the server advertises
+        ``X-GM-EXT-1`` (capability-gated, never hostname-gated) and the
+        generic RFC 3501 emitter otherwise; the ``imap:`` raw escape
+        always takes the standard search path.
 
         When the client was constructed with a ``local_cache`` backend
         and an opted-in ``account_cfg``, eligible calls are served from
@@ -1665,26 +1570,49 @@ class ImapClient:
                 live IMAP regardless of eligibility.
 
         Returns:
-            A dict ``{"results": [...], "provenance": {...}}``.  Each
-            result carries either an ``uid`` (IMAP) or ``message_id``
-            and ``path`` (local cache); both shapes share ``folder``,
-            ``from``, ``to``, ``subject``, ``date``, ``flags``, and
-            ``has_attachments``.  ``provenance`` carries ``source``
-            (``"local"`` or ``"remote"``), ``indexed_at`` (ISO 8601 or
-            ``None``), and ``fell_back_reason`` (``None`` or one of
-            ``"no_cache"``, ``"mu_missing"``, ``"db_missing"``,
-            ``"stale"``, ``"untranslatable"``, ``"mu_no_matches"``,
-            ``"maildir_not_indexed"``, ``"exception"``).  When
-            the client is bounded, ``provenance`` also carries a
-            ``world_as_of`` block (see :meth:`_world_as_of_provenance`).
+            A dict ``{"results": [...], "provenance": {...},
+            "total_count": ..., "truncated": ...}``, plus
+            ``folders_failed`` when some folder's search or fetch
+            failed (each entry ``{"folder": ..., "error": ...}``; the
+            key is absent when nothing failed, so its presence is the
+            failure signal).  Each result carries either an ``uid``
+            (IMAP) or ``message_id`` and ``path`` (local cache); both
+            shapes share ``folder``, ``from``, ``to``, ``subject``,
+            ``date``, ``flags``, and ``has_attachments``.
+            ``provenance`` carries ``source`` (``"local"`` or
+            ``"remote"``), ``indexed_at`` (ISO 8601 or ``None``),
+            ``fell_back_reason`` (``None`` or one of ``"no_cache"``,
+            ``"mu_missing"``, ``"db_missing"``, ``"stale"``,
+            ``"untranslatable"``, ``"mu_no_matches"``,
+            ``"maildir_not_indexed"``, ``"exception"``), and ``query``
+            — the translation report ``{dialect, approximations,
+            fallbacks, treated_as_text}``.  Remote provenance adds
+            ``folders_searched``.  ``total_count`` is the match count
+            before the limit cut (``None`` when the local cache cannot
+            know it), and ``truncated`` reports whether the limit cut
+            anything.  When the client is bounded, ``provenance`` also
+            carries a ``world_as_of`` block (see
+            :meth:`_world_as_of_provenance`).
 
         Raises:
-            ValueError: On malformed queries.
+            ValueError: On malformed queries (including misplaced
+                ``in:`` scope), before any I/O.
+            UntranslatableForBackend: When the only backend left
+                refuses an operator; the message names the nearest
+                alternative.
+            PermanentError: When backends declined before the terminal
+                refusal (the message then names every decline), or the
+                server rejects the search charset (BADCHARSET).
         """
-        local_results, fell_back_reason = self._try_local_cache_search(
-            query, folder, limit, no_cache
+        parsed = parse(query)
+        remaining, scope = query_dispatch.extract_scope(parsed)
+        query_dispatch.ensure_no_folder_conflict(folder, scope)
+
+        local, fell_back_reason = self._try_local_cache_search(
+            remaining, scope, folder, limit, no_cache
         )
-        if local_results is not None:
+        if local is not None:
+            local_results, report, truncated = local
             dropped_after_bound = 0
             if self.world_as_of is not None:
                 local_results, dropped_after_bound = self._drop_results_after_bound(
@@ -1698,25 +1626,53 @@ class ImapClient:
                     else None
                 ),
                 "fell_back_reason": None,
+                "query": report.as_dict(),
             }
             if self.world_as_of is not None:
                 provenance["world_as_of"] = self._world_as_of_provenance(
                     dropped_after_bound, date_source="mu_index"
                 )
-            return {"results": local_results, "provenance": provenance}
-        imap_results, dropped_after_bound = self._search_emails_imap(
-            query, folder, limit, no_cache
-        )
+            return {
+                "results": local_results,
+                "provenance": provenance,
+                "total_count": None if truncated else len(local_results),
+                "truncated": truncated,
+            }
+
+        fallbacks: List[Dict[str, str]] = []
+        if fell_back_reason is not None:
+            fallbacks.append({"backend": "cache", "reason": fell_back_reason})
+        try:
+            outcome = self._search_emails_imap(
+                parsed, remaining, scope, folder, limit, no_cache
+            )
+        except UntranslatableForBackend as exc:
+            if fallbacks:
+                raise PermanentError(
+                    query_dispatch.compose_backend_error(exc, fallbacks)
+                ) from exc
+            raise
+        outcome.report.fallbacks = list(fallbacks)
         provenance = {
             "source": "remote",
             "indexed_at": None,
             "fell_back_reason": fell_back_reason,
+            "query": outcome.report.as_dict(),
+            "folders_searched": list(outcome.folders_searched),
         }
         if self.world_as_of is not None:
             provenance["world_as_of"] = self._world_as_of_provenance(
-                dropped_after_bound, date_source="internaldate"
+                outcome.dropped_after_bound, date_source="internaldate"
             )
-        return {"results": imap_results, "provenance": provenance}
+        envelope: Dict[str, Any] = {
+            "results": outcome.results,
+            "provenance": provenance,
+            "total_count": outcome.total_count,
+            "truncated": outcome.total_count > limit,
+        }
+        if outcome.folders_failed:
+            envelope["folders_failed"] = outcome.folders_failed
+        return envelope
 
     def _world_as_of_provenance(
         self, dropped_after_bound: int, date_source: str
@@ -1784,31 +1740,37 @@ class ImapClient:
 
     def _try_local_cache_search(
         self,
-        query: str,
+        remaining: ParseResult,
+        scope: "query_dispatch.Scope",
         folder: Optional[str],
         limit: int,
         no_cache: bool = False,
-    ) -> Tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
+    ) -> Tuple[
+        Optional[Tuple[List[Dict[str, Any]], TranslationReport, bool]],
+        Optional[str],
+    ]:
         """Attempt to serve a search from the local cache.
 
         Args:
-            query: Gmail-style search query string.
+            remaining: The parsed query with its ``in:`` scope already
+                stripped by the dispatcher.
+            scope: The extracted folder scope.
             folder: Folder to search (``None`` searches all folders).
             limit: Maximum number of results.
             no_cache: When ``True``, decline the cache and report
                 ``"no_cache"`` so the caller goes to live IMAP.
 
         Returns:
-            ``(results, None)`` on a successful local-cache hit, or
-            ``(None, reason)`` when the local cache cannot serve the
-            call.  ``reason`` is ``None`` when the account is not opted
-            into the local cache (the wrapped shape still applies, but
-            no fallback is reported); otherwise it is one of the tags
-            from the ``provenance.fell_back_reason`` vocabulary.
+            ``((results, report, truncated), None)`` on a successful
+            local-cache hit, or ``(None, reason)`` when the local cache
+            cannot serve the call.  ``reason`` is ``None`` when the
+            account is not opted into the local cache (the wrapped
+            shape still applies, but no fallback is reported);
+            otherwise it is one of the tags from the
+            ``provenance.fell_back_reason`` vocabulary.
         """
         # Late import to avoid a circular dependency.
         from courier.local_cache import MuFailure
-        from courier.query_parser import UntranslatableQuery
 
         if self.local_cache is None or not self.block.maildir:
             return None, None
@@ -1817,11 +1779,20 @@ class ImapClient:
         eligibility = self.local_cache.is_eligible(self.block)
         if not eligibility.eligible:
             return None, eligibility.reason
-        try:
-            results = self.local_cache.search(
-                self.block, query, limit, folder, world_as_of=self.world_as_of
+        serveable, cache_folder = query_dispatch.cache_folder_for_scope(scope, folder)
+        if not serveable:
+            # The cache's maildir predicate takes one exact folder or
+            # the whole block; special-use scope needs the server.
+            logger.info(
+                f"{self.block.label} local cache cannot express the in: "
+                "scope; falling back to IMAP"
             )
-        except UntranslatableQuery:
+            return None, "untranslatable"
+        try:
+            outcome = self.local_cache.search(
+                self.block, remaining, limit, cache_folder, world_as_of=self.world_as_of
+            )
+        except UntranslatableForBackend:
             return None, "untranslatable"
         except (MuFailure, ValueError) as e:
             logger.warning(f"Local cache search failed, falling back to IMAP: {e}")
@@ -1831,77 +1802,199 @@ class ImapClient:
             # untagged cases.
             reason = getattr(e, "fell_back_reason", None) or "exception"
             return None, reason
-        return results, None
+        return outcome, None
+
+    def _resolve_in_folder(self, value: str) -> str:
+        """Resolve one in: scope value to a concrete folder name.
+
+        ``inbox`` is the literal RFC 3501 INBOX; ``sent``/``spam``/
+        ``trash`` resolve through SPECIAL-USE; anything else is a
+        literal folder name.
+
+        Args:
+            value: The in: value as written in the query.
+
+        Returns:
+            The folder name to search.
+
+        Raises:
+            FolderNotFound: When a well-known value needs SPECIAL-USE
+                resolution and the server advertises no such folder.
+        """
+        lowered = value.lower()
+        if lowered == "inbox":
+            return "INBOX"
+        role = query_dispatch.SPECIAL_USE_FOR_IN.get(lowered)
+        if role is None:
+            return value
+        resolved = self.find_special_use_folder(role)
+        if resolved is None:
+            raise FolderNotFound(
+                f"this server does not advertise a {value} folder "
+                f"(SPECIAL-USE {role.decode('ascii')}); name the folder "
+                "directly, e.g. in:FOLDER"
+            )
+        return resolved
+
+    def _default_search_folders(self) -> List[str]:
+        """The folder set searched when nothing narrows the scope.
+
+        Prefers the SPECIAL-USE ``\\All`` folder when the server
+        advertises one (Gmail's ``[Gmail]/All Mail``, Fastmail's
+        ``Archive``): one SELECT instead of iterating every folder.
+        ``\\All`` folders exclude Spam and Trash, so those are searched
+        additionally when advertised — a query scoped nowhere means
+        everywhere, and silently skipping Spam/Trash turned "no such
+        message" into a wrong answer.  Falls back to every selectable
+        folder.
+
+        Returns:
+            The folder names to search, in search order.
+        """
+        all_mail = self.find_special_use_folder(b"\\All")
+        if all_mail:
+            folders = [all_mail]
+            for role in (b"\\Junk", b"\\Trash"):
+                extra = self.find_special_use_folder(role)
+                if extra and extra not in folders:
+                    folders.append(extra)
+            return folders
+        # Diagnostic for issue #38: record why the SPECIAL-USE
+        # optimization did not fire so the cause can be attributed
+        # from journald without needing a live reproduction. The
+        # flag universe across the cached LIST response tells us
+        # whether the server returned SPECIAL-USE attributes at
+        # all, or only on folders we are not interested in.
+        flags_seen = sorted(
+            {
+                (f.decode("ascii", "replace") if isinstance(f, bytes) else str(f))
+                for flags in self.folder_cache.values()
+                for f in flags
+            }
+        )
+        logger.warning(
+            "iterate-all fallback for search: SPECIAL-USE \\All not "
+            "detected (host=%s, cached_folders=%d, flags_seen=%s)",
+            self.block.host,
+            len(self.folder_cache),
+            flags_seen,
+        )
+        return self.list_folders()
+
+    def _resolve_search_folders(
+        self,
+        scope: "query_dispatch.Scope",
+        folder: Optional[str],
+        scope_in_query: bool,
+    ) -> List[str]:
+        """Turn the caller's folder argument and in: scope into folders.
+
+        Args:
+            scope: The extracted in: scope.
+            folder: The caller's folder argument, or ``None``.
+            scope_in_query: ``True`` on the Gmail path, whose emitter
+                carries ``in:``/``-in:`` natively inside X-GM-RAW; the
+                physical folder set then stays the default sweep and
+                Gmail itself applies the scope.
+
+        Returns:
+            The folder names to search, in search order.
+
+        Raises:
+            FolderNotFound: When a well-known in: value cannot be
+                resolved through SPECIAL-USE.
+        """
+        if folder:
+            return [folder]
+        if scope_in_query:
+            return self._default_search_folders()
+        if scope.include:
+            folders: List[str] = []
+            for value in scope.include:
+                resolved = self._resolve_in_folder(value)
+                if resolved not in folders:
+                    folders.append(resolved)
+            return folders
+        base = self._default_search_folders()
+        if scope.exclude:
+            excluded = {self._resolve_in_folder(value) for value in scope.exclude}
+            base = [name for name in base if name not in excluded]
+        return base
 
     def _search_emails_imap(
         self,
-        query: str,
+        parsed: ParseResult,
+        remaining: ParseResult,
+        scope: "query_dispatch.Scope",
         folder: Optional[str] = None,
         limit: int = 10,
         no_cache: bool = False,
-    ) -> Tuple[List[Dict[str, Any]], int]:
+    ) -> "_RemoteSearch":
         """Run a search against the IMAP server (no local-cache attempt).
 
+        The emitter is capability-gated: ``X-GM-EXT-1`` selects the
+        Gmail emitter (fed the original tree, since Gmail speaks
+        ``in:`` natively), anything else the generic RFC 3501 emitter
+        (fed the scope-stripped tree); the ``imap:`` raw escape always
+        takes the standard path.
+
         Args:
-            query: Gmail-style search query string.
-            folder: Folder to search (``None`` searches all folders).
+            parsed: The full parsed query, in: scope included.
+            remaining: The parsed query with in: scope stripped.
+            scope: The extracted folder scope.
+            folder: Folder to search (``None`` searches per scope, or
+                everywhere).
             limit: Maximum number of results.
             no_cache: Forwarded to :meth:`fetch_emails` so message
                 bodies are read from live IMAP rather than the maildir
                 when the caller forced ``--no-cache``.
 
         Returns:
-            ``(results, dropped_after_bound)``.  ``results`` is a list
-            of result dicts sorted by date descending, each with keys:
-            ``uid``, ``folder``, ``from``, ``to``, ``subject``,
-            ``date``, ``flags``, ``has_attachments``, ``message_id``.
-            ``message_id`` matches the field already emitted by the
-            local-cache path in ``local_cache.py``.
-            ``dropped_after_bound`` counts hits whose INTERNALDATE fell
-            after the WORLD_AS_OF bound; the drop happens before the
-            limit cut so a limit-truncated page cannot come back
-            artificially empty.
+            A :class:`_RemoteSearch`: results sorted by date descending
+            (each with ``uid``, ``folder``, ``from``, ``to``,
+            ``subject``, ``date``, ``flags``, ``has_attachments``,
+            ``message_id``), the WORLD_AS_OF drop count (counted before
+            the limit cut so a truncated page cannot come back
+            artificially empty), the per-folder failures, the match
+            count before the limit cut, the translation report, and the
+            searched folders.
 
         Raises:
-            ValueError: On malformed queries.
+            UntranslatableForBackend: When the selected emitter refuses
+                an operator.
+            PermanentError: When the server rejects the search charset
+                (BADCHARSET); non-ASCII text cannot be searched there.
+            FolderNotFound: When in: scope names a SPECIAL-USE role the
+                server does not advertise.
         """
-        search_spec = self._build_search_spec(query)
+        self.ensure_connected()
+        capabilities = self.get_capabilities()
+        now_ref = self.world_as_of if self.world_as_of is not None else datetime.now()
+        raw_escape = isinstance(parsed.ast, Term) and parsed.ast.op == OP_IMAP
+        use_gmail = query_dispatch.gmail_capable(capabilities) and not raw_escape
 
-        if folder:
-            folders_to_search = [folder]
+        criteria: List[Any]
+        charset: Optional[str]
+        report: TranslationReport
+        if use_gmail:
+            gmail_emission = emit_gmail(
+                parsed, now=now_ref, world_as_of=self.world_as_of
+            )
+            criteria = list(gmail_emission.criteria)
+            charset = gmail_emission.charset
+            report = gmail_emission.report
         else:
-            # Prefer the SPECIAL-USE \All folder when the server advertises one
-            # (Gmail's [Gmail]/All Mail, Fastmail's Archive, etc.): one SELECT
-            # instead of iterating every folder. Falls back to all selectable.
-            all_mail = self.find_special_use_folder(b"\\All")
-            if all_mail:
-                folders_to_search = [all_mail]
-            else:
-                # Diagnostic for issue #38: record why the SPECIAL-USE
-                # optimization did not fire so the cause can be attributed
-                # from journald without needing a live reproduction. The
-                # flag universe across the cached LIST response tells us
-                # whether the server returned SPECIAL-USE attributes at
-                # all, or only on folders we are not interested in.
-                flags_seen = sorted(
-                    {
-                        (
-                            f.decode("ascii", "replace")
-                            if isinstance(f, bytes)
-                            else str(f)
-                        )
-                        for flags in self.folder_cache.values()
-                        for f in flags
-                    }
-                )
-                logger.warning(
-                    "iterate-all fallback for search: SPECIAL-USE \\All not "
-                    "detected (host=%s, cached_folders=%d, flags_seen=%s)",
-                    self.block.host,
-                    len(self.folder_cache),
-                    flags_seen,
-                )
-                folders_to_search = self.list_folders()
+            imap_emission = emit_imap(
+                remaining,
+                now=now_ref,
+                supports_within=query_dispatch.supports_within(capabilities),
+                bounded=self.world_as_of is not None,
+            )
+            criteria = list(imap_emission.criteria)
+            charset = imap_emission.charset
+            report = imap_emission.report
+
+        folders_to_search = self._resolve_search_folders(scope, folder, use_gmail)
 
         # Pass 1: collect (uid, folder, date) using a lightweight fetch.
         # The exact WORLD_AS_OF cut happens here, on the fetched
@@ -1909,9 +2002,10 @@ class ImapClient:
         # is day-granular and may leak same-day post-bound messages.
         candidates: List[tuple] = []
         dropped_after_bound = 0
+        folders_failed: List[Dict[str, str]] = []
         for current_folder in folders_to_search:
             try:
-                uids = self.search(search_spec, folder=current_folder)
+                uids = self.search(criteria, folder=current_folder, charset=charset)
                 if not uids:
                     continue
                 self.select_folder(current_folder, readonly=True)
@@ -1924,9 +2018,21 @@ class ImapClient:
                     iso = dt.isoformat() if dt else "0"
                     candidates.append((iso, uid, current_folder))
             except Exception as e:
+                if charset is not None and "BADCHARSET" in str(e).upper():
+                    raise PermanentError(
+                        "this server cannot search non-ASCII text (SEARCH "
+                        "CHARSET UTF-8 was refused with BADCHARSET); use "
+                        "ASCII search terms or search the local cache. "
+                        f"Server said: {e}"
+                    ) from e
                 logger.warning(
                     f"{self.block.label} Error searching folder {current_folder}: {e}"
                 )
+                folders_failed.append(
+                    {"folder": current_folder, "error": str(e)}
+                )
+
+        total_count = len(candidates)
 
         # Sort globally by date and keep only the top `limit`
         candidates.sort(key=lambda x: x[0], reverse=True)
@@ -1959,9 +2065,22 @@ class ImapClient:
                     )
             except Exception as e:
                 logger.warning(f"Error fetching from folder {current_folder}: {e}")
+                folders_failed.append(
+                    {
+                        "folder": current_folder,
+                        "error": f"search succeeded but fetching results failed: {e}",
+                    }
+                )
 
         results.sort(key=lambda x: x.get("date") or "0", reverse=True)
-        return results, dropped_after_bound
+        return _RemoteSearch(
+            results,
+            dropped_after_bound,
+            folders_failed,
+            total_count,
+            report,
+            folders_to_search,
+        )
 
 
 def copy_email_between_imap_blocks(
