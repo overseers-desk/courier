@@ -136,6 +136,16 @@ class TestTranslationReport:
             "treated_as_text": ["https://example.com"],
         }
 
+    def test_fallback_entries_are_backend_reason_objects(self):
+        """The envelope contract fixes each fallback entry as
+        {backend, reason} with reasons from the fell_back_reason
+        vocabulary."""
+        report = TranslationReport(dialect="imap")
+        report.fallbacks.append({"backend": "mu", "reason": "untranslatable"})
+        assert report.as_dict()["fallbacks"] == [
+            {"backend": "mu", "reason": "untranslatable"}
+        ]
+
 
 class TestUntranslatableForBackend:
     """The refusal names the backend, the operator, and an alternative."""

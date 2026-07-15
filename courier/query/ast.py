@@ -127,14 +127,17 @@ class TranslationReport:
         dialect: The emitted dialect (``"imap"``, ``"gmail"``, ``"mu"``).
         approximations: Human-readable notes on terms whose backend
             meaning only approximates the query's meaning.
-        fallbacks: Notes on backends that declined before this one ran.
+        fallbacks: Backends that declined before this one ran, each as
+            ``{"backend": ..., "reason": ...}`` with the reason drawn
+            from the ``fell_back_reason`` vocabulary. The dispatcher
+            fills this; emitters leave it empty.
         treated_as_text: Tokens that looked prefix-like but matched no
             operator and were kept as literal words (URLs and the like).
     """
 
     dialect: str
     approximations: list[str] = field(default_factory=list)
-    fallbacks: list[str] = field(default_factory=list)
+    fallbacks: list[dict[str, str]] = field(default_factory=list)
     treated_as_text: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, object]:
