@@ -458,7 +458,12 @@ class TestLocalCachePathBoundedLikeImap:
         client, mu = self._local_client([])
         client.search_emails("from:alice")
         mu.search.assert_called_once_with(
-            client.block, parse("from:alice"), 10, None, world_as_of=BOUND
+            client.block,
+            parse("from:alice"),
+            10,
+            None,
+            world_as_of=BOUND,
+            allowed_folders=None,
         )
 
     def test_post_filter_drops_and_counts(self):

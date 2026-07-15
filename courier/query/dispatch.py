@@ -85,6 +85,9 @@ _FALLBACK_PHRASES: Dict[str, str] = {
         "the requested folder is not present in the locally synced "
         "maildir, so only the server can answer for it"
     ),
+    "folder_not_allowed": (
+        "the requested folder is outside this block's allowed_folders " "whitelist"
+    ),
     "exception": "the local cache failed at runtime",
 }
 

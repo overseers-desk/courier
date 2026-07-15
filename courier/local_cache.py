@@ -294,6 +294,7 @@ class MuBackend:
         limit: int,
         folder: Optional[str] = None,
         world_as_of: Optional[datetime] = None,
+        allowed_folders: Optional[List[str]] = None,
     ) -> Tuple[List[Dict[str, Any]], TranslationReport, bool]:
         """Run a search against the local mu store, scoped to the block.
 
@@ -313,6 +314,12 @@ class MuBackend:
                 caveat: mu indexes the Date header, not INTERNALDATE, so
                 the caller flags results with ``date_source: "mu_index"``
                 and post-filters on the result's date field (Layer 2).
+            allowed_folders: When set (and *folder* is ``None``), the
+                block's ``allowed_folders`` whitelist: the whole-block
+                scope is replaced by the union of these folders' exact
+                scopes so the index never answers for walled-off
+                folders (issue #60).  The caller gates an explicit
+                *folder* against the whitelist itself.
 
         Returns:
             ``(results, report, truncated)``.  ``results`` is a list of
@@ -366,7 +373,7 @@ class MuBackend:
             clause = f"date:..{world_as_of.astimezone().strftime('%Y%m%dT%H%M%S')}"
             translated = f"({translated}) AND {clause}" if translated else clause
         prefix = self._scope_prefix(imap_block)
-        scoped = self._scope_query(prefix, translated, folder)
+        scoped = self._scope_query(prefix, translated, folder, allowed_folders)
 
         # ``--muhome`` is parsed by ``mu find`` (the subcommand), not the
         # outer ``mu`` driver, so it must follow ``find`` in the argv.
@@ -450,18 +457,43 @@ class MuBackend:
         return os.path.isdir(os.path.join(base, folder))
 
     @staticmethod
-    def _scope_query(prefix: str, translated: str, folder: Optional[str] = None) -> str:
+    def _folder_scope(prefix: str, folder: str) -> str:
+        """The exact maildir predicate for one IMAP folder.
+
+        mu's ``maildir:`` term is an exact match when the trailing
+        slash is omitted, so subfolders are not swept in.  ``"INBOX"``
+        is matched both at the block root and at an ``INBOX`` subdir,
+        mirroring the two cases :meth:`_derive_folder` collapses to
+        ``"INBOX"``.
+
+        Args:
+            prefix: The block's scope prefix from :meth:`_scope_prefix`.
+            folder: IMAP folder name.
+
+        Returns:
+            A quoted mu ``maildir:`` predicate for the folder.
+        """
+        if folder == "INBOX":
+            root_term = prefix or "/"
+            return f'(maildir:"{root_term}" OR maildir:"{prefix}/INBOX")'
+        return f'maildir:"{prefix}/{folder}"'
+
+    @staticmethod
+    def _scope_query(
+        prefix: str,
+        translated: str,
+        folder: Optional[str] = None,
+        allowed_folders: Optional[List[str]] = None,
+    ) -> str:
         """Wrap a translated query with a maildir predicate scoping the search.
 
         With ``folder`` unset the predicate matches the whole block
         recursively (``maildir:"<prefix>/"`` — mu treats the quoted
         trailing-slash form as the folder plus everything below it;
-        verified on mu 1.12.14).  With ``folder`` set it matches that
-        one IMAP folder exactly: mu's ``maildir:`` term is an exact
-        match when the trailing slash is omitted, so subfolders are not
-        swept in.  ``"INBOX"`` is matched both at the block root and at
-        an ``INBOX`` subdir, mirroring the two cases
-        :meth:`_derive_folder` collapses to ``"INBOX"``.  Every scope is
+        verified on mu 1.12.14) — unless ``allowed_folders`` narrows
+        it to the union of that whitelist's exact folder scopes
+        (issue #60).  With ``folder`` set it matches that one IMAP
+        folder exactly (see :meth:`_folder_scope`).  Every scope is
         quoted so spaces and Xapian metacharacters (``[``, ``&``,
         ``+``) survive query parsing — the recursive form included: an
         unquoted ``maildir:/Work Account/`` matches nothing.
@@ -477,18 +509,25 @@ class MuBackend:
             translated: The query already translated to mu syntax.
             folder: IMAP folder name to scope to, or ``None`` for the
                 whole block.
+            allowed_folders: The block's whitelist, applied only when
+                *folder* is ``None``.
 
         Returns:
             A mu query string combining the translated query with the
             maildir scope predicate.
         """
-        if folder is None:
-            scope = "maildir:/*" if not prefix else f'maildir:"{prefix}/"'
-        elif folder == "INBOX":
-            root_term = prefix or "/"
-            scope = f'(maildir:"{root_term}" OR maildir:"{prefix}/INBOX")'
+        if folder is not None:
+            scope = MuBackend._folder_scope(prefix, folder)
+        elif allowed_folders:
+            scope = (
+                "("
+                + " OR ".join(
+                    MuBackend._folder_scope(prefix, name) for name in allowed_folders
+                )
+                + ")"
+            )
         else:
-            scope = f'maildir:"{prefix}/{folder}"'
+            scope = "maildir:/*" if not prefix else f'maildir:"{prefix}/"'
         if translated:
             return f"({translated}) AND {scope}"
         return scope

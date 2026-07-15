@@ -1912,7 +1912,9 @@ class TestSearchEmailsDispatch:
 
         mock_imap.assert_not_called()
         remaining, _ = extract_scope(parse("from:alice"))
-        mu.search.assert_called_once_with(block, remaining, 10, None, world_as_of=None)
+        mu.search.assert_called_once_with(
+            block, remaining, 10, None, world_as_of=None, allowed_folders=None
+        )
         assert result["results"] == canned
         assert result["provenance"]["source"] == "local"
         assert result["provenance"]["indexed_at"] == "2025-04-01T12:00:00+00:00"
@@ -1997,7 +1999,7 @@ class TestSearchEmailsDispatch:
         mock_imap.assert_not_called()
         remaining, _ = extract_scope(parse("from:alice"))
         mu.search.assert_called_once_with(
-            block, remaining, 10, "INBOX", world_as_of=None
+            block, remaining, 10, "INBOX", world_as_of=None, allowed_folders=None
         )
         assert result["provenance"]["source"] == "local"
         assert result["provenance"]["fell_back_reason"] is None
@@ -2016,7 +2018,7 @@ class TestSearchEmailsDispatch:
 
         remaining, _ = extract_scope(parse("in:inbox from:alice"))
         mu.search.assert_called_once_with(
-            block, remaining, 10, "INBOX", world_as_of=None
+            block, remaining, 10, "INBOX", world_as_of=None, allowed_folders=None
         )
 
     def test_search_emails_special_use_scope_declines_cache(self):
@@ -2097,6 +2099,158 @@ class TestSearchEmailsDispatch:
         message = str(excinfo.value)
         assert "label:" in message
         assert "your local cache exists but its index is stale" in message
+
+
+class TestAllowedFoldersLocalPaths:
+    """allowed_folders must hold on every serving path (issue #60):
+    the mu index and the maildir answer under the same whitelist the
+    IMAP leg enforces, and a whitelist-restricted block answers
+    identically whichever backend serves the call."""
+
+    def _restricted_block(self, maildir: str = "/var/local/mail/work") -> ImapBlock:
+        return ImapBlock(
+            host="imap.example.com",
+            port=993,
+            username="test@example.com",
+            password="password",
+            use_ssl=True,
+            maildir=maildir,
+            allowed_folders=["INBOX", "Sent"],
+        )
+
+    def test_fetch_email_disallowed_folder_refuses_before_disk(self, tmp_path):
+        """A disk-eligible read of a walled-off folder raises the same
+        ValueError the IMAP leg raises, even with the file on disk."""
+        maildir = _make_maildir_root(tmp_path, "Private")
+        _write_maildir_message(maildir, "Private", 57)
+        block = replace(_make_block_with_maildir(maildir), allowed_folders=["INBOX"])
+        client = ImapClient(block, local_cache=_eligible_mu())
+
+        with patch("imapclient.IMAPClient") as mock_cls:
+            mock_imap = MagicMock()
+            mock_cls.return_value = mock_imap
+            with pytest.raises(ValueError, match="not allowed"):
+                client.fetch_email(57, folder="Private")
+            mock_imap.fetch.assert_not_called()
+
+    def test_fetch_emails_disallowed_folder_refuses_before_disk(self, tmp_path):
+        maildir = _make_maildir_root(tmp_path, "Private")
+        _write_maildir_message(maildir, "Private", 57)
+        block = replace(_make_block_with_maildir(maildir), allowed_folders=["INBOX"])
+        client = ImapClient(block, local_cache=_eligible_mu())
+
+        with patch("imapclient.IMAPClient") as mock_cls:
+            mock_imap = MagicMock()
+            mock_cls.return_value = mock_imap
+            with pytest.raises(ValueError, match="not allowed"):
+                client.fetch_emails([57], folder="Private")
+            mock_imap.fetch.assert_not_called()
+
+    def test_cache_search_disallowed_folder_declines_to_imap(self, mock_imap_client):
+        """An explicit disallowed folder never reaches mu: the cache
+        declines with the named reason and the IMAP leg answers exactly
+        as it would with no cache (folders_failed, empty results)."""
+        block = self._restricted_block()
+        mu = MagicMock()
+        mu.is_eligible.return_value = EligibilityResult(True)
+        client = ImapClient(block, local_cache=mu)
+
+        with patch("imapclient.IMAPClient") as mock_cls:
+            mock_cls.return_value = mock_imap_client
+            result = client.search_emails("from:alice", folder="Private")
+
+        mu.search.assert_not_called()
+        assert result["results"] == []
+        assert result["provenance"]["fell_back_reason"] == "folder_not_allowed"
+        assert result["folders_failed"] == [
+            {"folder": "Private", "error": "Folder 'Private' is not allowed"}
+        ]
+
+    def test_cache_search_disallowed_in_scope_declines_to_imap(self, mock_imap_client):
+        """in:FOLDER scope passes the same gate as the folder argument."""
+        block = self._restricted_block()
+        mu = MagicMock()
+        mu.is_eligible.return_value = EligibilityResult(True)
+        client = ImapClient(block, local_cache=mu)
+
+        with patch("imapclient.IMAPClient") as mock_cls:
+            mock_cls.return_value = mock_imap_client
+            result = client.search_emails("in:Private from:alice")
+
+        mu.search.assert_not_called()
+        assert result["provenance"]["fell_back_reason"] == "folder_not_allowed"
+        assert result["folders_failed"] == [
+            {"folder": "Private", "error": "Folder 'Private' is not allowed"}
+        ]
+
+    def test_whole_block_cache_search_scopes_to_the_allowed_set(self):
+        """folder=None on a whitelisted block passes the allowed set to
+        the cache so mu never sweeps walled-off folders."""
+        block = self._restricted_block()
+        mu = MagicMock()
+        mu.is_eligible.return_value = EligibilityResult(True)
+        mu.search.return_value = _mu_hit([])
+        mu.index_mtime_iso.return_value = "2025-04-01T12:00:00+00:00"
+        client = ImapClient(block, local_cache=mu)
+
+        result = client.search_emails("from:alice")
+
+        remaining, _ = extract_scope(parse("from:alice"))
+        mu.search.assert_called_once_with(
+            block,
+            remaining,
+            10,
+            None,
+            world_as_of=None,
+            allowed_folders=["INBOX", "Sent"],
+        )
+        assert result["provenance"]["source"] == "local"
+
+    def test_allowed_folder_cache_search_serves_locally(self):
+        """An allowed explicit folder still enjoys the cache."""
+        block = self._restricted_block()
+        mu = MagicMock()
+        mu.is_eligible.return_value = EligibilityResult(True)
+        mu.search.return_value = _mu_hit([])
+        mu.index_mtime_iso.return_value = "2025-04-01T12:00:00+00:00"
+        client = ImapClient(block, local_cache=mu)
+
+        result = client.search_emails("from:alice", folder="INBOX")
+
+        remaining, _ = extract_scope(parse("from:alice"))
+        mu.search.assert_called_once_with(
+            block,
+            remaining,
+            10,
+            "INBOX",
+            world_as_of=None,
+            allowed_folders=None,
+        )
+        assert result["provenance"]["source"] == "local"
+
+    def test_unrestricted_block_passes_no_allowed_folders(self):
+        """No whitelist configured: the cache keeps the whole-block
+        recursive scope (allowed_folders None)."""
+        block = ImapBlock(
+            host="imap.example.com",
+            port=993,
+            username="test@example.com",
+            password="password",
+            use_ssl=True,
+            maildir="/var/local/mail/work",
+        )
+        mu = MagicMock()
+        mu.is_eligible.return_value = EligibilityResult(True)
+        mu.search.return_value = _mu_hit([])
+        mu.index_mtime_iso.return_value = "2025-04-01T12:00:00+00:00"
+        client = ImapClient(block, local_cache=mu)
+
+        client.search_emails("from:alice")
+
+        remaining, _ = extract_scope(parse("from:alice"))
+        mu.search.assert_called_once_with(
+            block, remaining, 10, None, world_as_of=None, allowed_folders=None
+        )
 
 
 class TestProcessEmailAction:

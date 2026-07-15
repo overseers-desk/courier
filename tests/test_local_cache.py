@@ -733,6 +733,57 @@ class TestFolderExistenceCheck:
         assert mock_run.called
 
 
+class TestAllowedFoldersScope:
+    """search() with allowed_folders restricts the mu query to the
+    whitelist (issue #60): the query mu receives must never sweep the
+    whole maildir on a whitelisted block."""
+
+    def _backend(self, tmp_path) -> MuBackend:
+        muhome = _make_xapian_dir(tmp_path)
+        cfg = LocalCacheConfig(mu_index=muhome, max_staleness_seconds=86400)
+        return MuBackend(cfg)
+
+    def test_allowed_folders_reach_the_mu_query(self, tmp_path):
+        backend = self._backend(tmp_path)
+        block = _make_block("/tmp/foo/work")
+        captured: Dict[str, Any] = {}
+
+        def fake_run(argv, **kwargs):
+            captured["argv"] = argv
+            return subprocess.CompletedProcess(
+                args=argv, returncode=0, stdout="[]", stderr=""
+            )
+
+        with patch("courier.local_cache.subprocess.run", side_effect=fake_run):
+            backend.search(
+                block,
+                parse("from:alice"),
+                limit=10,
+                allowed_folders=["INBOX", "Sent"],
+            )
+
+        assert captured["argv"][-1] == (
+            '(from:alice) AND ((maildir:"/work" OR maildir:"/work/INBOX") '
+            'OR maildir:"/work/Sent")'
+        )
+
+    def test_without_allowed_folders_scope_stays_recursive(self, tmp_path):
+        backend = self._backend(tmp_path)
+        block = _make_block("/tmp/foo/work")
+        captured: Dict[str, Any] = {}
+
+        def fake_run(argv, **kwargs):
+            captured["argv"] = argv
+            return subprocess.CompletedProcess(
+                args=argv, returncode=0, stdout="[]", stderr=""
+            )
+
+        with patch("courier.local_cache.subprocess.run", side_effect=fake_run):
+            backend.search(block, parse("from:alice"), limit=10)
+
+        assert captured["argv"][-1] == '(from:alice) AND maildir:"/work/"'
+
+
 class TestScopeQuery:
     """_scope_query maps a scope prefix + folder to a quoted maildir predicate."""
 
@@ -795,6 +846,33 @@ class TestScopeQuery:
     def test_empty_prefix_subfolder(self):
         """mu root == block maildir: folders sit directly under "/"."""
         assert MuBackend._scope_query("", "", "Archive") == 'maildir:"/Archive"'
+
+    def test_allowed_folders_restrict_the_recursive_scope(self):
+        """A whitelisted block's whole-block search is scoped to the
+        allowed set, not the recursive whole-maildir predicate: the
+        whitelist must hold when the mu index serves the call
+        (issue #60). INBOX keeps its dual root-or-subdir form."""
+        assert MuBackend._scope_query(
+            "/work", "from:alice", None, ["INBOX", "Sent"]
+        ) == (
+            '(from:alice) AND ((maildir:"/work" OR maildir:"/work/INBOX") '
+            'OR maildir:"/work/Sent")'
+        )
+
+    def test_allowed_folders_single_entry(self):
+        """One allowed folder still scopes exactly (no recursion)."""
+        assert (
+            MuBackend._scope_query("/work", "", None, ["Archive"])
+            == '(maildir:"/work/Archive")'
+        )
+
+    def test_explicit_folder_wins_over_allowed_folders(self):
+        """With an explicit folder the caller has already passed the
+        whitelist gate; the exact-folder predicate stands alone."""
+        assert (
+            MuBackend._scope_query("/work", "", "Archive", ["INBOX", "Archive"])
+            == 'maildir:"/work/Archive"'
+        )
 
 
 class TestScopePrefix:

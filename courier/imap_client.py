@@ -798,8 +798,14 @@ class ImapClient:
             honest.
 
         Raises:
+            ValueError: If the folder is not allowed. The gate runs
+                before the disk leg so a whitelist-restricted block
+                answers identically whether the bytes would come from
+                IMAP or the synced maildir (issue #60).
             ConnectionError: If not connected and connection fails
         """
+        if not self._is_folder_allowed(folder):
+            raise ValueError(f"Folder '{folder}' is not allowed")
         if self._disk_cache_eligible(no_cache):
             disk_email = self._fetch_email_disk(uid, folder)
             if disk_email is not None:
@@ -935,8 +941,14 @@ class ImapClient:
             Dictionary mapping UIDs to Email objects
 
         Raises:
+            ValueError: If the folder is not allowed. The gate runs
+                before the disk leg so a whitelist-restricted block
+                answers identically whether the bytes would come from
+                IMAP or the synced maildir (issue #60).
             ConnectionError: If not connected and connection fails
         """
+        if not self._is_folder_allowed(folder):
+            raise ValueError(f"Folder '{folder}' is not allowed")
         if limit is not None and limit > 0:
             uids = uids[:limit]
         if not uids:
@@ -1691,7 +1703,7 @@ class ImapClient:
             ``"mu_missing"``, ``"db_missing"``, ``"stale"``,
             ``"untranslatable"``, ``"mu_no_matches"``,
             ``"maildir_not_indexed"``, ``"folder_not_synced"``,
-            ``"exception"``), and ``query``
+            ``"folder_not_allowed"``, ``"exception"``), and ``query``
             — the translation report ``{dialect, approximations,
             fallbacks, treated_as_text}``.  Remote provenance adds
             ``folders_searched``.  ``total_count`` is the match count
@@ -1895,9 +1907,30 @@ class ImapClient:
                 "scope; falling back to IMAP"
             )
             return None, "untranslatable"
+        if cache_folder is not None and not self._is_folder_allowed(cache_folder):
+            # The whitelist must hold on every serving path (issue
+            # #60): the cache declines and the IMAP leg answers
+            # exactly as it would with no cache — select_folder, the
+            # shared authorization gate, refuses the folder there.
+            logger.info(
+                f"{self.block.label} local cache declined: folder "
+                f"{cache_folder!r} is outside allowed_folders"
+            )
+            return None, "folder_not_allowed"
+        allowed_scope: Optional[List[str]] = None
+        if cache_folder is None and self.allowed_folders is not None:
+            # Whole-block scope on a whitelisted block: restrict the
+            # mu query to the allowed set so local results match what
+            # the IMAP leg's filtered folder list would serve.
+            allowed_scope = sorted(self.allowed_folders)
         try:
             outcome = self.local_cache.search(
-                self.block, remaining, limit, cache_folder, world_as_of=self.world_as_of
+                self.block,
+                remaining,
+                limit,
+                cache_folder,
+                world_as_of=self.world_as_of,
+                allowed_folders=allowed_scope,
             )
         except UntranslatableForBackend:
             return None, "untranslatable"
