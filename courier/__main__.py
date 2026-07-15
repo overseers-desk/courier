@@ -33,7 +33,7 @@ from courier.errors import (
 from courier.imap_client import ImapClient
 from courier.logging_setup import setup_logging
 from courier.models import extract_links_batch
-from courier.query_parser import render_operator_help
+from courier.query.registry import render_operator_help
 from courier.watch import watch as watch_folder
 from courier.world_bound import world_as_of
 
@@ -287,9 +287,13 @@ def _resolve_single_imap_name() -> str:
 
 
 def _empty_result_for_subcmd(subcmd: str) -> Dict[str, Any]:
-    """Return a placeholder result for a failed [imap.NAME] block connection."""
-    if subcmd == "search":
-        return _empty_search_result()
+    """Return the per-block value for a failed [imap.NAME] connection.
+
+    Every verb gets the same honest shape: an error marker matching
+    ``read``'s existing contract. A search against an unreachable
+    server must never render as a clean empty mailbox.
+    """
+    del subcmd  # one shape for every verb
     return {"error": "connection failed"}
 
 
@@ -446,31 +450,51 @@ def _parse_search_args(
 
     ``default_folder`` and ``default_limit`` let the chain dispatcher pass
     chain-level ``-f``/``-n`` values through; per-verb tokens override them.
+    An unknown flag is a loud error: the old parser silently dropped it,
+    so ``--query=X`` became an empty query that translated to match-all.
+    A single-dash token that is not a known flag stays query text, since
+    the query language itself uses leading dashes (``invoice -draft``).
+
+    Raises:
+        ValueError: On an unknown ``--flag`` or a value-taking flag with
+            no value.
     """
     folder: Optional[str] = default_folder
     limit = default_limit
+    query_opt: Optional[str] = None
     query_parts: List[str] = []
     i = 0
     while i < len(tokens):
         tok = tokens[i]
-        if tok in ("-f", "--folder") and i + 1 < len(tokens):
-            folder = tokens[i + 1]
+        if tok in ("-f", "--folder", "-n", "--limit", "-q", "--query"):
+            if i + 1 >= len(tokens):
+                raise ValueError(f"search flag {tok} needs a value")
+            value = tokens[i + 1]
+            if tok in ("-f", "--folder"):
+                folder = value
+            elif tok in ("-n", "--limit"):
+                limit = int(value)
+            else:
+                query_opt = value
             i += 2
         elif tok.startswith("--folder="):
             folder = tok.split("=", 1)[1]
             i += 1
-        elif tok in ("-n", "--limit") and i + 1 < len(tokens):
-            limit = int(tokens[i + 1])
-            i += 2
         elif tok.startswith("--limit="):
             limit = int(tok.split("=", 1)[1])
             i += 1
-        elif not tok.startswith("-"):
+        elif tok.startswith("--query="):
+            query_opt = tok.split("=", 1)[1]
+            i += 1
+        elif tok.startswith("--"):
+            raise ValueError(f"unknown search flag {tok!r}")
+        else:
+            # Anything else is query text, including negation tokens
+            # like -draft and -from:alice.
             query_parts.append(tok)
             i += 1
-        else:
-            i += 1
-    return {"query": " ".join(query_parts), "folder": folder, "limit": limit}
+    query = query_opt if query_opt is not None else " ".join(query_parts)
+    return {"query": query, "folder": folder, "limit": limit}
 
 
 def _parse_read_args(
@@ -480,7 +504,12 @@ def _parse_read_args(
     """Parse tokenised read arguments into a kwargs dict.
 
     ``default_folder`` lets the chain dispatcher pass a chain-level ``-f``
-    value through; a per-verb folder token overrides it.
+    value through; a per-verb folder token overrides it. Unknown or
+    unconsumed tokens are loud errors rather than silent no-ops.
+
+    Raises:
+        ValueError: On a missing folder/uid, an unknown flag, or stray
+            tokens.
     """
     folder: Optional[str] = default_folder
     uid: Optional[int] = None
@@ -500,7 +529,7 @@ def _parse_read_args(
             uid = int(tok.split("=", 1)[1])
             i += 1
         else:
-            i += 1
+            raise ValueError(f"unknown read argument {tok!r}")
     if folder is None or uid is None:
         raise ValueError("read requires --folder (-f) and --uid (-u)")
     return {"folder": folder, "uid": uid}
@@ -759,11 +788,15 @@ def _run_chain(
     operations: List[Tuple[str, str, Dict[str, Any]]] = []
     for verb, tokens in verbs:
         if verb == "search":
-            kwargs = _parse_search_args(
-                tokens,
-                default_folder=cd_folder,
-                default_limit=cd_limit if cd_limit is not None else 50,
-            )
+            try:
+                kwargs = _parse_search_args(
+                    tokens,
+                    default_folder=cd_folder,
+                    default_limit=cd_limit if cd_limit is not None else 50,
+                )
+            except ValueError as exc:
+                typer.echo(f"Error: {exc}", err=True)
+                return 2
         elif verb == "read":
             try:
                 kwargs = _parse_read_args(tokens, default_folder=cd_folder)
@@ -796,13 +829,28 @@ def _run_chain(
             err=True,
         )
         return 2
-    has_results = any(
-        v.get("results")
+    return _chain_exit_code(result)
+
+
+def _chain_exit_code(result: Dict[str, Dict[str, Any]]) -> int:
+    """Map a chain result onto the exit-code trichotomy.
+
+    0 when any block produced hits; 1 on a clean zero; 2 when nothing
+    was found and something failed (a connection, a folder, or the
+    query on some backend) — zero-with-failures must never impersonate
+    a clean zero, because the primary caller reads exit 1 as evidence
+    of absence.
+    """
+    values = [
+        v
         for per_block in result.values()
         for v in per_block.values()
         if isinstance(v, dict)
-    )
-    return 0 if has_results else 1
+    ]
+    if any(v.get("results") for v in values):
+        return 0
+    failed = any("error" in v or v.get("folders_failed") for v in values)
+    return 2 if failed else 1
 
 
 def _out(data: object) -> None:
@@ -1242,22 +1290,6 @@ def _print_eager_warnings_if_relevant() -> None:
         print(f"warn: {w}", file=sys.stderr)
 
 
-def _empty_search_result() -> Dict[str, Any]:
-    """Return the wrapped result shape for a block that returned nothing.
-
-    Used when client construction or connection fails, so the per-block
-    output stays uniform with successful calls.
-    """
-    return {
-        "results": [],
-        "provenance": {
-            "source": "remote",
-            "indexed_at": None,
-            "fell_back_reason": None,
-        },
-    }
-
-
 def _format_provenance_line(provenance: Dict[str, Any]) -> str:
     """Format a one-line provenance summary for the text output mode."""
     source = provenance.get("source", "remote")
@@ -1279,6 +1311,11 @@ def _format_chain_text(result: Dict[str, Dict[str, Any]]) -> str:
             if "results" in value:
                 hits: List[Dict[str, Any]] = value.get("results") or []
                 lines.append(_format_provenance_line(value.get("provenance") or {}))
+                for failure in value.get("folders_failed") or []:
+                    lines.append(
+                        f"# folder failed: {failure.get('folder', '?')}: "
+                        f"{failure.get('error', '')}"
+                    )
             elif "error" in value:
                 lines.append(f"(error: {value['error']})")
                 continue
@@ -1799,9 +1836,12 @@ by operation and block; ``--format oneline`` renders one
 tab-separated line per result (op_key, imap_name, date, subject,
 from -> to, message_id).
 
-Exit code: 0 on hits, 1 when every block returned zero results, so
-shell fallback chains work: ``courier search 'from:x' || courier
-search 'x'``.
+Exit code: 0 on hits; 1 on a clean zero (every block searched
+everything and found nothing); 2 when nothing was found and something
+failed — a connection, a folder (see ``folders_failed`` in the JSON),
+or a query no backend could express. A zero with failures never
+impersonates a clean zero, so shell fallback chains stay sound:
+``courier search 'from:x' || courier search 'x'``.
 
 """ + render_operator_help()
 
@@ -1871,14 +1911,9 @@ def search(
             err=True,
         )
         raise typer.Exit(2)
-    has_results = any(
-        v.get("results")
-        for per_block in result.values()
-        for v in per_block.values()
-        if isinstance(v, dict)
-    )
-    if not has_results:
-        raise typer.Exit(1)
+    code = _chain_exit_code(result)
+    if code != 0:
+        raise typer.Exit(code)
 
 
 # ---------------------------------------------------------------------------

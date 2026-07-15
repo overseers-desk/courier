@@ -150,58 +150,107 @@ class TestResources:
 
     @pytest.mark.asyncio
     async def test_list_emails(self, mock_mcp, mock_imap_client, mock_context):
-        """Test list_emails resource."""
-        # Register resources
+        """The list resource is summary-level with a marked cap."""
+        summaries = [
+            {
+                "uid": uid,
+                "folder": "INBOX",
+                "from": f"sender{uid}@example.com",
+                "to": [f"recipient{uid}@example.com"],
+                "subject": f"Test Email {uid}",
+                "date": "2023-01-01T12:00:00",
+                "flags": ["\\Seen"],
+                "has_attachments": False,
+            }
+            for uid in (103, 102, 101)
+        ]
+        mock_imap_client.fetch_summaries.return_value = summaries
         register_resources(mock_mcp, mock_imap_client)
 
-        # Get the function and call it
         list_emails = mock_mcp.resources["email://{folder}/list"]
         result = await list_emails("INBOX")
 
-        # Check the result
-        assert isinstance(result, str)
-        emails = json.loads(result)
-        assert isinstance(emails, list)
-        assert len(emails) == 3  # We mocked 3 emails
+        payload = json.loads(result)
+        assert len(payload["results"]) == 3
+        assert payload["total_count"] == 3
+        assert payload["truncated"] is False
 
-        # Verify client methods were called
-        mock_imap_client.search.assert_called_once()
-        mock_imap_client.fetch_emails.assert_called_once()
+        # Summary-level fetch: no full-body fetch_emails call.
+        mock_imap_client.search.assert_called_once_with("ALL", folder="INBOX")
+        mock_imap_client.fetch_summaries.assert_called_once_with(
+            [103, 102, 101], folder="INBOX"
+        )
+        mock_imap_client.fetch_emails.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_list_emails_marks_truncation(
+        self, mock_mcp, mock_imap_client, mock_context
+    ):
+        """More matches than the cap: the cut is marked, never silent."""
+        mock_imap_client.search.return_value = list(range(1, 61))
+        mock_imap_client.fetch_summaries.return_value = []
+        register_resources(mock_mcp, mock_imap_client)
+
+        result = await mock_mcp.resources["email://{folder}/list"]("INBOX")
+        payload = json.loads(result)
+        assert payload["total_count"] == 60
+        assert payload["truncated"] is True
+        page = mock_imap_client.fetch_summaries.call_args[0][0]
+        assert len(page) == 50
+        assert page[0] == 60  # newest first
+
+    @pytest.mark.asyncio
+    async def test_list_emails_error_is_json(
+        self, mock_mcp, mock_imap_client, mock_context
+    ):
+        mock_imap_client.search.side_effect = ConnectionError("down")
+        register_resources(mock_mcp, mock_imap_client)
+        result = await mock_mcp.resources["email://{folder}/list"]("INBOX")
+        assert json.loads(result) == {"error": "down"}
 
     @pytest.mark.asyncio
     async def test_search_emails(self, mock_mcp, mock_imap_client, mock_context):
-        """Test search_emails resource."""
-        # Register resources
+        """E2: the search resource rides the shared search envelope."""
+        envelope = {
+            "results": [{"uid": 101, "subject": "hi"}],
+            "provenance": {
+                "source": "remote",
+                "indexed_at": None,
+                "fell_back_reason": None,
+                "query": {
+                    "dialect": "imap",
+                    "approximations": [],
+                    "fallbacks": [],
+                    "treated_as_text": [],
+                },
+            },
+            "total_count": 1,
+            "truncated": False,
+        }
+        mock_imap_client.search_emails.return_value = envelope
         register_resources(mock_mcp, mock_imap_client)
 
-        # Customize search to only return results from a single folder
-        def mock_search(query, folder=None):
-            # Only return results for INBOX folder
-            if folder == "INBOX":
-                return [101, 102, 103]
-            return []
+        result = await mock_mcp.resources["email://search/{query}"]("from:alice")
 
-        # Set our custom search function
-        mock_imap_client.search.side_effect = mock_search
+        mock_imap_client.search_emails.assert_called_once_with(
+            "from:alice", folder=None, limit=50
+        )
+        assert json.loads(result) == envelope
+        # The resource's private per-folder loop is gone.
+        mock_imap_client.search.assert_not_called()
 
-        # Only return INBOX in list_folders
-        mock_imap_client.list_folders.return_value = ["INBOX"]
-
-        # Get the function and call it
-        search_emails = mock_mcp.resources["email://search/{query}"]
-
-        # Test with predefined query
-        result = await search_emails("all")
-
-        # Check the result
-        assert isinstance(result, str)
-        emails = json.loads(result)
-        assert isinstance(emails, list)
-        assert len(emails) == 3  # We mocked 3 emails for INBOX only
-
-        # Verify client methods were called
-        assert mock_imap_client.search.call_count >= 1
-        assert mock_imap_client.fetch_emails.call_count >= 1
+    @pytest.mark.asyncio
+    async def test_search_emails_error_is_json(
+        self, mock_mcp, mock_imap_client, mock_context
+    ):
+        """A search that cannot run at all reports the error, never a
+        bare empty list."""
+        mock_imap_client.search_emails.side_effect = ConnectionError(
+            "connection failed"
+        )
+        register_resources(mock_mcp, mock_imap_client)
+        result = await mock_mcp.resources["email://search/{query}"]("from:alice")
+        assert json.loads(result) == {"error": "connection failed"}
 
     @pytest.mark.asyncio
     async def test_get_email(self, mock_mcp, mock_imap_client, mock_context):

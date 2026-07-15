@@ -73,15 +73,15 @@ class TestBuildOpKey:
 
 
 class TestEmptyResultForSubcmd:
-    def test_search_returns_search_shape(self):
+    def test_search_returns_error_dict(self):
+        """E1: a dead connection is an error, never an empty mailbox."""
         r = _empty_result_for_subcmd("search")
-        assert "results" in r
-        assert "provenance" in r
-        assert r["results"] == []
+        assert r == {"error": "connection failed"}
+        assert "results" not in r
 
     def test_read_returns_error_dict(self):
         r = _empty_result_for_subcmd("read")
-        assert "error" in r
+        assert r == {"error": "connection failed"}
 
 
 # ---------------------------------------------------------------------------
@@ -116,9 +116,31 @@ class TestParseSearchArgs:
         r = _parse_search_args(["hello", "world"])
         assert r["query"] == "hello world"
 
-    def test_unknown_flags_ignored(self):
-        r = _parse_search_args(["--unknown", "from:foo"])
+    def test_unknown_flags_error_loudly(self):
+        """E4: a dropped flag silently changes the query; refuse it."""
+        with pytest.raises(ValueError, match="unknown search flag"):
+            _parse_search_args(["--unknown", "from:foo"])
+
+    def test_query_equals_form(self):
+        """E4: --query=X used to be dropped, searching match-all."""
+        r = _parse_search_args(["--query=from:foo"])
         assert r["query"] == "from:foo"
+
+    def test_query_space_form(self):
+        r = _parse_search_args(["-q", "from:foo"])
+        assert r["query"] == "from:foo"
+
+    def test_query_option_overrides_positional(self):
+        r = _parse_search_args(["bar", "--query=from:foo"])
+        assert r["query"] == "from:foo"
+
+    def test_negation_tokens_stay_query_text(self):
+        r = _parse_search_args(["invoice", "-draft"])
+        assert r["query"] == "invoice -draft"
+
+    def test_negated_operator_token_stays_query_text(self):
+        r = _parse_search_args(["-from:alice"])
+        assert r["query"] == "-from:alice"
 
     def test_default_folder_used_when_unset(self):
         r = _parse_search_args(["from:foo"], default_folder="Sent")
@@ -438,12 +460,13 @@ class TestExecuteChain:
         assert mock_soft.call_count == 2
 
     @patch("courier.__main__._make_client_soft")
-    def test_failed_connection_produces_empty_result(self, mock_soft):
+    def test_failed_connection_produces_error_envelope(self, mock_soft):
+        """E1: the old shape fabricated a clean-empty search result for
+        a server that was never reached."""
         mock_soft.return_value = None
         ops = [("search q", "search", {"query": "q", "folder": None, "limit": 10})]
         result = _execute_chain(ops, ["acct1"])
-        assert "acct1" in result["search q"]
-        assert "results" in result["search q"]["acct1"]
+        assert result["search q"]["acct1"] == {"error": "connection failed"}
 
     @patch("courier.__main__._make_client_soft")
     def test_runtime_error_produces_error_dict(self, mock_soft):
@@ -864,3 +887,89 @@ class TestRewriteArgv:
         out = _rewrite_argv(["search", "foo", "--imap", "acct"])
         assert out.index("--imap") < out.index("search")
         assert out.index("acct") == out.index("--imap") + 1
+
+
+class TestExitCodeTrichotomy:
+    """0 hits; 1 clean zero; 2 zero-with-failures or total failure."""
+
+    EMPTY = {
+        "results": [],
+        "provenance": {
+            "source": "remote",
+            "indexed_at": None,
+            "fell_back_reason": None,
+        },
+    }
+
+    def test_hits_exit_0(self, capsys):
+        _apply_global_flags([])
+        with _patch_config(), _patch_search_client(_fake_search_result()):
+            assert _run_chain([("search", ["foo"])], "json") == 0
+
+    def test_clean_zero_exits_1(self, capsys):
+        _apply_global_flags([])
+        with _patch_config(), _patch_search_client(self.EMPTY):
+            assert _run_chain([("search", ["foo"])], "json") == 1
+
+    def test_all_blocks_connect_failed_exits_2(self, capsys):
+        _apply_global_flags([])
+        with (
+            _patch_config(),
+            patch("courier.__main__._make_client_soft", return_value=None),
+        ):
+            assert _run_chain([("search", ["foo"])], "json") == 2
+
+    def test_zero_with_folder_failures_exits_2(self, capsys):
+        _apply_global_flags([])
+        partial = dict(self.EMPTY)
+        partial["folders_failed"] = [{"folder": "INBOX", "error": "timeout"}]
+        with _patch_config(), _patch_search_client(partial):
+            assert _run_chain([("search", ["foo"])], "json") == 2
+
+    def test_hits_with_failures_still_exit_0(self, capsys):
+        _apply_global_flags([])
+        hit = _fake_search_result()
+        hit["folders_failed"] = [{"folder": "Archive", "error": "timeout"}]
+        with _patch_config(), _patch_search_client(hit):
+            assert _run_chain([("search", ["foo"])], "json") == 0
+
+    def test_untranslatable_block_error_exits_2(self, capsys):
+        _apply_global_flags([])
+        client = MagicMock()
+        client.search_emails.side_effect = RuntimeError(
+            "label: cannot be expressed on the imap backend"
+        )
+        with (
+            _patch_config(),
+            patch("courier.__main__._make_client_soft", return_value=client),
+        ):
+            assert _run_chain([("search", ["label:x"])], "json") == 2
+
+    def test_search_help_documents_the_trichotomy(self):
+        from courier.__main__ import _SEARCH_CLI_HELP
+
+        assert "0 on hits" in _SEARCH_CLI_HELP
+        assert "clean zero" in _SEARCH_CLI_HELP
+        assert "folders_failed" in _SEARCH_CLI_HELP
+
+
+class TestChainTextFormatFailures:
+    """Text mode surfaces folders_failed, not just JSON."""
+
+    def test_folder_failures_render_in_text_output(self):
+        from courier.__main__ import _format_chain_text
+
+        result = {
+            "search q": {
+                "acct1": {
+                    "results": [],
+                    "provenance": {"source": "remote", "indexed_at": None},
+                    "folders_failed": [
+                        {"folder": "INBOX", "error": "read timeout"}
+                    ],
+                }
+            }
+        }
+        text = _format_chain_text(result)
+        assert "folder failed" in text
+        assert "read timeout" in text

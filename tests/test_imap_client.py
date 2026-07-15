@@ -2565,3 +2565,84 @@ class TestRedactOnFetch:
         assert result["raw"] == b""
         assert result["redacted_by"] == "redacted"
         assert result["subject"].startswith("[redacted")
+
+
+class TestFetchSummaries:
+    """Summary-level listing: headers, flags, structure — no bodies."""
+
+    def _connected(self, mock_imap_client) -> ImapClient:
+        config = ImapBlock(
+            host="imap.example.com",
+            port=993,
+            username="test@example.com",
+            password="password",
+            use_ssl=True,
+        )
+        client = ImapClient(config, world_as_of=None)
+        with patch("imapclient.IMAPClient", return_value=mock_imap_client):
+            client.connect()
+        return client
+
+    HEADER = (
+        b"From: Alice <alice@example.com>\r\n"
+        b"To: bob@example.com\r\n"
+        b"Subject: Hello\r\n"
+        b"Date: Wed, 01 Apr 2026 10:00:00 +1000\r\n"
+        b"Message-ID: <m1@example.com>\r\n\r\n"
+    )
+
+    def test_fetch_is_header_level_not_full_body(self, mock_imap_client):
+        client = self._connected(mock_imap_client)
+        mock_imap_client.fetch.return_value = {
+            7: {
+                b"BODY[HEADER]": self.HEADER,
+                b"FLAGS": (b"\\Seen",),
+                b"BODYSTRUCTURE": (b"text", b"plain"),
+            }
+        }
+        summaries = client.fetch_summaries([7], folder="INBOX")
+        items = mock_imap_client.fetch.call_args[0][1]
+        assert "BODY.PEEK[HEADER]" in items
+        assert "BODY.PEEK[]" not in items
+        assert summaries == [
+            {
+                "uid": 7,
+                "folder": "INBOX",
+                "from": "Alice <alice@example.com>",
+                "to": ["bob@example.com"],
+                "subject": "Hello",
+                "date": summaries[0]["date"],  # zone-dependent rendering
+                "flags": ["\\Seen"],
+                "has_attachments": False,
+            }
+        ]
+        assert summaries[0]["date"].startswith("2026-04-01")
+
+    def test_attachment_disposition_detected_from_structure(
+        self, mock_imap_client
+    ):
+        client = self._connected(mock_imap_client)
+        structure = (
+            (
+                (b"text", b"plain", (b"charset", b"utf-8"), None, None,
+                 b"7bit", 5, 1),
+                (b"application", b"pdf", (b"name", b"q3.pdf"), None, None,
+                 b"base64", 1000, None,
+                 (b"attachment", (b"filename", b"q3.pdf")), None),
+                b"mixed",
+            )
+        )
+        mock_imap_client.fetch.return_value = {
+            8: {
+                b"BODY[HEADER]": self.HEADER,
+                b"FLAGS": (),
+                b"BODYSTRUCTURE": structure,
+            }
+        }
+        summaries = client.fetch_summaries([8], folder="INBOX")
+        assert summaries[0]["has_attachments"] is True
+
+    def test_empty_uid_list_short_circuits(self, mock_imap_client):
+        client = self._connected(mock_imap_client)
+        assert client.fetch_summaries([], folder="INBOX") == []
+        mock_imap_client.fetch.assert_not_called()

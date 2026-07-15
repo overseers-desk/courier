@@ -401,9 +401,10 @@ class TestRelativeTermsAnchorToBound:
         )
 
     @pytest.mark.asyncio
-    async def test_search_resource_anchors_to_client_bound(self):
-        # resources.py calls parse_query itself (the bypass path); it
-        # must pass the client's bound as the reference instant.
+    async def test_search_resource_rides_the_shared_bounded_path(self):
+        # resources.py no longer parses queries itself (the old bypass
+        # path); it delegates to search_emails, whose bound anchoring
+        # the client-level tests above pin.
         from courier.resources import register_resources
 
         registered = {}
@@ -411,14 +412,12 @@ class TestRelativeTermsAnchorToBound:
         mcp.resource = lambda path: lambda func: registered.setdefault(path, func)
 
         imap_client = MagicMock()
-        imap_client.world_as_of = BOUND
-        imap_client.list_folders.return_value = ["INBOX"]
-        imap_client.search.return_value = []
+        imap_client.search_emails.return_value = {"results": [], "provenance": {}}
         register_resources(mcp, imap_client)
 
         await registered["email://search/{query}"]("newer:7d")
-        imap_client.search.assert_called_with(
-            ["SINCE", date(2026, 7, 5)], folder="INBOX"
+        imap_client.search_emails.assert_called_once_with(
+            "newer:7d", folder=None, limit=50
         )
 
 
@@ -547,8 +546,9 @@ class TestResourceBypassSurfaces:
 
     @pytest.mark.asyncio
     async def test_list_resource_drops_post_bound_messages(self):
-        # email://{folder}/list is search("ALL") + fetch_emails on the
-        # real client; the shared fetch assembly drops post-bound UIDs.
+        # email://{folder}/list is search("ALL") + fetch_summaries on
+        # the real client; the summary fetch drops post-bound UIDs on
+        # the fetched INTERNALDATE (Layer 2).
         import json
 
         client = _connected_client()
@@ -559,8 +559,9 @@ class TestResourceBypassSurfaces:
             dates = {1: SAME_DAY_BEFORE, 2: SAME_DAY_AFTER}
             return {
                 u: {
-                    b"BODY[]": _raw_message(u),
+                    b"BODY[HEADER]": _raw_message(u),
                     b"FLAGS": (b"\\Seen",),
+                    b"BODYSTRUCTURE": (b"text", b"plain"),
                     b"INTERNALDATE": dates[u],
                 }
                 for u in uids
@@ -569,5 +570,7 @@ class TestResourceBypassSurfaces:
         wire.fetch.side_effect = fetch_side_effect
         registered = self._register(client)
         result = await registered["email://{folder}/list"]("INBOX")
-        uids = [entry["uid"] for entry in json.loads(result)]
-        assert uids == [1]
+        payload = json.loads(result)
+        assert [entry["uid"] for entry in payload["results"]] == [1]
+        # INTERNALDATE was requested for the Layer 2 judgement.
+        assert "INTERNALDATE" in wire.fetch.call_args[0][1]

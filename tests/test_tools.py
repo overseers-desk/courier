@@ -10,7 +10,8 @@ from mcp.server.fastmcp import Context, FastMCP
 from courier.errors import CourierError
 from courier.imap_client import ImapClient
 from courier.models import Email, EmailAddress, EmailContent
-from courier.query_parser import parse_query
+from courier.query import parse
+from courier.query.emit_imap import emit as emit_imap
 from courier.tools import register_tools
 
 
@@ -566,63 +567,92 @@ class TestTools:
 
 
 class TestRawImapPassthrough:
-    """Test the imap: escape hatch via parse_query."""
+    """The imap: escape ships expressions through the generic emitter."""
 
-    def test_parse_simple_single_keyword(self):
-        """Test parsing simple single-keyword queries."""
-        assert parse_query("imap:ALL") == "ALL"
-        assert parse_query("imap:UNSEEN") == "UNSEEN"
-        assert parse_query("imap:SEEN") == "SEEN"
+    NOW = datetime(2026, 7, 15, 12, 0, 0)
 
-    def test_parse_simple_text_search(self):
-        """Test parsing simple TEXT searches."""
-        result = parse_query("imap:TEXT Edinburgh")
-        assert result == ["TEXT", "Edinburgh"]
+    def _criteria(self, query: str):
+        return emit_imap(parse(query), now=self.NOW).criteria
 
-        result = parse_query('imap:TEXT "booking confirmation"')
-        assert result == ["TEXT", "booking confirmation"]
+    def test_simple_single_keyword(self):
+        assert self._criteria("imap:ALL") == [b"ALL"]
+        assert self._criteria("imap:UNSEEN") == [b"UNSEEN"]
 
-    def test_parse_simple_or_expression(self):
-        """Test parsing simple OR expressions."""
-        result = parse_query('imap:OR TEXT "Edinburgh" TEXT "Berlin"')
-        assert result == ["OR", "TEXT", "Edinburgh", "TEXT", "Berlin"]
-
-    def test_parse_nested_or_expression(self):
-        """Test parsing nested OR expressions."""
-        result = parse_query('imap:OR TEXT "Edinburgh" OR TEXT "Berlin" TEXT "Munich"')
-        assert result == [
-            "OR",
-            "TEXT",
-            "Edinburgh",
-            "OR",
-            "TEXT",
-            "Berlin",
-            "TEXT",
-            "Munich",
+    def test_simple_text_search(self):
+        assert self._criteria("imap:TEXT Edinburgh") == [b"TEXT", b"Edinburgh"]
+        assert self._criteria('imap:TEXT "booking confirmation"') == [
+            b"TEXT",
+            b"booking confirmation",
         ]
 
-    def test_parse_complex_travel_query(self):
-        """Test parsing the complex travel booking query."""
-        query = 'imap:OR TEXT "Edinburgh" OR TEXT "Berlin" OR TEXT "Munich" OR TEXT "Vienna" OR TEXT "Warsaw" OR TEXT "itinerary" OR TEXT "booking confirmation" OR TEXT "e-ticket" OR TEXT "reservation" OR TEXT "receipt" OR TEXT "ticket" TEXT "order"'
-        result = parse_query(query)
+    def test_or_expression(self):
+        assert self._criteria('imap:OR TEXT "Edinburgh" TEXT "Berlin"') == [
+            b"OR",
+            b"TEXT",
+            b"Edinburgh",
+            b"TEXT",
+            b"Berlin",
+        ]
 
-        assert isinstance(result, list)
-        assert "OR" in result
-        assert "TEXT" in result
-        assert "Edinburgh" in result
-        assert "Berlin" in result
-        assert "booking confirmation" in result
-        assert "order" in result
+    def test_complex_travel_query(self):
+        query = (
+            'imap:OR TEXT "Edinburgh" OR TEXT "Berlin" OR TEXT "Munich" '
+            'OR TEXT "Vienna" OR TEXT "Warsaw" OR TEXT "itinerary" '
+            'OR TEXT "booking confirmation" OR TEXT "e-ticket" '
+            'OR TEXT "reservation" OR TEXT "receipt" OR TEXT "ticket" '
+            'TEXT "order"'
+        )
+        criteria = self._criteria(query)
+        assert b"OR" in criteria
+        assert b"Edinburgh" in criteria
+        assert b"booking confirmation" in criteria
+        assert b"order" in criteria
 
-    def test_parse_from_subject(self):
-        """Test parsing FROM and SUBJECT via raw passthrough."""
-        result = parse_query('imap:FROM "john@example.com"')
-        assert result == ["FROM", "john@example.com"]
+    def test_combined_criteria(self):
+        assert self._criteria("imap:SEEN FROM gmail") == [
+            b"SEEN",
+            b"FROM",
+            b"gmail",
+        ]
 
-        result = parse_query('imap:SUBJECT "meeting"')
-        assert result == ["SUBJECT", "meeting"]
 
-    def test_parse_combined(self):
-        """Test parsing combined criteria without OR."""
-        result = parse_query("imap:SEEN FROM gmail")
-        assert result == ["SEEN", "FROM", "gmail"]
+class TestSearchToolDescription:
+    """The tool description renders from the registry and documents the
+    failure-visible envelope; refusing operators must be documented at
+    the same moment the dispatch lands, since an undocumented refusal
+    reads as breakage."""
+
+    def test_operator_inventory_is_the_registry_rendering(self):
+        from courier.query.registry import render_operator_help
+        from courier.tools import _SEARCH_TOOL_DESCRIPTION
+
+        assert render_operator_help() in _SEARCH_TOOL_DESCRIPTION
+
+    def test_new_operator_rows_present(self):
+        from courier.tools import _SEARCH_TOOL_DESCRIPTION
+
+        for token in (
+            "bcc:ADDR",
+            "smaller:SIZE",
+            "filename:NAME",
+            "list:ID",
+            "deliveredto:ADDR",
+            "label:NAME",
+            "category:NAME",
+            "in:PLACE",
+            "before:DATE",
+            "Sent before DATE, exclusive",
+        ):
+            assert token in _SEARCH_TOOL_DESCRIPTION, token
+
+    def test_envelope_fields_documented(self):
+        from courier.tools import _SEARCH_TOOL_DESCRIPTION
+
+        for token in (
+            "folders_failed",
+            "provenance.query",
+            "total_count",
+            "truncated",
+            "treated_as_text",
+        ):
+            assert token in _SEARCH_TOOL_DESCRIPTION, token

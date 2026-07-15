@@ -127,6 +127,31 @@ def _as_uid_list(uid: Union[int, Sequence[int]]) -> List[int]:
     return list(uid)
 
 
+def _bodystructure_has_attachment(bodystructure: Any) -> bool:
+    """Report whether a BODYSTRUCTURE declares an attachment part.
+
+    Walks the parsed structure (nested tuples/lists from imapclient)
+    looking for an ``attachment`` content-disposition token. This is a
+    structure-level judgement for summary listings: it needs no body
+    fetch, at the cost of not counting inline parts the full parser
+    would treat as attachments.
+
+    Args:
+        bodystructure: The value of the ``BODYSTRUCTURE`` fetch item,
+            or ``None`` when the server sent none.
+
+    Returns:
+        True when some part carries an attachment disposition.
+    """
+    if isinstance(bodystructure, (tuple, list)):
+        for item in bodystructure:
+            if isinstance(item, bytes) and item.lower() == b"attachment":
+                return True
+            if _bodystructure_has_attachment(item):
+                return True
+    return False
+
+
 # Sentinel default for ImapClient's world_as_of parameter: "read the
 # WORLD_AS_OF environment variable at construction". Distinct from None,
 # which means an explicit unbounded client, so no construction site can
@@ -579,6 +604,73 @@ class ImapClient:
         self._update_activity()
         logger.debug(f"Search returned {len(results)} results")
         return list(results)
+
+    def fetch_summaries(
+        self, uids: List[int], folder: str = "INBOX"
+    ) -> List[Dict[str, Any]]:
+        """Fetch summary-level listings: headers, flags, and structure.
+
+        Serves the folder-list surface without the full-body
+        ``BODY.PEEK[]`` fetch a listing never needs: headers give
+        from/to/subject/date, FLAGS the state, and BODYSTRUCTURE the
+        attachment judgement. Under WORLD_AS_OF the INTERNALDATE is
+        fetched too and post-bound messages are dropped (Layer 2).
+
+        Args:
+            uids: The UIDs to summarise.
+            folder: The folder holding them.
+
+        Returns:
+            One summary dict per surviving UID, newest first, each with
+            ``uid``, ``folder``, ``from``, ``to``, ``subject``,
+            ``date``, ``flags``, and ``has_attachments``.
+
+        Raises:
+            ConnectionError: If not connected and connection fails.
+        """
+        if not uids:
+            return []
+        self.ensure_connected()
+        self.select_folder(folder, readonly=True)
+        items = self._bound_fetch_items(
+            ["BODY.PEEK[HEADER]", "FLAGS", "BODYSTRUCTURE"]
+        )
+        data = self._client_or_raise().fetch(uids, items)
+        self._update_activity()
+        summaries: List[Dict[str, Any]] = []
+        for uid in sorted(data, reverse=True):
+            record = data[uid]
+            internal_date = record.get(b"INTERNALDATE")
+            if self._after_bound(
+                internal_date if isinstance(internal_date, datetime) else None
+            ):
+                continue
+            header_bytes = record.get(b"BODY[HEADER]", b"")
+            message = email.message_from_bytes(header_bytes)
+            email_obj = Email.from_message(message, uid=uid, folder=folder)
+            flags = [
+                f.decode("utf-8") if isinstance(f, bytes) else str(f)
+                for f in record.get(b"FLAGS", ())
+            ]
+            summaries.append(
+                {
+                    "uid": uid,
+                    "folder": folder,
+                    "from": str(email_obj.from_),
+                    "to": [str(to) for to in email_obj.to],
+                    "subject": email_obj.subject,
+                    "date": (
+                        email_obj.date.astimezone().isoformat()
+                        if email_obj.date
+                        else None
+                    ),
+                    "flags": flags,
+                    "has_attachments": _bodystructure_has_attachment(
+                        record.get(b"BODYSTRUCTURE")
+                    ),
+                }
+            )
+        return summaries
 
     @staticmethod
     def _email_from_bytes(raw: bytes, uid: int, folder: str, flags: List[str]) -> Email:

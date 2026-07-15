@@ -7,9 +7,13 @@ from typing import Any, Optional
 from mcp.server.fastmcp import Context, FastMCP
 
 from courier.imap_client import ImapClient
-from courier.query_parser import parse_query
 
 logger = logging.getLogger(__name__)
+
+# Result caps for the listing/search resources. Both surfaces mark the
+# cut with total_count/truncated instead of truncating silently.
+_LIST_CAP = 50
+_SEARCH_LIMIT = 50
 
 
 def get_client_from_context(
@@ -89,99 +93,65 @@ def register_resources(mcp: FastMCP, imap_client: ImapClient) -> None:
     # List email summaries in a folder
     @mcp.resource("email://{folder}/list")
     async def list_emails(folder: str) -> str:
-        """List emails in a folder.
+        """List the newest emails in a folder, summary-level.
+
+        Capped at 50 messages; the cut is marked, never silent, and
+        only headers/flags/structure are fetched (no message bodies).
 
         Args:
             folder: Folder name
 
         Returns:
-            JSON-formatted list of email summaries
+            JSON ``{"results": [...], "total_count": N, "truncated":
+            bool}`` where ``total_count`` is the folder's full match
+            count; ``{"error": ...}`` on failure.
         """
-        # Search for all emails in the folder
         try:
             uids = imap_client.search("ALL", folder=folder)
-
-            # Limit to the 50 most recent emails to avoid overwhelming
-            # the LLM with too much context
-            uids = sorted(uids, reverse=True)[:50]
-
-            # Fetch emails
-            emails = imap_client.fetch_emails(uids, folder=folder)
-
-            # Create summaries
-            summaries = []
-            for uid, email_obj in emails.items():
-                summaries.append(
-                    {
-                        "uid": uid,
-                        "folder": folder,
-                        "from": str(email_obj.from_),
-                        "to": [str(to) for to in email_obj.to],
-                        "subject": email_obj.subject,
-                        "date": (
-                            email_obj.date.astimezone().isoformat()
-                            if email_obj.date
-                            else None
-                        ),
-                        "flags": email_obj.flags,
-                        "has_attachments": len(email_obj.attachments) > 0,
-                    }
-                )
-
-            return json.dumps(summaries, indent=2)
+            total = len(uids)
+            page = sorted(uids, reverse=True)[:_LIST_CAP]
+            summaries = imap_client.fetch_summaries(page, folder=folder)
+            payload = {
+                "results": summaries,
+                "total_count": total,
+                "truncated": total > _LIST_CAP,
+            }
+            return json.dumps(payload, indent=2, default=str)
         except Exception as e:
             logger.error(f"Error listing emails: {e}")
-            return f"Error: {e}"
+            return json.dumps({"error": str(e)})
 
     # Search emails across folders
     @mcp.resource("email://search/{query}")
     async def search_emails(query: str) -> str:
         """Search for emails across folders using Gmail-style query syntax.
 
+        Runs through the shared search path, so the envelope matches
+        the search tool: dispatch (local cache, then remote with the
+        capability-gated emitter), ``provenance`` with the query
+        translation report, ``folders_failed`` when some folder's
+        search failed, and ``total_count``/``truncated`` marking the
+        50-result cap.
+
         Args:
             query: Gmail-style search query (e.g. ``from:alice``,
                    ``is:unread``, ``meeting notes``).
 
         Returns:
-            JSON-formatted list of email summaries
+            The JSON search envelope, or ``{"error": ...}`` when the
+            search could not run at all (connection failure, a query no
+            backend could express, a refused charset).
         """
-        # Relative terms anchor to the client's WORLD_AS_OF bound when
-        # set (parse_query defaults to the wall clock on None).
-        search_spec = parse_query(query, now=imap_client.world_as_of)
-        folders = imap_client.list_folders()
-        results = []
-
-        for folder in folders:
-            try:
-                uids = imap_client.search(search_spec, folder=folder)
-                uids = sorted(uids, reverse=True)[:10]
-
-                if uids:
-                    emails = imap_client.fetch_emails(uids, folder=folder)
-                    for uid, email_obj in emails.items():
-                        results.append(
-                            {
-                                "uid": uid,
-                                "folder": folder,
-                                "from": str(email_obj.from_),
-                                "to": [str(to) for to in email_obj.to],
-                                "subject": email_obj.subject,
-                                "date": (
-                                    email_obj.date.astimezone().isoformat()
-                                    if email_obj.date
-                                    else None
-                                ),
-                                "flags": email_obj.flags,
-                                "has_attachments": len(email_obj.attachments) > 0,
-                            }
-                        )
-            except Exception as e:
-                logger.warning(
-                    f"{imap_client.block.label} Error searching folder {folder}: {e}"
-                )
-
-        results.sort(key=lambda x: str(x.get("date") or "0"), reverse=True)
-        return json.dumps(results, indent=2)
+        try:
+            result = imap_client.search_emails(
+                query, folder=None, limit=_SEARCH_LIMIT
+            )
+            return json.dumps(result, indent=2, default=str)
+        except Exception as e:
+            logger.error(
+                f"{imap_client.block.label} Error searching for {query!r}: {e}"
+            )
+            return json.dumps({"error": str(e)})
 
     # Get a specific email by UID
     @mcp.resource("email://{folder}/{uid}")

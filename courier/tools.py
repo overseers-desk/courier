@@ -21,22 +21,35 @@ from mcp.server.fastmcp import Context, FastMCP
 from courier.errors import CourierError, FolderNotFound
 from courier.imap_client import ImapClient
 from courier.models import extract_links_batch
-from courier.query_parser import render_operator_help
+from courier.query.ast import UntranslatableForBackend
+from courier.query.registry import render_operator_help
 from courier.resources import get_client_from_context
 
 logger = logging.getLogger(__name__)
 
 # Explicit description for the search tool. FastMCP uses an explicit
 # ``description`` over the function docstring, so the operator inventory
-# derives from the parser (via render_operator_help) and cannot drift.
+# derives from the registry (via render_operator_help) and cannot drift.
+# Operators a backend cannot express refuse loudly with the nearest
+# alternative; they never degrade to literal text, so a refusal message
+# here is the contract working, not breakage.
 _SEARCH_TOOL_DESCRIPTION = (
     "Search for emails using Gmail-style query syntax.\n\n"
     + render_operator_help()
-    + '\n\nReturns a JSON dict {"results": [...], "provenance": {...}} where '
-    'provenance.source is "local" (served from a local mu cache) or "remote" '
-    "(went to IMAP), provenance.indexed_at carries the local index mtime when "
-    "applicable, and provenance.fell_back_reason names the condition that forced "
-    "an IMAP fallback or is null."
+    + '\n\nReturns a JSON dict {"results": [...], "provenance": {...}, '
+    '"total_count": ..., "truncated": ...}. provenance.source is "local" '
+    '(served from a local mu cache) or "remote" (went to IMAP); '
+    "provenance.indexed_at carries the local index mtime when applicable; "
+    "provenance.fell_back_reason names the condition that forced an IMAP "
+    "fallback or is null; provenance.query is the translation report "
+    "{dialect, approximations, fallbacks, treated_as_text} declaring how "
+    "the query was expressed on the backend that served it. folders_failed "
+    "(present only when some folder's search or fetch failed) lists "
+    '{"folder", "error"} records — results with folders_failed present are '
+    "incomplete, not authoritative absence. total_count/truncated mark the "
+    "limit cut. Operators the serving backend cannot express refuse with "
+    'an {"error": ...} naming the nearest alternative instead of silently '
+    "matching nothing."
 )
 
 
@@ -359,14 +372,20 @@ def register_tools(mcp: FastMCP, imap_client: ImapClient) -> None:
             no_cache: Bypass the local cache and query live IMAP.
 
         Returns:
-            JSON-formatted dict ``{"results": [...], "provenance": {...}}``.
-            ``provenance.source`` is ``"local"`` when the call was served
-            from a local mu cache and ``"remote"`` when it went to IMAP;
-            ``provenance.indexed_at`` carries the local index mtime when
-            applicable; ``provenance.fell_back_reason`` names the
-            condition that forced an IMAP fallback (``"no_cache"``,
-            ``"mu_missing"``, ``"db_missing"``, ``"stale"``,
-            ``"untranslatable"``, ``"exception"``) or is ``null``.
+            JSON-formatted dict ``{"results": [...], "provenance":
+            {...}, "total_count": ..., "truncated": ...}``, plus
+            ``folders_failed`` when some folder's search or fetch
+            failed. ``provenance.source`` is ``"local"`` when the call
+            was served from a local mu cache and ``"remote"`` when it
+            went to IMAP; ``provenance.indexed_at`` carries the local
+            index mtime when applicable; ``provenance.fell_back_reason``
+            names the condition that forced an IMAP fallback
+            (``"no_cache"``, ``"mu_missing"``, ``"db_missing"``,
+            ``"stale"``, ``"untranslatable"``, ``"exception"``) or is
+            ``null``; ``provenance.query`` is the translation report.
+            Untranslatable queries, refused charsets, and connection
+            failures return ``{"error": ...}`` with the reason and the
+            nearest alternative, never a clean-empty envelope.
         """
         if ctx is None:
             return json.dumps({"error": "No MCP context available"})
@@ -387,8 +406,10 @@ def register_tools(mcp: FastMCP, imap_client: ImapClient) -> None:
             error_msg = f"Email search timed out after 30 seconds (query={query}, folder={folder})"
             logger.error(error_msg)
             return json.dumps({"error": error_msg, "results": []})
-        except ValueError as e:
+        except (ValueError, CourierError, UntranslatableForBackend) as e:
             return json.dumps({"error": str(e)})
+        except ConnectionError as e:
+            return json.dumps({"error": f"connection failed: {e}"})
 
     @mcp.tool(name="triage")
     async def triage(
