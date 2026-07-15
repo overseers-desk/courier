@@ -86,7 +86,7 @@ _NATIVE_PREFIXES = frozenset(
 _VALUE_QUOTE_TRIGGERS = set("(){}")
 
 _NOTE_BODY = (
-    "Gmail has no body: operator; the body: value is searched as " "ordinary query text"
+    "Gmail has no body: operator; " "the body: value is searched as ordinary query text"
 )
 _NOTE_DATES = "Gmail evaluates dates in the account profile's timezone"
 _NOTE_RELATIVE = (
@@ -165,7 +165,7 @@ def _check_value(operator: str, value: str) -> None:
     if '"' in value:
         raise _refuse(
             operator,
-            "Gmail defines no escape for a double quote inside a quoted " "value",
+            "Gmail defines no escape " "for a double quote inside a quoted value",
             "Drop the quote character from the search text, or search "
             "another backend.",
         )
@@ -347,7 +347,7 @@ class _Renderer:
             raise _refuse(
                 "imap:",
                 "raw IMAP expressions never travel inside X-GM-RAW",
-                "The raw query runs on the standard IMAP search path " "instead.",
+                "The raw query runs " "on the standard IMAP search path instead.",
             )
         raise _refuse(f"{op}:", "the operator has no Gmail mapping")
 

@@ -370,7 +370,7 @@ class _Emitter:
             if term.value.lower() == "attachment":
                 raise _refuse(
                     "has:attachment",
-                    "has:attachment has no server-side search on this IMAP " "backend",
+                    "has:attachment has " "no server-side search on this IMAP backend",
                     "The operator works on Gmail accounts and on accounts "
                     "with a local mail cache.",
                 )
