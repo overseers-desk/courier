@@ -1,5 +1,7 @@
 # Courier Server Development Guide
 
+The invariants live in [`INVARIANTS.md`](INVARIANTS.md): the authority of `research/`, the version's single home, and where the Homebrew formula lives. A change that breaks one is a design change, the owner's to make.
+
 ## Versioning and Packaging
 - Version is defined in `pyproject.toml` (single source of truth) and mirrored in `courier/__init__.py`, `courier/__main__.py`, and `courier/mcp_server.py`. Do not hardcode version numbers in documentation — use generic references like "latest" or `<version>` placeholders.
 - Do not bump the version unless the user asks for it.
@@ -55,7 +57,6 @@ Do **not** report the release as done if any of the above is missing. Do not sto
 - Error handling: Use specific exceptions and provide helpful messages
 - Documentation: Write docstrings for all classes and methods using the existing Google-style convention (summary line, then Args/Returns/Raises sections). When adding or moving code, match the docstring style of neighbouring functions — do not condense or omit sections that peers include.
 - Testing: Follow TDD pattern (write tests before implementation)
-- Project structure follows the standard Python package layout
 
 ## Task Workflow
 When working on tasks from GitHub Issues, follow this workflow:
