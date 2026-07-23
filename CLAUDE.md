@@ -2,6 +2,8 @@
 
 The invariants live in [`INVARIANTS.md`](INVARIANTS.md): the authority of `research/`, the version's single home, and where the Homebrew formula lives. A change that breaks one is a design change, the owner's to make.
 
+@INVARIANTS.md
+
 ## Versioning and Packaging
 - Version is defined in `pyproject.toml` (single source of truth) and mirrored in `courier/__init__.py`, `courier/__main__.py`, and `courier/mcp_server.py`. Do not hardcode version numbers in documentation — use generic references like "latest" or `<version>` placeholders.
 - Do not bump the version unless the user asks for it.
