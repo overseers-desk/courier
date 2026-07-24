@@ -1,12 +1,13 @@
 """Tests for SMTP client MIME composition functionality."""
 
-from datetime import datetime
+import email.utils
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
 from courier.models import Email, EmailAddress, EmailContent
-from courier.smtp_client import create_mime
+from courier.smtp_client import create_mime, parse_message_date
 
 
 class TestCreateReplyMime:
@@ -489,3 +490,107 @@ class TestCreateReplyMime:
         assert html_text.strip() == caller_html
         assert "<table>" not in html_text
         assert "<h1>" not in html_text
+
+
+class TestDateHeader:
+    """The ``date`` parameter of ``create_mime`` and its parser."""
+
+    @staticmethod
+    def _addrs():
+        return (
+            EmailAddress(name="Sender", address="sender@example.com"),
+            [EmailAddress(name="Recipient", address="recipient@example.com")],
+        )
+
+    def test_default_date_is_now(self):
+        """Without *date* the header carries the current instant."""
+        from_addr, to = self._addrs()
+
+        mime_message = create_mime(from_addr=from_addr, to=to, subject="x", body="b")
+
+        header_dt = email.utils.parsedate_to_datetime(mime_message["Date"])
+        assert abs((header_dt - datetime.now(timezone.utc)).total_seconds()) < 300
+
+    def test_explicit_aware_date_is_used_verbatim(self):
+        """An aware datetime reaches the header at its own offset."""
+        from_addr, to = self._addrs()
+        when = datetime(2019, 3, 4, 5, 6, 7, tzinfo=timezone(timedelta(hours=10)))
+
+        mime_message = create_mime(
+            from_addr=from_addr, to=to, subject="x", body="b", date=when
+        )
+
+        assert mime_message["Date"] == "Mon, 04 Mar 2019 05:06:07 +1000"
+
+    def test_naive_date_is_read_as_local_time(self):
+        """A naive datetime binds to the local zone, not to ``-0000``."""
+        from_addr, to = self._addrs()
+        when = datetime(2019, 3, 4, 5, 6, 7)
+
+        mime_message = create_mime(
+            from_addr=from_addr, to=to, subject="x", body="b", date=when
+        )
+
+        header_dt = email.utils.parsedate_to_datetime(mime_message["Date"])
+        assert header_dt == when.astimezone()
+        assert not mime_message["Date"].endswith("-0000")
+
+    def test_only_one_date_header(self):
+        """Serialising yields a single Date field, whatever the branch."""
+        from_addr, to = self._addrs()
+        when = datetime(2019, 3, 4, 5, 6, 7, tzinfo=timezone.utc)
+
+        for kwargs in ({}, {"html_body": "<p>h</p>"}):
+            mime_message = create_mime(
+                from_addr=from_addr,
+                to=to,
+                subject="x",
+                body="b",
+                date=when,
+                **kwargs,
+            )
+            assert mime_message.get_all("Date") == ["Mon, 04 Mar 2019 05:06:07 +0000"]
+
+    def test_reply_accepts_date(self):
+        """The reply branch honours *date* as the fresh-message branch does."""
+        original = Email(
+            message_id="<orig@example.com>",
+            subject="Test Subject",
+            from_=EmailAddress(name="S", address="s@example.com"),
+            to=[EmailAddress(name="R", address="r@example.com")],
+            date=datetime.now(),
+            content=EmailContent(text="body", html=None),
+            headers={},
+        )
+        when = datetime(2019, 3, 4, 5, 6, 7, tzinfo=timezone.utc)
+
+        mime_message = create_mime(
+            original_email=original,
+            from_addr=EmailAddress(name="R", address="r@example.com"),
+            body="reply",
+            date=when,
+        )
+
+        assert mime_message["Date"] == "Mon, 04 Mar 2019 05:06:07 +0000"
+
+
+class TestParseMessageDate:
+    """Tests for ``parse_message_date``."""
+
+    def test_offset_form_preserved(self):
+        assert parse_message_date("2019-03-04T05:06:07+10:00") == datetime(
+            2019, 3, 4, 5, 6, 7, tzinfo=timezone(timedelta(hours=10))
+        )
+
+    def test_naive_form_accepted(self):
+        assert parse_message_date("2019-03-04T05:06:07") == datetime(
+            2019, 3, 4, 5, 6, 7
+        )
+
+    def test_date_only_form_accepted(self):
+        assert parse_message_date("2019-03-04") == datetime(2019, 3, 4)
+
+    def test_rejects_unparseable(self):
+        with pytest.raises(ValueError) as exc:
+            parse_message_date("last Tuesday")
+        assert "2019-03-04" in str(exc.value)

@@ -94,6 +94,31 @@ def _quoted_reply_html(html_body: str, original_email: Email) -> str:
     )
 
 
+def parse_message_date(value: str) -> datetime:
+    """Parse an ISO 8601 timestamp for the ``Date`` header.
+
+    Args:
+        value: An ISO 8601 date or timestamp, with or without a UTC
+            offset (e.g. ``2019-03-04``, ``2019-03-04T05:06:07``,
+            ``2019-03-04T05:06:07+10:00``).
+
+    Returns:
+        The parsed datetime, naive when *value* carried no offset. A
+        naive value is read as local time where the header is written.
+
+    Raises:
+        ValueError: When *value* is not ISO 8601.
+    """
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError as e:
+        raise ValueError(
+            f"{value!r} is not an ISO 8601 timestamp (expected e.g. "
+            f"2019-03-04, 2019-03-04T05:06:07, or "
+            f"2019-03-04T05:06:07+10:00): {e}"
+        ) from e
+
+
 def create_mime(
     from_addr: EmailAddress,
     body: str,
@@ -105,6 +130,7 @@ def create_mime(
     attachments: Optional[List[str]] = None,
     original_email: Optional[Email] = None,
     reply_all: bool = True,
+    date: Optional[datetime] = None,
 ) -> Union[EmailMessage, MIMEMultipart]:
     """Create an RFC 822 MIME message.
 
@@ -144,6 +170,12 @@ def create_mime(
             basenames are accepted but may confuse some clients on save.
         original_email: If given, produce a reply to this message.
         reply_all: Reply-only. Include original To/Cc in recipients.
+        date: Instant written to the ``Date`` header. Defaults to the
+            current local time. A naive value is read as local time. The
+            header is the sender's claim about composition time; a
+            receiving server records its own arrival time regardless, and
+            a value far from the moment of submission is one of the
+            signals spam filters weigh.
 
     Returns:
         An ``EmailMessage`` (plain text, no attachments) or ``MIMEMultipart``
@@ -271,7 +303,11 @@ def create_mime(
         for path in attachments:
             _attach_file(msg, path)
 
-    msg["Date"] = email.utils.formatdate(localtime=True)
+    if date is None:
+        msg["Date"] = email.utils.formatdate(localtime=True)
+    else:
+        aware = date if date.tzinfo is not None else date.astimezone()
+        msg["Date"] = email.utils.format_datetime(aware)
     return msg
 
 
@@ -301,6 +337,7 @@ def compose_and_save_reply_draft(
     bcc: Optional[List[str]] = None,
     body_html: Optional[str] = None,
     attachments: Optional[List[str]] = None,
+    date: Optional[datetime] = None,
 ) -> Dict[str, Any]:
     """Fetch an email, compose a reply, and save it as a draft.
 
@@ -314,6 +351,8 @@ def compose_and_save_reply_draft(
         bcc: Optional BCC addresses as strings.
         body_html: Optional HTML reply body.
         attachments: Optional list of filesystem paths to attach to the draft.
+        date: Instant for the ``Date`` header. Defaults to the current
+            local time; a naive value is read as local time.
 
     Returns:
         Dict with keys ``status``, ``message``, ``draft_uid``, ``draft_folder``.
@@ -347,6 +386,7 @@ def compose_and_save_reply_draft(
             bcc=bcc_addresses,
             html_body=body_html,
             attachments=attachments,
+            date=date,
         )
 
         # Compose callers have no exit-code channel; a failed draft save
@@ -379,6 +419,7 @@ def compose_and_save_draft(
     bcc: Optional[List[str]] = None,
     body_html: Optional[str] = None,
     attachments: Optional[List[str]] = None,
+    date: Optional[datetime] = None,
 ) -> Dict[str, Any]:
     """Compose a new email and save it as a draft.
 
@@ -395,6 +436,8 @@ def compose_and_save_draft(
         bcc: Optional BCC addresses as strings.
         body_html: Optional HTML body.
         attachments: Optional list of filesystem paths to attach.
+        date: Instant for the ``Date`` header. Defaults to the current
+            local time; a naive value is read as local time.
 
     Returns:
         Dict with keys ``status``, ``message``, ``draft_uid``, ``draft_folder``.
@@ -425,6 +468,7 @@ def compose_and_save_draft(
             bcc=bcc_addresses,
             html_body=body_html,
             attachments=attachments,
+            date=date,
         )
 
         # Compose callers have no exit-code channel; a failed draft save

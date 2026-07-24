@@ -109,6 +109,7 @@ def register_tools(mcp: FastMCP, imap_client: ImapClient) -> None:
         bcc: Optional[List[str]] = None,
         body_html: Optional[str] = None,
         attachments: Optional[List[str]] = None,
+        date: Optional[str] = None,
         imap: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Composes a new email and saves it as a draft.
@@ -130,12 +131,15 @@ def register_tools(mcp: FastMCP, imap_client: ImapClient) -> None:
                 text/plain only; any other string is used verbatim.
             attachments: Optional list of filesystem paths to attach. Paths
                 are read by the MCP server process.
+            date: ISO 8601 instant for the Date header (e.g.
+                ``2019-03-04T05:06:07+10:00``). Defaults to now; a value
+                without an offset is read as local time.
             imap: [imap.NAME] block name (None for default)
 
         Returns:
             Dictionary with status and the UID of the created draft
         """
-        from courier.smtp_client import compose_and_save_draft
+        from courier.smtp_client import compose_and_save_draft, parse_message_date
 
         client = get_client_from_context(ctx, imap)
         return compose_and_save_draft(
@@ -147,6 +151,7 @@ def register_tools(mcp: FastMCP, imap_client: ImapClient) -> None:
             bcc=bcc,
             body_html=body_html,
             attachments=attachments,
+            date=parse_message_date(date) if date else None,
         )
 
     @mcp.tool(name="reply")
@@ -160,6 +165,7 @@ def register_tools(mcp: FastMCP, imap_client: ImapClient) -> None:
         bcc: Optional[List[str]] = None,
         body_html: Optional[str] = None,
         attachments: Optional[List[str]] = None,
+        date: Optional[str] = None,
         imap: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Creates a draft reply to an email and saves it to the drafts folder.
@@ -179,12 +185,18 @@ def register_tools(mcp: FastMCP, imap_client: ImapClient) -> None:
                 used verbatim.
             attachments: Optional list of filesystem paths to attach to the
                 draft. Paths are read by the MCP server process.
+            date: ISO 8601 instant for the Date header (e.g.
+                ``2019-03-04T05:06:07+10:00``). Defaults to now; a value
+                without an offset is read as local time.
             imap: [imap.NAME] block name (None for default)
 
         Returns:
             Dictionary with status and the UID of the created draft
         """
-        from courier.smtp_client import compose_and_save_reply_draft
+        from courier.smtp_client import (
+            compose_and_save_reply_draft,
+            parse_message_date,
+        )
 
         client = get_client_from_context(ctx, imap)
         return compose_and_save_reply_draft(
@@ -197,6 +209,7 @@ def register_tools(mcp: FastMCP, imap_client: ImapClient) -> None:
             bcc=bcc,
             body_html=body_html,
             attachments=attachments,
+            date=parse_message_date(date) if date else None,
         )
 
     @mcp.tool(name="move")

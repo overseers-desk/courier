@@ -38,6 +38,8 @@ from courier.watch import watch as watch_folder
 from courier.world_bound import world_as_of
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from courier.local_cache import MuBackend
 
 
@@ -2438,6 +2440,26 @@ def _write_raw_output(mime_message: Any, output: str) -> None:
     typer.echo(f"Wrote {len(raw)} bytes to {output}", err=True)
 
 
+def _parse_date_or_exit(value: Optional[str]) -> Optional["datetime"]:
+    """Parse a ``--date`` value, exiting 2 when it is not ISO 8601.
+
+    Args:
+        value: The raw option value, or None when the flag was omitted.
+
+    Returns:
+        The parsed datetime, or None when *value* is None.
+    """
+    if value is None:
+        return None
+    from courier.smtp_client import parse_message_date
+
+    try:
+        return parse_message_date(value)
+    except ValueError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(2)
+
+
 @app.command("compose")
 def compose(
     to: Optional[List[str]] = typer.Option(
@@ -2469,6 +2491,17 @@ def compose(
     ),
     attach: Optional[List[str]] = typer.Option(
         None, "--attach", help="Path to a file to attach. Repeatable."
+    ),
+    date: Optional[str] = typer.Option(
+        None,
+        "--date",
+        help=(
+            "ISO 8601 instant for the Date header (e.g. 2019-03-04, "
+            "2019-03-04T05:06:07, 2019-03-04T05:06:07+10:00). Default is "
+            "now; a value without an offset is read as local time. The "
+            "header is the sender's claim: a receiving server timestamps "
+            "arrival itself, and a distant date is a spam-filter signal."
+        ),
     ),
     output: Optional[str] = typer.Option(
         None,
@@ -2574,6 +2607,8 @@ def compose(
         typer.echo("Error: --send and --output are mutually exclusive", err=True)
         raise typer.Exit(2)
 
+    message_date = _parse_date_or_exit(date)
+
     cfg = _load_cfg_or_exit()
 
     if not send_flag and (identity_name or smtp_name or display_name or fcc):
@@ -2629,6 +2664,7 @@ def compose(
                 bcc=bcc_addrs,
                 html_body=body_html,
                 attachments=attach,
+                date=message_date,
             )
             if not mime_message.get("Message-ID"):
                 mime_message["Message-ID"] = email.utils.make_msgid()
@@ -2669,6 +2705,7 @@ def compose(
             bcc=bcc_addrs,
             html_body=body_html,
             attachments=attach,
+            date=message_date,
         )
         if not mime_message.get("Message-ID"):
             mime_message["Message-ID"] = email.utils.make_msgid()
@@ -2737,6 +2774,17 @@ def reply(
         None,
         "--attach",
         help="Path to a file to attach. Repeatable.",
+    ),
+    date: Optional[str] = typer.Option(
+        None,
+        "--date",
+        help=(
+            "ISO 8601 instant for the Date header (e.g. 2019-03-04, "
+            "2019-03-04T05:06:07, 2019-03-04T05:06:07+10:00). Default is "
+            "now; a value without an offset is read as local time. The "
+            "header is the sender's claim: a receiving server timestamps "
+            "arrival itself, and a distant date is a spam-filter signal."
+        ),
     ),
     output: Optional[str] = typer.Option(
         None,
@@ -2827,6 +2875,8 @@ def reply(
     if send_flag and output is not None:
         typer.echo("Error: --send and --output are mutually exclusive", err=True)
         raise typer.Exit(2)
+
+    message_date = _parse_date_or_exit(date)
 
     cfg = _load_cfg_or_exit()
 
@@ -2966,6 +3016,7 @@ def reply(
             bcc=bcc_addresses,
             html_body=body_html,
             attachments=attach,
+            date=message_date,
         )
         if not mime_message.get("Message-ID"):
             mime_message["Message-ID"] = email.utils.make_msgid()

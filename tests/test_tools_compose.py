@@ -392,3 +392,38 @@ class TestComposeMCP:
         assert positional[2] == "S"
         assert positional[3] == "hi"
         assert kwargs["attachments"] == [str(f)]
+
+    @pytest.mark.asyncio
+    async def test_date_string_is_parsed_before_forwarding(self):
+        """The MCP tool takes ISO 8601 text and hands down a datetime."""
+        from datetime import timedelta, timezone
+
+        mcp = MagicMock(spec=FastMCP)
+        stored = {}
+
+        def mock_tool_decorator(**kwargs):
+            def decorator(func):
+                stored[kwargs.get("name", func.__name__)] = func
+                return func
+
+            return decorator
+
+        mcp.tool = mock_tool_decorator
+        imap_client = MagicMock()
+        register_tools(mcp, imap_client)
+        compose_tool = stored["compose"]
+        ctx = MagicMock(spec=Context)
+
+        with patch("courier.tools.get_client_from_context", return_value=imap_client):
+            with patch("courier.smtp_client.compose_and_save_draft") as mock_compose:
+                mock_compose.return_value = {"status": "success", "draft_uid": 1}
+                await compose_tool(
+                    to=["r@example.com"],
+                    body="hi",
+                    ctx=ctx,
+                    date="2019-03-04T05:06:07+10:00",
+                )
+
+        assert mock_compose.call_args.kwargs["date"] == datetime(
+            2019, 3, 4, 5, 6, 7, tzinfo=timezone(timedelta(hours=10))
+        )

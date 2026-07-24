@@ -1302,3 +1302,94 @@ class TestComposeSendCopyRetention:
         assert "sendonly@example.com" in bcc_hdr
         # No IMAP connection ever opened (the identity has no imap).
         make_client_mock.assert_not_called()
+
+
+class TestComposeDate:
+    """``--date`` on compose and reply."""
+
+    @staticmethod
+    def _parent():
+        from courier.models import Email, EmailAddress, EmailContent
+
+        return Email(
+            uid=10,
+            from_=EmailAddress(name="Sender", address="sender@y.com"),
+            to=[EmailAddress(name="", address="primary@x.com")],
+            subject="hi",
+            content=EmailContent(text="body", html=None),
+            message_id="<parent@y.com>",
+        )
+
+    def test_date_reaches_the_header(self, tmp_path):
+        cfg = _cfg()
+        out = tmp_path / "msg.eml"
+        with (
+            patch("courier.__main__.load_config", return_value=cfg),
+            patch("courier.__main__._make_client", return_value=_client()),
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "compose",
+                    "--to",
+                    "alice@y.com",
+                    "--body",
+                    "hi",
+                    "--date",
+                    "2019-03-04T05:06:07+10:00",
+                    "-o",
+                    str(out),
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        raw = out.read_text()
+        assert "Date: Mon, 04 Mar 2019 05:06:07 +1000" in raw
+        assert raw.count("\nDate:") == 1
+
+    def test_unparseable_date_exits_two(self):
+        cfg = _cfg()
+        with patch("courier.__main__.load_config", return_value=cfg):
+            result = runner.invoke(
+                app,
+                [
+                    "compose",
+                    "--to",
+                    "alice@y.com",
+                    "--body",
+                    "hi",
+                    "--date",
+                    "last Tuesday",
+                    "-o",
+                    "-",
+                ],
+            )
+        assert result.exit_code == 2
+        assert "ISO 8601" in (result.output or "") + (result.stderr or "")
+
+    def test_reply_date_reaches_the_header(self, tmp_path):
+        cfg = _cfg()
+        client = _client()
+        client.fetch_email.return_value = self._parent()
+        out = tmp_path / "reply.eml"
+        with (
+            patch("courier.__main__.load_config", return_value=cfg),
+            patch("courier.__main__._make_client", return_value=client),
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "reply",
+                    "-f",
+                    "INBOX",
+                    "-u",
+                    "10",
+                    "--body",
+                    "hi",
+                    "--date",
+                    "2019-03-04T05:06:07+10:00",
+                    "-o",
+                    str(out),
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        assert "Date: Mon, 04 Mar 2019 05:06:07 +1000" in out.read_text()
