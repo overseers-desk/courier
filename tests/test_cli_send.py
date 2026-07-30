@@ -383,6 +383,9 @@ class TestComposeSendModeB:
         assert result.exit_code == 0, result.output
         out = json.loads(result.output)
         assert out["fcc_folder"] is None
+        # The self-copy went by bcc, not fcc; the result reports it so a
+        # null fcc_folder is not read as "no copy".
+        assert out["bcc"] == ["one-off@example.com"]
         make_client_mock.assert_not_called()
         bcc_hdr = str(captured[0][0].get("Bcc", "") or "")
         assert "one-off@example.com" in bcc_hdr

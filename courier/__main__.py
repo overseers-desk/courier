@@ -1013,6 +1013,22 @@ def _refuse_if_no_copy(
     raise typer.Exit(1)
 
 
+def _message_bcc(mime_message: Any) -> List[str]:
+    """Extract the Bcc addresses from the sent message, for the send result.
+
+    The result reports ``fcc_folder`` for a filed Sent copy. A bcc-only
+    identity (``fcc`` disabled, ``bcc`` back to the sender) leaves
+    ``fcc_folder`` null, which reads as no self-copy even though the bcc
+    carried one. Reporting the bcc keeps that copy visible in the result.
+    """
+    import email.utils
+
+    raw = mime_message.get("Bcc")
+    if not raw:
+        return []
+    return [addr for _name, addr in email.utils.getaddresses([str(raw)]) if addr]
+
+
 def _perform_send(
     client: Optional[ImapClient],
     smtp: SmtpConfig,
@@ -1044,7 +1060,7 @@ def _perform_send(
     Returns:
         The standard send-result JSON shape (status, identity, message_ids,
         smtp_response, accepted_recipients, refused_recipients, fcc_folder,
-        fcc_uid). ``status`` is ``"success"``, or ``"partial"`` when the
+        fcc_uid, bcc). ``status`` is ``"success"``, or ``"partial"`` when the
         server refused some recipients at RCPT TO or the FCC APPEND
         failed; ``fcc_error`` is present only in the FCC-failure case.
     """
@@ -1109,6 +1125,7 @@ def _perform_send(
         "refused_recipients": refused,
         "fcc_folder": sent["fcc_folder"],
         "fcc_uid": sent["fcc_uid"],
+        "bcc": _message_bcc(mime_message),
     }
     if sent["fcc_error"] is not None:
         result["fcc_error"] = sent["fcc_error"]
