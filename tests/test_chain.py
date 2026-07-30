@@ -243,6 +243,17 @@ class TestSplitChainArgv:
         assert s is not None
         assert "--imap=acct1" in s[0]
 
+    def test_no_cache_extracted_from_any_position(self):
+        # The format-first single-verb form routes through the chain
+        # executor; --no-cache must reach globals from there, post-verb too.
+        s = _split_chain_argv(
+            ["--imap", "x", "--format", "text", "search", "foo", "--no-cache"]
+        )
+        assert s is not None
+        global_argv, verbs, _, _ = s
+        assert "--no-cache" in global_argv
+        assert verbs == [("search", ["foo"])]
+
     def test_repeated_imap(self):
         s = _split_chain_argv(
             ["--imap", "acct1", "--imap", "acct2", "search", "foo", "search", "bar"]
@@ -544,6 +555,47 @@ class TestRunChain:
         assert len(data) == 2
         assert any("foo" in k for k in data)
         assert any("bar" in k for k in data)
+
+    def test_global_no_cache_reaches_search_call(self, capsys):
+        _apply_global_flags(["--no-cache"])
+        captured_clients = []
+
+        def factory(name):
+            client = MagicMock()
+            client.search_emails.return_value = _fake_search_result()
+            captured_clients.append(client)
+            return client
+
+        with (
+            _patch_config(),
+            patch("courier.__main__._make_client_soft", side_effect=factory),
+        ):
+            code = _run_chain([("search", ["foo"])], "json")
+        capsys.readouterr()
+        _apply_global_flags([])
+        assert code == 0
+        kwargs = captured_clients[0].search_emails.call_args.kwargs
+        assert kwargs["no_cache"] is True
+
+    def test_global_flags_without_no_cache_leave_it_off(self, capsys):
+        _apply_global_flags([])
+        captured_clients = []
+
+        def factory(name):
+            client = MagicMock()
+            client.search_emails.return_value = _fake_search_result()
+            captured_clients.append(client)
+            return client
+
+        with (
+            _patch_config(),
+            patch("courier.__main__._make_client_soft", side_effect=factory),
+        ):
+            code = _run_chain([("search", ["foo"])], "json")
+        capsys.readouterr()
+        assert code == 0
+        kwargs = captured_clients[0].search_emails.call_args.kwargs
+        assert kwargs["no_cache"] is False
 
     def test_mixed_search_and_read(self, capsys):
         _apply_global_flags([])

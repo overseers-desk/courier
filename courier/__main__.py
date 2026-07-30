@@ -66,6 +66,7 @@ app = typer.Typer(
 _config_path: Optional[str] = None
 _imap_names: List[str] = []
 _all_imap: bool = False
+_no_cache: bool = False
 
 # Process-wide MuBackend instance, lazily built when the configured
 # [imap.*] blocks opt into the local cache.  Shared across ImapClient
@@ -122,6 +123,11 @@ def _global_options(
     verbose: bool = typer.Option(
         False, "--verbose", "-v", help="Enable verbose logging."
     ),
+    no_cache: bool = typer.Option(
+        False,
+        "--no-cache",
+        help="Bypass the local cache and use live IMAP for every operation.",
+    ),
     version: bool = typer.Option(
         False,
         "--version",
@@ -130,10 +136,11 @@ def _global_options(
         help="Show version and exit.",
     ),
 ) -> None:
-    global _config_path, _imap_names, _all_imap
+    global _config_path, _imap_names, _all_imap, _no_cache
     _config_path = config
     _imap_names = list(imap_names)
     _all_imap = all_imap
+    _no_cache = no_cache
     level = logging.DEBUG if verbose else logging.WARNING
     setup_logging(level)
     # WORLD_AS_OF hard-fails at startup: a bound the tool cannot parse
@@ -389,14 +396,14 @@ def _run_op(client: ImapClient, subcmd: str, kwargs: Dict[str, Any]) -> Dict[str
             kwargs["query"],
             folder=kwargs.get("folder"),
             limit=kwargs.get("limit", 50),
-            no_cache=kwargs.get("no_cache", False),
+            no_cache=kwargs.get("no_cache", False) or _no_cache,
         )
     if subcmd == "read":
         return _fetch_email_result(
             client,
             kwargs["folder"],
             kwargs["uid"],
-            no_cache=kwargs.get("no_cache", False),
+            no_cache=kwargs.get("no_cache", False) or _no_cache,
         )
     return {"error": f"unknown subcommand '{subcmd}'"}
 
@@ -549,7 +556,7 @@ def _parse_read_args(
 _CHAINABLE_VERBS = {"search", "read"}
 
 _GLOBAL_FLAGS_VALUE = {"-c", "--config", "--imap"}
-_GLOBAL_FLAGS_BOOL = {"-A", "--all-imap", "-v", "--verbose", "--version"}
+_GLOBAL_FLAGS_BOOL = {"-A", "--all-imap", "-v", "--verbose", "--version", "--no-cache"}
 
 _VERB_FLAGS_VALUE: Dict[str, set] = {
     "search": {"-f", "--folder", "-n", "--limit", "-q", "--query"},
@@ -725,11 +732,12 @@ def _apply_global_flags(global_argv: List[str]) -> None:
     codebase. Honours ``--version`` by printing and exiting before any
     chain work begins.
     """
-    global _config_path, _imap_names, _all_imap
+    global _config_path, _imap_names, _all_imap, _no_cache
     cfg_path: Optional[str] = None
     imap_names: List[str] = []
     all_imap = False
     verbose = False
+    no_cache = False
     i = 0
     while i < len(global_argv):
         tok = global_argv[i]
@@ -753,6 +761,8 @@ def _apply_global_flags(global_argv: List[str]) -> None:
             all_imap = True
         elif tok in ("-v", "--verbose"):
             verbose = True
+        elif tok == "--no-cache":
+            no_cache = True
         elif tok == "--version":
             typer.echo(f"courier {__version__}")
             raise SystemExit(0)
@@ -760,6 +770,7 @@ def _apply_global_flags(global_argv: List[str]) -> None:
     _config_path = cfg_path
     _imap_names = imap_names
     _all_imap = all_imap
+    _no_cache = no_cache
     level = logging.DEBUG if verbose else logging.WARNING
     setup_logging(level)
     # Same WORLD_AS_OF hard-failure as _global_options: the chain branch
@@ -1985,7 +1996,9 @@ def read(
     name = _resolve_single_imap_name()
     client = _make_client()
     try:
-        result = _fetch_email_result(client, folder, uid, no_cache=no_cache)
+        result = _fetch_email_result(
+            client, folder, uid, no_cache=no_cache or _no_cache
+        )
         if "error" in result:
             typer.echo(result["error"], err=True)
             raise typer.Exit(1)
