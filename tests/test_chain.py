@@ -22,6 +22,7 @@ from typer.testing import CliRunner
 from courier.__main__ import (
     _apply_global_flags,
     _build_op_key,
+    _chain_exit_code,
     _empty_result_for_subcmd,
     _execute_chain,
     _parse_read_args,
@@ -1023,3 +1024,41 @@ class TestChainTextFormatFailures:
         text = _format_chain_text(result)
         assert "folder failed" in text
         assert "read timeout" in text
+
+
+class TestChainExitCodeReadShape:
+    """A fetched message is a hit even though ``read`` carries no ``results``.
+
+    ``read`` values in the chain output are the message dict itself
+    (``{"uid": ..., "body": ...}``); the exit code must not report a
+    successful fetch as a clean zero.
+    """
+
+    MSG = {"uid": 1, "folder": "INBOX", "from": "a@x.com", "body": "hi"}
+
+    def test_read_message_is_a_hit(self):
+        result = {"read -f INBOX --uid 1": {"acct": dict(self.MSG)}}
+        assert _chain_exit_code(result) == 0
+
+    def test_read_not_found_is_a_failure(self):
+        result = {
+            "read -f INBOX --uid 9": {
+                "acct": {"error": "Email UID 9 not found in INBOX"}
+            }
+        }
+        assert _chain_exit_code(result) == 2
+
+    def test_read_hit_beside_empty_search_exits_0(self):
+        result = {
+            "search foo": {"acct": {"results": []}},
+            "read -f INBOX --uid 1": {"acct": dict(self.MSG)},
+        }
+        assert _chain_exit_code(result) == 0
+
+    def test_connection_failure_still_exits_2(self):
+        result = {"read -f INBOX --uid 1": {"acct": {"error": "connection failed"}}}
+        assert _chain_exit_code(result) == 2
+
+    def test_empty_search_alone_still_exits_1(self):
+        result = {"search foo": {"acct": {"results": []}}}
+        assert _chain_exit_code(result) == 1

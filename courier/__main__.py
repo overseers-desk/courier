@@ -853,6 +853,10 @@ def _chain_exit_code(result: Dict[str, Dict[str, Any]]) -> int:
     query on some backend). Zero-with-failures must never impersonate
     a clean zero, because the primary caller reads exit 1 as evidence
     of absence.
+
+    A hit takes two shapes: ``search`` carries a non-empty ``results``
+    list, while ``read`` carries the fetched message itself, keyed by
+    ``uid``. A fetched message is a hit, so a successful read exits 0.
     """
     values = [
         v
@@ -860,10 +864,19 @@ def _chain_exit_code(result: Dict[str, Dict[str, Any]]) -> int:
         for v in per_block.values()
         if isinstance(v, dict)
     ]
-    if any(v.get("results") for v in values):
+    if any(_is_hit(v) for v in values):
         return 0
     failed = any("error" in v or v.get("folders_failed") for v in values)
     return 2 if failed else 1
+
+
+def _is_hit(value: Dict[str, Any]) -> bool:
+    """True when one block's result for one operation found something."""
+    if "error" in value:
+        return False
+    if value.get("results"):
+        return True
+    return "uid" in value
 
 
 def _out(data: object) -> None:
