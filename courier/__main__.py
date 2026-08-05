@@ -616,12 +616,12 @@ def _split_chain_argv(
 
     Returns ``(global_argv, [(verb, verb_tokens), ...], output_format,
     chain_defaults)`` when two or more chainable verbs are found at command
-    position, or when a single chainable verb is preceded by a top-level
-    ``--format/-F`` (typer's top-level callback has no ``--format``, so that
-    lone case must run through the chain executor instead of falling back);
-    ``None`` otherwise so the caller can fall back to typer dispatch. A
-    ``--format`` that trails a single verb stays with typer, whose per-command
-    option handles it.
+    position, or when a single chainable verb carries a ``--format/-F`` at
+    any argv position; ``None`` otherwise so the caller can fall back to
+    typer dispatch. ``--format`` is a chain-level option: typer's top-level
+    callback has no ``--format`` and ``read`` has no per-command one, so a
+    lone verb carrying the flag runs through the chain executor, which
+    renders every format for every verb.
 
     Walks argv left to right in two passes. The first pass strips global
     flags and the chain-level ``--format/-F`` option. Trailing chain-level
@@ -632,7 +632,7 @@ def _split_chain_argv(
     the chain.
     """
     out_format = "json"
-    format_seen_pre = False
+    format_seen = False
     globals_: List[str] = []
     rest: List[str] = []
 
@@ -664,14 +664,12 @@ def _split_chain_argv(
             continue
         if tok in ("--format", "-F") and i + 1 < len(argv):
             out_format = argv[i + 1]
-            if not rest:
-                format_seen_pre = True
+            format_seen = True
             i += 2
             continue
         if tok.startswith("--format=") or tok.startswith("-F="):
             out_format = tok.split("=", 1)[1]
-            if not rest:
-                format_seen_pre = True
+            format_seen = True
             i += 1
             continue
         rest.append(tok)
@@ -696,10 +694,12 @@ def _split_chain_argv(
             continue
         if tok in ("--format", "-F") and j + 1 < len(rest):
             out_format = rest[j + 1]
+            format_seen = True
             j += 2
             continue
         if tok.startswith("--format=") or tok.startswith("-F="):
             out_format = tok.split("=", 1)[1]
+            format_seen = True
             j += 1
             continue
         if cur_verb is not None and tok in _VERB_FLAGS_VALUE.get(cur_verb, set()):
@@ -719,7 +719,7 @@ def _split_chain_argv(
     if cur_verb is not None:
         verbs.append((cur_verb, cur_args))
 
-    if len(verbs) < 2 and not format_seen_pre:
+    if len(verbs) < 2 and not format_seen:
         return None
     return (globals_, verbs, out_format, chain_defaults)
 
@@ -936,6 +936,10 @@ def _refuse_empty_body(body: str, allow_empty_body: bool) -> None:
     so the recipient gets a blank email and the sender has to write a
     second one explaining the first. ``--allow-empty-body`` carries the
     deliberate case (an attachment-only send, a read receipt).
+
+    Drafting is refused on the same terms as sending. A draft is written
+    to be sent, so the accident is the same one caught a step earlier,
+    where it costs a retry rather than a second email.
     """
     if allow_empty_body or body.strip():
         return
