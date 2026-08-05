@@ -272,15 +272,11 @@ class TestSplitChainArgv:
         assert s is not None
         assert s[2] == "text"
 
-    def test_only_one_verb_returns_none_even_with_format(self):
-        # A --format that *trails* a single verb stays with typer, whose
-        # per-command --format option handles it.
-        assert _split_chain_argv(["search", "foo", "--format", "json"]) is None
-
     def test_pre_verb_format_routes_single_search_through_chain(self):
         # A --format *ahead* of a single verb must route through the chain
         # executor: typer's top-level callback has no --format, so falling
-        # back would error "No such option: --format".
+        # back would error "No such option: --format". A trailing one routes
+        # the same way; see TestFormatFlagAnyPosition.
         s = _split_chain_argv(["--format", "json", "search", "foo"])
         assert s is not None
         assert s[1] == [("search", ["foo"])]
@@ -1062,3 +1058,30 @@ class TestChainExitCodeReadShape:
     def test_empty_search_alone_still_exits_1(self):
         result = {"search foo": {"acct": {"results": []}}}
         assert _chain_exit_code(result) == 1
+
+
+class TestFormatFlagAnyPosition:
+    """``-F/--format`` routes a lone verb through the chain executor from
+    any argv position, not only before the verb.
+
+    Typer's per-verb commands other than ``search`` have no ``--format``,
+    so the pre-fix behaviour was "No such option: -F" whenever the flag
+    trailed the verb.
+    """
+
+    def test_lone_read_with_trailing_format_chains(self):
+        s = _split_chain_argv(["read", "-f", "INBOX", "-u", "1", "-F", "json"])
+        assert s is not None
+        _, verbs, out_format, _ = s
+        assert verbs == [("read", ["-f", "INBOX", "-u", "1"])]
+        assert out_format == "json"
+
+    def test_lone_search_with_trailing_format_chains(self):
+        s = _split_chain_argv(["search", "foo", "--format", "text"])
+        assert s is not None
+        _, verbs, out_format, _ = s
+        assert verbs == [("search", ["foo"])]
+        assert out_format == "text"
+
+    def test_lone_verb_without_format_still_falls_to_typer(self):
+        assert _split_chain_argv(["read", "-f", "INBOX", "-u", "1"]) is None
