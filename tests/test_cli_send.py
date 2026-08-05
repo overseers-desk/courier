@@ -1396,3 +1396,92 @@ class TestComposeDate:
             )
         assert result.exit_code == 0, result.output
         assert "Date: Mon, 04 Mar 2019 05:06:07 +1000" in out.read_text()
+
+
+class TestEmptyBodyGuard:
+    """An empty --body is refused unless --allow-empty-body is passed.
+
+    The observed accident: ``--body "$(cat file)"`` with a missing file
+    substitutes an empty string, and the blank email goes out to a real
+    recipient. The guard fires before config load, so no patching of the
+    network layer is needed for the refusal cases.
+    """
+
+    def test_compose_send_empty_body_refused(self):
+        with patch("courier.smtp_transport.send") as send_mock:
+            result = runner.invoke(
+                app,
+                [
+                    "compose",
+                    "--to",
+                    "alice@y.com",
+                    "--body",
+                    "",
+                    "--send",
+                    "--identity",
+                    "alias",
+                ],
+            )
+        assert result.exit_code == 2
+        send_mock.assert_not_called()
+        err = result.output + (result.stderr or "")
+        assert "--body is empty" in err
+        assert "--allow-empty-body" in err
+
+    def test_compose_whitespace_body_refused(self):
+        result = runner.invoke(
+            app,
+            ["compose", "--to", "alice@y.com", "--body", " \n\t "],
+        )
+        assert result.exit_code == 2
+        err = result.output + (result.stderr or "")
+        assert "--body is empty" in err
+
+    def test_compose_draft_empty_body_refused(self):
+        result = runner.invoke(
+            app,
+            ["compose", "--to", "alice@y.com", "--body", ""],
+        )
+        assert result.exit_code == 2
+
+    def test_allow_empty_body_sends(self):
+        cfg = _cfg()
+        client = _client()
+
+        def fake_send(msg, smtp_cfg, transport=None):
+            return (msg.as_bytes(), _result())
+
+        with (
+            patch("courier.__main__.load_config", return_value=cfg),
+            patch("courier.__main__._make_client", return_value=client),
+            patch("courier.smtp_transport.send", side_effect=fake_send),
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "compose",
+                    "--to",
+                    "alice@y.com",
+                    "--body",
+                    "",
+                    "--allow-empty-body",
+                    "--subject",
+                    "T",
+                    "--send",
+                    "--identity",
+                    "alias",
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        out = json.loads(result.output)
+        assert out["status"] == "success"
+
+    def test_reply_empty_body_refused(self):
+        result = runner.invoke(
+            app,
+            ["reply", "-f", "INBOX", "-u", "10", "--body", ""],
+        )
+        assert result.exit_code == 2
+        err = result.output + (result.stderr or "")
+        assert "--body is empty" in err
+        assert "--allow-empty-body" in err

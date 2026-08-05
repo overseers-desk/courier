@@ -913,6 +913,28 @@ def _emit_mutation_result(result: Dict[str, Any], folder: str, **extra: Any) -> 
         raise typer.Exit(1)
 
 
+def _refuse_empty_body(body: str, allow_empty_body: bool) -> None:
+    """Exit 2 when ``--body`` carries nothing and the override is absent.
+
+    A blank body is far more often an accident than an intention: the
+    common shape is ``--body "$(cat draft.txt)"`` where the file is
+    missing or the heredoc landed elsewhere, and the shell substitutes
+    an empty string with no error of its own. The message still sends,
+    so the recipient gets a blank email and the sender has to write a
+    second one explaining the first. ``--allow-empty-body`` carries the
+    deliberate case (an attachment-only send, a read receipt).
+    """
+    if allow_empty_body or body.strip():
+        return
+    typer.echo(
+        "Error: --body is empty. A blank body is usually a failed shell "
+        "substitution (a missing file behind $(cat ...)), so the send is "
+        "refused. Pass --allow-empty-body to send a message with no text.",
+        err=True,
+    )
+    raise typer.Exit(2)
+
+
 def _email_only(s: str) -> str:
     """Strip display name from ``Display Name <addr@host>``."""
     if "<" in s and ">" in s:
@@ -2501,7 +2523,12 @@ def compose(
             "distribution list with no visible recipient."
         ),
     ),
-    body: str = typer.Option(..., "--body", "-b", help="Plain-text body."),
+    body: str = typer.Option(
+        ...,
+        "--body",
+        "-b",
+        help=("Plain-text body. An empty body is refused (see " "--allow-empty-body)."),
+    ),
     subject: str = typer.Option("", "--subject", "-s", help="Subject line."),
     cc: Optional[List[str]] = typer.Option(None, "--cc", help="CC recipients."),
     bcc: Optional[List[str]] = typer.Option(
@@ -2607,6 +2634,14 @@ def compose(
             "Default is to refuse, since the user would have no record."
         ),
     ),
+    allow_empty_body: bool = typer.Option(
+        False,
+        "--allow-empty-body",
+        help=(
+            "Permit a blank --body. Default is to refuse, since an empty "
+            "body is usually a failed shell substitution."
+        ),
+    ),
 ) -> None:
     """Compose a new email.
 
@@ -2632,6 +2667,8 @@ def compose(
             err=True,
         )
         raise typer.Exit(2)
+
+    _refuse_empty_body(body, allow_empty_body)
 
     if send_flag and output is not None:
         typer.echo("Error: --send and --output are mutually exclusive", err=True)
@@ -2881,6 +2918,14 @@ def reply(
             "Default is to refuse, since the user would have no record."
         ),
     ),
+    allow_empty_body: bool = typer.Option(
+        False,
+        "--allow-empty-body",
+        help=(
+            "Permit a blank --body. Default is to refuse, since an empty "
+            "body is usually a failed shell substitution."
+        ),
+    ),
 ) -> None:
     """Draft or send a reply to an email.
 
@@ -2901,6 +2946,8 @@ def reply(
     )
     from courier.models import EmailAddress
     from courier.smtp_client import create_mime
+
+    _refuse_empty_body(body, allow_empty_body)
 
     if send_flag and output is not None:
         typer.echo("Error: --send and --output are mutually exclusive", err=True)
