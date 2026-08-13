@@ -75,6 +75,28 @@ def _cfg_with_relay() -> CourierConfig:
     return cfg
 
 
+def _cfg_with_gmail() -> CourierConfig:
+    """Adds a Gmail-hosted identity with no fcc/bcc and save_sent="auto"."""
+    cfg = _cfg()
+    cfg.imap_blocks["gacct"] = ImapBlock(
+        host="imap.gmail.com",
+        port=993,
+        username="primary@gmail.com",
+        password="p",
+        default_smtp="gsmtp",
+    )
+    cfg.identities["gprimary"] = Identity(
+        imap="gacct", address="primary@gmail.com", name="Primary"
+    )
+    cfg.smtp_blocks["gsmtp"] = SmtpConfig(
+        host="smtp.gmail.com",
+        port=465,
+        username="primary@gmail.com",
+        password="p",
+    )
+    return cfg
+
+
 def _result() -> dict:
     return {
         "message_id_local": "<x@local>",
@@ -1182,6 +1204,38 @@ class TestComposeSendCopyRetention:
         send_mock.assert_not_called()
         err = result.output + (result.stderr or "")
         assert "--allow-no-copy" in err
+
+    def test_gmail_smtp_no_fcc_no_bcc_sends_without_allow_no_copy(self):
+        """A Gmail-hosted identity with no fcc and no self-bcc still sends
+        without --allow-no-copy: Gmail auto-files the Sent copy server-side,
+        the same convention save_sent="auto" already assumes."""
+        cfg = _cfg_with_gmail()
+        with (
+            patch("courier.__main__.load_config", return_value=cfg),
+            patch("courier.__main__._make_client") as make_client_mock,
+            patch(
+                "courier.smtp_transport.send",
+                return_value=(b"raw", _result()),
+            ) as send_mock,
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "compose",
+                    "--to",
+                    "alice@y.com",
+                    "--body",
+                    "hi",
+                    "--send",
+                    "--identity",
+                    "gprimary",
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        assert send_mock.called
+        out = json.loads(result.output)
+        assert out["fcc_folder"] is None
+        make_client_mock.assert_not_called()
 
     def test_identity_bcc_does_not_suppress_fcc(self):
         """FCC and BCC are independent: an identity that BCCs itself and

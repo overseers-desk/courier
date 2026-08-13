@@ -1033,16 +1033,19 @@ def _refuse_if_no_copy(
     bcc: Optional[List[str]],
     sender_addr: str,
     allow_no_copy: bool,
+    smtp: Optional[SmtpConfig] = None,
 ) -> None:
     """Refuse the send if no copy of the message will be retained.
 
-    A copy is retained iff the FCC step will run, or the BCC list
-    includes the sender's own address. A BCC addressed only to third
-    parties (e.g. an auditor) does not count as a self-copy: the user
-    still has no record. Pass ``--allow-no-copy`` to override (e.g.
-    throwaway sends through a relay that archives independently).
+    A copy is retained iff the FCC step will run, the BCC list includes
+    the sender's own address, or the SMTP host is Gmail, which auto-files
+    outgoing mail into Sent server-side regardless of whether courier's
+    own FCC step ran. A BCC addressed only to third parties (e.g. an
+    auditor) does not count as a self-copy: the user still has no
+    record. Pass ``--allow-no-copy`` to override (e.g. throwaway sends
+    through a relay that archives independently).
     """
-    if will_fcc or allow_no_copy:
+    if will_fcc or allow_no_copy or (smtp is not None and smtp.is_gmail):
         return
     if bcc:
         from courier.models import EmailAddress
@@ -2726,6 +2729,7 @@ def compose(
             bcc=effective_bcc,
             sender_addr=identity.address,
             allow_no_copy=allow_no_copy,
+            smtp=smtp_resolved,
         )
         client = (
             _make_client(imap_override=fcc_imap) if (will_fcc and fcc_imap) else None
@@ -3068,6 +3072,7 @@ def reply(
                 bcc=effective_bcc,
                 sender_addr=identity.address,
                 allow_no_copy=allow_no_copy,
+                smtp=smtp_resolved,
             )
             if not will_fcc:
                 send_client = None
@@ -3370,6 +3375,7 @@ def send_draft(
             bcc=envelope_bcc,
             sender_addr=identity.address,
             allow_no_copy=allow_no_copy,
+            smtp=smtp_resolved,
         )
         if not will_fcc:
             send_client = None

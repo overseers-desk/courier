@@ -248,6 +248,11 @@ class SmtpConfig:
             rewrite_msgid_from_response=rewrite,
         )
 
+    @property
+    def is_gmail(self) -> bool:
+        """Whether this SMTP block's host is Gmail (server auto-files Sent)."""
+        return self.host.endswith("gmail.com") or self.host.endswith("googlemail.com")
+
     def resolve_save_sent(self) -> bool:
         """Resolve ``"auto"`` save_sent to a concrete bool based on host.
 
@@ -255,9 +260,7 @@ class SmtpConfig:
         true for everything else (courier must FCC manually).
         """
         if self.save_sent == "auto":
-            return not (
-                self.host.endswith("gmail.com") or self.host.endswith("googlemail.com")
-            )
+            return not self.is_gmail
         return bool(self.save_sent)
 
 
