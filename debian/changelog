@@ -1,3 +1,12 @@
+courier (1.1.19) unstable; urgency=medium
+
+  * The Claude Code command installs into the configuration directory the
+    session actually reads: $CLAUDE_CONFIG_DIR when it is set, ~/.claude
+    otherwise. A machine with several configuration trees no longer takes
+    the install in one and leaves the others without it.
+
+ -- Weiwu Zhang <a@colourful.land>  Thu, 20 Aug 2026 00:00:00 +0000
+
 courier (1.1.18) unstable; urgency=medium
 
   * Gmail-style search translates faithfully to plain IMAP and the local

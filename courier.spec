@@ -1,5 +1,5 @@
 Name:           courier
-Version:        1.1.18
+Version:        1.1.19
 Release:        1%{?dist}
 Summary:        Email toolkit for AI assistants and command-line scripting
 License:        MIT
@@ -67,6 +67,9 @@ install -Dpm 644 debian/courier.1 %{buildroot}%{_mandir}/man1/courier.1
 %{_mandir}/man1/courier.1*
 
 %changelog
+* Thu Aug 20 2026 Weiwu Zhang <a@colourful.land> - 1.1.19-1
+- The Claude Code command installs into the configuration directory the session actually reads: $CLAUDE_CONFIG_DIR when it is set, ~/.claude otherwise. A machine with several configuration trees no longer takes the install in one and leaves the others without it.
+
 * Wed Jul 15 2026 Weiwu Zhang <a@colourful.land> - 1.1.18-1
 - Gmail-style search translates faithfully to plain IMAP and the local cache: parentheses group, multi-term OR nests, and operators a backend cannot honour refuse with a clear message instead of silently searching for the literal text and returning nothing.
 - Search failures enter the result: a folder that errors or times out is listed in folders_failed, a dead connection reports an error instead of an empty mailbox, and exit codes separate hits, a genuine empty, and a failure.
