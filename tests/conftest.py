@@ -86,6 +86,17 @@ def pytest_addoption(parser):
 
 
 @pytest.fixture(autouse=True)
+def _unset_claude_config_dir(monkeypatch):
+    """Clear ``CLAUDE_CONFIG_DIR`` so the installer cannot reach a real directory.
+
+    The installer writes into the directory that variable names. A developer
+    running the suite inside a Claude Code session carries it in the
+    environment, which would point the tests at the live configuration.
+    """
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _silence_claude_registration_nudge(monkeypatch):
     """Pin the install-claude-command nudge to silent for all tests.
 

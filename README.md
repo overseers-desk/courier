@@ -181,7 +181,7 @@ Run `courier --help` for the full command list.
 
 ## Claude Code (terminal-based Claude)
 
-Run `courier install-claude-command` once after installation. This writes `~/.claude/commands/courier.md`, which tells Claude Code how to use the courier CLI for email tasks. After that, prompts like "find the booking confirmation from last week" or "reply to Alice's message" route through courier automatically.
+Run `courier install-claude-command` once after installation. This writes `courier.md` into the commands directory of the Claude Code configuration tree your session reads (`$CLAUDE_CONFIG_DIR` when set, `~/.claude` otherwise), which tells Claude Code how to use the courier CLI for email tasks. After that, prompts like "find the booking confirmation from last week" or "reply to Alice's message" route through courier automatically.
 
 ## MCP server
 

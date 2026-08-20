@@ -157,6 +157,6 @@ To register it, run:
 courier install-claude-command
 ```
 
-This writes `~/.claude/commands/courier.md`. The file is bundled inside the courier package, so the same command works regardless of how courier was installed (Homebrew, `.deb`, `.rpm`, `pip`, or `uv`).
+This writes `courier.md` into the commands directory of the configuration tree the session reads: `$CLAUDE_CONFIG_DIR` when set, `~/.claude` otherwise. A machine carrying several such trees needs the install run once per tree. The file is bundled inside the courier package, so the same command works regardless of how courier was installed (Homebrew, `.deb`, `.rpm`, `pip`, or `uv`).
 
-`courier status` will note if `~/.claude` is present but courier is not yet registered.
+`courier status` will note if that directory is present but courier is not yet registered.

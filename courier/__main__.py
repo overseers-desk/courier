@@ -1563,14 +1563,26 @@ def list_cmd() -> None:
         print(f"warn: {w}", file=sys.stderr)
 
 
+def _claude_dir() -> Path:
+    """Return the Claude Code configuration directory this session reads.
+
+    A session started with ``CLAUDE_CONFIG_DIR`` set keeps its commands under
+    that directory, so the command file belongs there; the default is
+    ``~/.claude``. One machine commonly carries several such directories, and
+    an install into the wrong one is invisible to the session that needed it.
+    """
+    configured = os.environ.get("CLAUDE_CONFIG_DIR")
+    return Path(configured).expanduser() if configured else Path.home() / ".claude"
+
+
 def _installed_command_version() -> Optional[str]:
-    """Return the version stamped in ~/.claude/commands/courier.md, or None.
+    """Return the version stamped in the installed command file, or None.
 
     Reads the ``version:`` frontmatter field written by ``install-claude-command``.
     Returns None when the file is absent or carries no version field (pre-versioning
     installs).
     """
-    command_file = Path.home() / ".claude" / "commands" / "courier.md"
+    command_file = _claude_dir() / "commands" / "courier.md"
     if not command_file.exists():
         return None
     for line in command_file.read_text().splitlines():
@@ -1580,12 +1592,12 @@ def _installed_command_version() -> Optional[str]:
 
 
 def _claude_registration_status() -> Optional[str]:
-    """Return a nudge string if ~/.claude exists but courier is not registered or is stale.
+    """Return a nudge string when courier is unregistered or stale in Claude Code.
 
-    Returns None when ~/.claude is absent (user has no Claude Code install)
-    or when courier is already registered at the current version.
+    Returns None when the configuration directory is absent (user has no Claude
+    Code install) or when courier is already registered at the current version.
     """
-    claude_dir = Path.home() / ".claude"
+    claude_dir = _claude_dir()
     if not claude_dir.exists():
         return None
     command_file = claude_dir / "commands" / "courier.md"
@@ -1652,7 +1664,7 @@ def install_claude_command(
         "(for non-interactive callers such as Claude Code sessions).",
     ),
 ) -> None:
-    """Copy the Claude Code command file into ~/.claude/commands/courier.md.
+    """Copy the Claude Code command file into the commands directory.
 
     After running this command, Claude Code will recognise the ``courier``
     skill and route email-related requests through the courier CLI.
@@ -1661,7 +1673,7 @@ def install_claude_command(
     """
     from courier._claude_command import render
 
-    dest_dir = Path.home() / ".claude" / "commands"
+    dest_dir = _claude_dir() / "commands"
     dest = dest_dir / "courier.md"
     dest_dir.mkdir(parents=True, exist_ok=True)
 

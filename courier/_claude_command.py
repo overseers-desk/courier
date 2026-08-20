@@ -316,7 +316,7 @@ def render(version: str) -> str:
         version: The courier version string to record in the installed copy.
 
     Returns:
-        The text written to ``~/.claude/commands/courier.md``. The
+        The text written to the installed command file. The
         ``version:`` line is inserted as the first field inside the YAML
         frontmatter block when the body opens with ``---\\n``; otherwise
         the body is returned unchanged.

@@ -1,7 +1,8 @@
 """Tests for the ``courier install-claude-command`` installer.
 
-The installer writes the Claude Code command file to
-``~/.claude/commands/courier.md``. When an older version is already
+The installer writes the Claude Code command file into the commands
+directory of the configuration tree the session reads, ``CLAUDE_CONFIG_DIR``
+when set and ``~/.claude`` otherwise. When an older version is already
 present it prompts before replacing, except under ``--yes`` so that
 non-interactive callers (Claude Code sessions, which cannot answer a
 stdin prompt) can update without blocking.
@@ -61,3 +62,17 @@ def test_already_current_is_a_noop(tmp_path, monkeypatch):
     result = runner.invoke(app, ["install-claude-command"])
     assert result.exit_code == 0
     assert f"Already at {__version__}" in result.stdout
+
+
+def test_install_follows_claude_config_dir(tmp_path, monkeypatch):
+    """A session with CLAUDE_CONFIG_DIR set gets the command in that tree."""
+    home = tmp_path / "home"
+    configured = tmp_path / "elsewhere"
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(configured))
+    result = runner.invoke(app, ["install-claude-command"])
+    assert result.exit_code == 0
+    assert f"version: {__version__}" in (
+        configured / "commands" / "courier.md"
+    ).read_text()
+    assert not (home / ".claude").exists()
