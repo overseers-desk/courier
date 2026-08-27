@@ -35,7 +35,7 @@ When a solution genuinely requires a rule (e.g. "avoid `2>&1` in examples"), the
 
 **Failure case.** In a case where the user asked "find emails from Alice about hotel booking and from Bob about the contract", the AI failed to use the chain shape because it ran the two questions as separate `courier` invocations, paying two IMAP logins per IMAP block (Gmail caps simultaneous IMAP connections per account). The same fan-out pattern surfaces with `read`, `attachments`, and serial `search`+`read`.
 
-**Solution.** Every code example in the source chains at least two verbs. Section titles are plural ("Searches", "Reads") so the operation reads as naturally plural. The plural shape is the only one the reader encounters; the AI absorbs the chained form from the only pattern present.
+**Solution.** The Searches and Reads examples chain at least two verbs, so batching is the only shape the reader meets for the verbs that batch. The Attachments and Sending blocks list their verbs on separate lines because those are alternatives to choose between, not a fan-out to collapse. Section titles are plural where the operation is ("Searches", "Reads", "Attachments").
 
 ### A2. Fan-out across processes for N items
 
@@ -63,7 +63,7 @@ When a solution genuinely requires a rule (e.g. "avoid `2>&1` in examples"), the
 
 **Failure case.** In a case where the user asked "find Alice's email about the contract", the AI failed to retrieve any results because it synthesised `from:alicedoe@gmail.com` from the name. The address was wrong, the search returned nothing, and the AI reported "no results found" until the user pushed back with the real address.
 
-**Solution.** The frontmatter description routes address lookup to the tool in trigger form ("look up a contact's address") rather than asserting a rule; the body carries the explicit steer once: "Use the words from the user's request (a name they mentioned, a domain, a subject phrase); an AI-constructed address often does not match the real one, which sits in each hit's `from`." The example query in the Searches section uses a bare name (`from:alice`) rather than a synthesised full address; the pattern in the example does the work before the prose rule is reached.
+**Solution.** The frontmatter description routes address lookup to the tool in trigger form ("look up a contact's address") rather than asserting a rule; the body carries the explicit steer once: "Use the words from the user's request (a name they mentioned, a domain, a subject phrase); an AI-constructed address often misses." The example query in the Searches section uses a bare name (`from:alice`) rather than a synthesised full address; the pattern in the example does the work before the prose rule is reached.
 
 ### B2. Surface-disjoint identifiers for one entity
 
@@ -99,7 +99,7 @@ When a solution genuinely requires a rule (e.g. "avoid `2>&1` in examples"), the
 
 **Failure case.** In a case where the user asked "what are the last 5 emails from Alice", the AI failed to bound the result to the recent five because it ran a search without `-n`, getting up to 10 hits in unspecified order, then either reported too many or picked the wrong ones because it expected ascending date.
 
-**Solution.** The Searches prose states "Results sort newest-first; `-n` limits per IMAP block (default 10)" in one sentence so the AI has both facts together without needing `--help` for a routine request. The first example uses `-n 5` to ground the flag in a typical request.
+**Solution.** The Searches prose states "Results sort newest-first; trailing `-n` peels off as a chain default (default 50) and applies to every `search` that doesn't set its own", so the order and the bound arrive together without a trip to `--help` on a routine request. No example sets `-n`: the examples bound the *reported* set at the `jq` step instead, and the prose says the tempfile still holds all 50.
 
 ---
 
@@ -121,7 +121,7 @@ When a solution genuinely requires a rule (e.g. "avoid `2>&1` in examples"), the
 
 **Failure case.** In a case where the doc's search example showed `jq '... | {subject, from, date}'` and the AI copied the filter, it ran the search, returned `{subject, from, date}` to itself, then realised it had no `uid` or `folder` to feed into `read`. The AI then either ran a second search, guessed fields, or fell back to `--help`.
 
-**Solution.** The search example's jq filter returns at minimum `{uid, folder, subject, from, date}`. The `read` example's filter additionally surfaces `has_attachments`. The fields visible in each example are exactly the fields the next verb in a plausible workflow needs.
+**Solution.** The search example's `jq` step trims each block's `results` in place without selecting fields, so every field a follow-up verb might need survives the filter. The `read` example selects `{uid, subject, from, date, has_attachments}`; the folder comes from the chain's own `-f INBOX` rather than being read back out of the result.
 
 ---
 
@@ -229,13 +229,13 @@ When a solution genuinely requires a rule (e.g. "avoid `2>&1` in examples"), the
 
 **Failure case.** In a case where the doc listed `--bcc`, `--cc`, `--attach`, `--body-html`, `--no-thread`, `--allow-no-copy`, `--keep-draft`, `--dry-run`, `--fcc IMAP:FOLDER` in the Sending section, the AI for a routine reply scanned the list and guessed a wrong flag combination instead of consulting `courier reply --help` for the specific case.
 
-**Solution.** The Sending section names only the verbs (`compose`, `reply`, `send-draft`) and the load-bearing flag (`-i NAME`). Other flags live in `courier <verb> --help`.
+**Solution.** The Sending section carries the three verbs (`compose`, `reply`, `send-draft`), the flags a minimal send cannot omit (`--to`, `--subject`, `--body`, `--send`), and the identity flag (`-i NAME`). Everything optional lives in `courier <verb> --help`.
 
 ### F3. Reproducing exotic-backend dispatch internals
 
 **Failure case.** In a case where the doc explained `X-GM-RAW` dispatch on Gmail accounts and the `imap:` raw escape for parens grouping on non-Gmail backends, the AI for Gmail-only users absorbed reference material it never needed, and non-Gmail users hit a runtime error at the point it actually mattered with a more specific message than the doc's pre-explanation anyway.
 
-**Solution.** Dispatch internals live in `--help`. The Searches example uses parens; on Gmail it works through the dispatch; on non-Gmail backends the AI sees the runtime error and consults `--help` for the escape syntax.
+**Solution.** Dispatch internals live in `--help`. No example needs the escape: the OR-cluster example is a flat disjunction, which both backends take unchanged. An AI that does reach for parens meets the runtime error on a non-Gmail backend, and that error names the escape more precisely than a pre-explanation would.
 """
 
 
