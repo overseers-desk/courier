@@ -94,7 +94,7 @@ When a solution genuinely requires a rule (e.g. "avoid `2>&1` in examples"), the
 
 ### B5. Inventing a date flag the CLI does not carry
 
-**Failure case.** In a case where the user asked for recent mail from a sender, the AI reached for `--since` and `--until`, which do not exist. Click refuses with "No such option" and exits 2, and the message names no corrective form. The parser's near-miss suggestions do not reach the case either: they fire within one Damerau-Levenshtein edit, and `since` is not one edit from `after`.
+**Failure case.** In a case where the user asked for recent mail from a sender, the AI reached for `--since` and `--until`, which do not exist. Click refuses with "No such option" and exits 2, and the message names no corrective form. Neither spelling reaches courier's own near-miss suggester. Written as an option, `--since` is refused by Click before any courier code runs. Written as a query token, `since:2026-01-01` reaches `suggest_prefixes` in `courier/query/registry.py`, which fires within one Damerau-Levenshtein edit: that catches `form:` for `from:` and does not span a synonym like `since` for `after`.
 
 **Solution.** The first search example carries `after:2026-01-01`. The token was previously in the second example only, as one item inside a demonstration of OR-clustering an entity's surfaces, which an AI needing a date bound reaches after it has already composed a command.
 
@@ -122,15 +122,15 @@ When a solution genuinely requires a rule (e.g. "avoid `2>&1` in examples"), the
 
 ### C4. jq filter deletes the result envelope
 
-**Failure case.** In a case where the AI filtered a chain result through `[.[] | .[] | {...}]`, the flattening discarded the `{op_key: {imap_name: ...}}` envelope. On a search result that takes `provenance` and the block name with it, so the AI could no longer say which account a hit came from, or whether the rows came from the live server or the local index. The idiom transferred out of the `read` example, which sat twelve lines from a search example teaching the opposite shape.
+**Failure case.** In a case where the AI filtered a chain result through `[.[] | .[] | {...}]`, the flattening discarded the `{op_key: {imap_name: ...}}` envelope. On a search result that takes `provenance` and the block name with it, so the AI could no longer say which account a hit came from, or whether the rows came from the live server or the local index. The idiom transferred out of the `read` example, which sat twenty-four lines from a search example teaching the opposite shape.
 
 **Solution.** Both examples filter through `map_values(map_values(...))`, so the source teaches one idiom and it is the one that keeps the envelope.
 
 ### C5. A folder that failed reported as a folder with nothing in it
 
-**Failure case.** In a case where one folder or IMAP block errored during a search, its entry came back as `results: []`, and the AI told the user no such email existed. The reading is correct given the payload: nothing in it separates a clean zero from a zero that never got to look.
+**Failure case.** In a case where one folder errored during a search, its block came back with `results: []`, and the AI told the user no such email existed. The payload does carry the distinction: `imap_client.py` appends a `{"folder", "error"}` record per failed folder and attaches `folders_failed` to the envelope when it is non-empty, and the exit code separates a clean zero (1) from a zero with failures (2). The source named neither. It described the output shape as `{results, provenance}`, so an AI reading it had the whole shape it thought existed and no reason to look for a third key.
 
-**Solution.** None in the source. This one does not yield to framing or example choice, because the AI's inference from `results: []` is sound and the omission is in what the payload says. Open pending a decision on where a per-folder failure surfaces.
+**Solution.** The output-shape sentence names `folders_failed` and both exit codes, and says what a `results: []` beside a failure record means. This compounds with C4: the flattening idiom deleted `folders_failed` along with the envelope, so an AI that copied it could not have seen the key even once told to look.
 
 ---
 
@@ -261,7 +261,7 @@ courier -A --format json \
   > "$RESULTS"
 ```
 
-Output shape: `{op_key: {imap_name: {results: [...], provenance: {...}}}}`. `courier -A` queries every IMAP block; `--imap NAME` (repeats across the chain) selects specific blocks. Slice the JSON with `jq` against a tempfile; `head`/`tail` cut mid-structure. stderr carries nudges addressed to the user's terminal (a version reminder, a config warning), so folding it into stdout with `2>&1` puts non-JSON text in front of `jq`.
+Output shape: `{op_key: {imap_name: {results: [...], provenance: {...}}}}`, and `folders_failed` alongside them in a block where a folder's search or fetch failed. `results: []` next to a `folders_failed` entry is a folder that was never looked in, not an absence; the exit code says the same, 1 for a clean zero and 2 for a zero with failures. `courier -A` queries every IMAP block; `--imap NAME` (repeats across the chain) selects specific blocks. Slice the JSON with `jq` against a tempfile; `head`/`tail` cut mid-structure. stderr carries nudges addressed to the user's terminal (a version reminder, a config warning), so folding it into stdout with `2>&1` puts non-JSON text in front of `jq`.
 
 ## Reads
 
