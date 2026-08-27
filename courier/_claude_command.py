@@ -13,9 +13,7 @@ still intact.
 
 RATIONALE = r"""# Failure modes the AI hint document is calibrated against
 
-This block sits in the same module as the slash-command source so a future editor of that source has the calibration record in line of sight. Each entry pairs a concrete failure case with the load-bearing element of the source that prevents it. Before shipping a rewrite, walk this list and verify the prevention is still intact.
-
-The hint states facts and shows shapes; this block holds the problem record.
+Each entry pairs a concrete failure case with the load-bearing element of the source that prevents it. The hint states facts and shows shapes; this block holds the problem record.
 
 ## Solutions are framing and examples, not rules
 
@@ -67,35 +65,22 @@ When a solution genuinely requires a rule (e.g. "avoid `2>&1` in examples"), the
 
 ### B2. Surface-disjoint identifiers for one entity
 
-**Failure case.** In a case where the user asked "find emails from China Southern Airlines", the AI failed to retrieve most of the mail because it composed `search "from:china southern"`, while the company files its mail under `@csair.com` (the Chinese-derived corporate domain shares no letters with the English operating name) and refers to itself by the IATA code `CZ` in older subjects. The AI took the user's spoken English name as the search key and did not enumerate the surface-disjoint identifiers (code, domain, name) that the same entity files mail under.
+**Failure case.** An entity files its mail under surfaces the user does not speak, and the AI searches the spoken one. Four observed shapes:
 
-**Solution.** The Searches section shows OR-clustering inside one `search` for variants of a single entity. The prose contrasts repeated `search` verbs (separate questions, separate outer keys) with `OR` inside one search (synonyms of one entity, one outer key, flat union). The OR paragraph mentions that the entity's surfaces (name, code, corporate domain) often share no letters, so enumeration draws on what the user already knows.
+- Corporate domain against operating name. Asked for "China Southern Airlines", the AI composed `search "from:china southern"`, while the airline files under `@csair.com` (the Chinese-derived domain shares no letters with the English operating name) and refers to itself by the IATA code `CZ` in older subjects.
+- Language variants of an operating name. Asked for the Spanish airline Iberia, the AI queried `Iberia Airlines`, while `Iberia Líneas Aéreas` appears on most messages and `@iberia.com` catches the rest.
+- Nickname against filed name. Asked what Tony said about the lease, the AI queried `from:Tony`, while the person signs and sends as `Antonio`; the colloquial form never reaches the mail surface.
+- Known synonyms split apart. Holding a domain, a trading name and an English variant, the AI issued three `search` repetitions, fragmenting one entity's mail across three outer keys at three server queries for no benefit.
 
-### B3. Language variants of operating names
+**Solution.** The Searches section shows OR-clustering inside one `search` for the variants of a single entity, and the prose contrasts the two shapes: synonyms of one entity go inside one `search` with `OR`, returning a flat union under one outer key; separate questions go in separate `search` repetitions. The OR paragraph notes that an entity's surfaces (name, code, corporate domain, language variants) often share no letters, so enumeration draws on what the user already knows. The prose adds that the form filed in headers may differ from the spoken form, and that reading a hit recovers the actual surface.
 
-**Failure case.** In a case where the user asked for emails from the Spanish airline Iberia, the AI failed to retrieve the bulk of the correspondence because it queried only `Iberia Airlines`, while the airline's Spanish operating name `Iberia Líneas Aéreas` appears on most messages and `@iberia.com` catches the rest. The AI did not consider that an entity's operating name has language variants and that any of them may be the form recorded in a given message.
-
-**Solution.** Same OR-cluster example as B2: the AI sees that name variants of one entity belong inside one `search` connected by `OR`. The reader infers that language variation is one source of disjointness (others: trading-name variation, code abbreviations, domain derivations).
-
-### B4. Name shortening and preferred-name divergence
-
-**Failure case.** In a case where the user asked "find what Tony said about the lease", the AI failed to retrieve the relevant correspondence because it queried `from:Tony`, while the person is filed as `Antonio` in his email signature and From header (the colloquial nickname "Tony" never reaches the mail surface; his account uses his full name). The AI took the user's spoken form as the search key and did not consider that nicknames and formal names diverge between conversation and mail headers.
-
-**Solution.** The Searches prose notes that the form filed in headers may differ from the spoken form (nicknames, abbreviations, formal names) and that reading a hit recovers the actual surface used in mail. The OR mechanism is available once the AI knows multiple forms.
-
-### B5. Splitting known synonyms across separate searches
-
-**Failure case.** In a case where the AI knew three forms of one entity (a domain, a trading name, an English variant), it failed to keep them as one entity in the result because it issued three `search` repetitions, fragmenting the entity's mail across three outer keys. Cost three server queries, no benefit.
-
-**Solution.** The OR example sits as the primary illustration of "synonyms of one entity go inside one `search` with `OR`; separate questions go in separate `search` repetitions." The contrast is stated once, alongside the example that demonstrates it. The reader sees the OR shape and the chain shape side by side and infers which goes where.
-
-### B6. Cartesian N×M instead of one composed query
+### B3. Cartesian N×M instead of one composed query
 
 **Failure case.** In a case where the user asked for messages where a specific address appeared in any of several recipient roles AND the body mentioned any of several topic words, the AI failed to compose one query because it issued N×M chained `search` repetitions (one per role × topic pair), multiplying server queries by the cartesian product without changing the result set.
 
 **Solution.** The OR-cluster example combined with the operator-stacking note ("tokens combine with implicit AND, `OR` clusters alternatives") implies the form: two independent disjunctions form one query `(A OR B OR C) (X OR Y OR Z)`. The current source carries one OR-cluster example; the two-disjunction lesson lands on that simpler case. A second example would risk the prior fabricated-scenario problem (E8) without a clear use-case shape.
 
-### B7. Sort-order surprise on "recent" / "last few" requests
+### B4. Sort-order surprise on "recent" / "last few" requests
 
 **Failure case.** In a case where the user asked "what are the last 5 emails from Alice", the AI failed to bound the result to the recent five because it ran a search without `-n`, getting up to 10 hits in unspecified order, then either reported too many or picked the wrong ones because it expected ascending date.
 
@@ -133,25 +118,13 @@ When a solution genuinely requires a rule (e.g. "avoid `2>&1` in examples"), the
 
 **Solution.** The source covers only `-i NAME` (= `--identity NAME`). Relay-style and other less-common send paths route to `courier <verb> --help`. The pointer to `--help` is what the doc does instead of enumerating modes.
 
-### D2. Pre-explained niche behaviours
-
-**Failure case.** In a case where the doc preemptively documented `--allow-no-copy`, `[identity.NAME].bcc`, `fcc` folder auto-detection, and `save_sent = false`, the AI memorised niche configuration paths it almost never needed, while the runtime error message at the moment it actually matters is more specific than the doc's pre-explanation anyway.
-
-**Solution.** The source omits these mechanics; the runtime surfaces the relevant error with the exact corrective flag at the point of failure.
-
-### D3. Migration footnote for old syntax
-
-**Failure case.** In a case where the doc carried "Migration: `-a <account>` → `--imap <name>`" for users coming from the pre-1.x CLI, a fresh AI session has never seen `-a` and reads the line as noise that wastes attention.
-
-**Solution.** The source describes only the current syntax.
-
-### D4. Transliterating non-ASCII content to ASCII
+### D2. Transliterating non-ASCII content to ASCII
 
 **Failure case.** In a case where the user's body carried "Skål" (a club name), the AI sent "Skal", dropping the ring, and justified the change to the user as keeping the send "clean". No encoding constraint existed: the same backend had already carried Spanish (ñ, á) and Chinese in the user's other mail, with valid message-ids. The AI had applied a training-era prior that ASCII is the safe default and manufactured a deliverability rationale to fit a change it had no reason to make.
 
 **Solution.** The Sending prose states that subjects and bodies pass through as UTF-8 in whatever script the user writes, and that the user's correspondence runs in Spanish and Chinese as well as English. The fact plus the base rate of non-English mail frames character fidelity as the default, leaving no opening for an English-only assumption or an ASCII-normalisation step. Phrased as framing rather than a prohibition, per the convention above (a "never transliterate" rule reads as infantilising and processes less reliably than the positive fact).
 
-### D5. Auto-selecting the nearest identity when the prior one is unavailable
+### D3. Auto-selecting the nearest identity when the prior one is unavailable
 
 **Failure case.** In a case where the user asked the AI to reply to a thread and the identity that thread was previously sent from no longer appeared among the configured `[identity.NAME]` blocks, the AI silently picked the closest-matching configured identity and sent under it. The picked identity was a personal address, not the business address the thread needed, and the user only caught it after the message had gone out.
 
@@ -219,23 +192,17 @@ When a solution genuinely requires a rule (e.g. "avoid `2>&1` in examples"), the
 
 ## F. Boundary with `--help` and `docs/`
 
-### F1. Reproducing the operators list
+### F1. Reproducing an inventory `--help` already owns
 
-**Failure case.** In a case where the doc enumerated `from:`, `to:`, `subject:`, `after:`, `before:`, `is:unread`, `is:read`, the AI memorised the partial list, missed an operator that exists but wasn't in the doc (e.g. `larger:`, `has:attachment`), and either invented one or ran a second search without it. `courier search --help` and the Gmail-syntax docs already enumerate these accurately.
+**Failure case.** The source copies a list the runtime carries accurately, and the reading AI treats the copy as complete. Five observed:
 
-**Solution.** Operator inventory lives in `--help`; the example queries in the source demonstrate the syntax shape only.
+- Operators. The doc enumerated `from:`, `to:`, `subject:`, `after:`, `before:`, `is:unread`, `is:read`; the AI memorised the partial list, missed an operator that exists but was not in it (`larger:`, `has:attachment`), and either invented one or ran a second search without it.
+- Send flags. The doc listed `--bcc`, `--cc`, `--attach`, `--body-html`, `--no-thread`, `--allow-no-copy`, `--keep-draft`, `--dry-run`, `--fcc IMAP:FOLDER`; for a routine reply the AI scanned the list and guessed a wrong combination instead of consulting `courier reply --help`.
+- Dispatch internals. The doc explained `X-GM-RAW` dispatch on Gmail and the `imap:` raw escape for parens grouping elsewhere; Gmail-only users absorbed reference material they never needed, and non-Gmail users met the runtime error anyway, which is more specific than the pre-explanation.
+- Niche send configuration. The doc pre-documented `--allow-no-copy`, `[identity.NAME].bcc`, `fcc` folder auto-detection and `save_sent = false`; the AI memorised configuration paths it almost never needs, while the error at the moment one matters names the exact corrective flag.
+- Superseded syntax. The doc carried "Migration: `-a <account>` → `--imap <name>`" for users coming from the pre-1.x CLI; a fresh AI session has never seen `-a` and reads the line as noise that wastes attention.
 
-### F2. Reproducing send-flag inventory
-
-**Failure case.** In a case where the doc listed `--bcc`, `--cc`, `--attach`, `--body-html`, `--no-thread`, `--allow-no-copy`, `--keep-draft`, `--dry-run`, `--fcc IMAP:FOLDER` in the Sending section, the AI for a routine reply scanned the list and guessed a wrong flag combination instead of consulting `courier reply --help` for the specific case.
-
-**Solution.** The Sending section carries the three verbs (`compose`, `reply`, `send-draft`), the flags a minimal send cannot omit (`--to`, `--subject`, `--body`, `--send`), and the identity flag (`-i NAME`). Everything optional lives in `courier <verb> --help`.
-
-### F3. Reproducing exotic-backend dispatch internals
-
-**Failure case.** In a case where the doc explained `X-GM-RAW` dispatch on Gmail accounts and the `imap:` raw escape for parens grouping on non-Gmail backends, the AI for Gmail-only users absorbed reference material it never needed, and non-Gmail users hit a runtime error at the point it actually mattered with a more specific message than the doc's pre-explanation anyway.
-
-**Solution.** Dispatch internals live in `--help`. No example needs the escape: the OR-cluster example is a flat disjunction, which both backends take unchanged. An AI that does reach for parens meets the runtime error on a non-Gmail backend, and that error names the escape more precisely than a pre-explanation would.
+**Solution.** Inventory lives in `--help`; the source demonstrates shape. Operator syntax comes from the example queries rather than a list. The Sending section carries the three verbs (`compose`, `reply`, `send-draft`), the flags a minimal send cannot omit (`--to`, `--subject`, `--body`, `--send`), and the identity flag (`-i NAME`). Relay-style sends, dispatch internals and niche configuration route to `courier <verb> --help`, where a runtime error at the point of failure beats a pre-explanation. Only current syntax is described.
 """
 
 
