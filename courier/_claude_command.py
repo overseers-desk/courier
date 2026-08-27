@@ -94,19 +94,19 @@ When a solution genuinely requires a rule (e.g. "avoid `2>&1` in examples"), the
 
 **Failure case.** In a case where the AI wrote `courier search "..." --format json 2>&1 | jq '.'`, the JSON parse broke because stderr nudges (e.g. "courier command installed at version X, current is Y") concatenated into stdout, and `jq` choked on the trailing text. The AI saw the parse error and sometimes retried with the same `2>&1`, looping.
 
-**Solution.** Examples redirect stdout to a tempfile (`> "$RESULTS"`) and read it with `jq` separately, leaving stderr to fall on the user's terminal where nudges are addressed to a human reader. The example shape is what the AI copies; the stream-merging anti-pattern is absent from every model in the source.
+**Solution.** Examples redirect stdout to a tempfile (`> "$RESULTS"`) and read it with `jq` separately, leaving stderr to fall on the user's terminal where nudges are addressed to a human reader. The stream-merging anti-pattern is absent from every model in the source. Shape alone left the reason unstated, so the output paragraph now also carries it as a fact: stderr holds the nudges, and `2>&1` puts non-JSON text in front of `jq`.
 
 ### C2. Truncating JSON via head / tail
 
 **Failure case.** In a case where the AI ran a search and piped the JSON through `head -50` to "preview" it, the cut landed mid-record and downstream parsing failed.
 
-**Solution.** The Searches prose ends with "Slice the JSON with `jq` against a tempfile; `head`/`tail` cut mid-structure." Stated once, naming the wrong tool and the consequence. This is one of the few preventions expressed as a rule rather than a framing, because example shape cannot demonstrate the alternative; the AI reaches for `head`/`tail` by default and benefits from the explicit nudge.
+**Solution.** The Searches prose carries "Slice the JSON with `jq` against a tempfile; `head`/`tail` cut mid-structure." Stated once, naming the wrong tool and the consequence. This is one of the few preventions expressed as a rule rather than a framing, because example shape cannot demonstrate the alternative; the AI reaches for `head`/`tail` by default and benefits from the explicit nudge.
 
 ### C3. jq filter omits the fields a follow-up verb needs
 
 **Failure case.** In a case where the doc's search example showed `jq '... | {subject, from, date}'` and the AI copied the filter, it ran the search, returned `{subject, from, date}` to itself, then realised it had no `uid` or `folder` to feed into `read`. The AI then either ran a second search, guessed fields, or fell back to `--help`.
 
-**Solution.** The search example's `jq` step trims each block's `results` in place without selecting fields, so every field a follow-up verb might need survives the filter. The `read` example selects `{uid, subject, from, date, has_attachments}`; the folder comes from the chain's own `-f INBOX` rather than being read back out of the result.
+**Solution.** Both examples filter through `map_values(map_values(...))`, which keeps the `{op_key: {imap_name: ...}}` envelope, so one idiom is taught rather than two. The search step trims each block's `results` in place without selecting fields, so every field a follow-up verb might need survives. The `read` step selects `{uid, folder, subject, from, date, body}`, all of which a read result carries.
 
 ---
 
@@ -221,7 +221,7 @@ courier searches, reads, and pulls attachments from the user's mailboxes via the
 RESULTS=$(mktemp /tmp/courier.XXXXXXXX)
 courier -A --format json \
   search "from:alice hotel booking" \
-  search "from:bob contract" \
+  search "from:bob contract after:2026-01-01" \
   > "$RESULTS"
 jq 'map_values(map_values(.results |= .[0:10]))' "$RESULTS"
 ```
@@ -237,7 +237,7 @@ courier -A --format json \
   > "$RESULTS"
 ```
 
-Output shape: `{op_key: {imap_name: {results: [...], provenance: {...}}}}`. `courier -A` queries every IMAP block; `--imap NAME` (repeats across the chain) selects specific blocks. Slice the JSON with `jq` against a tempfile; `head`/`tail` cut mid-structure.
+Output shape: `{op_key: {imap_name: {results: [...], provenance: {...}}}}`. `courier -A` queries every IMAP block; `--imap NAME` (repeats across the chain) selects specific blocks. Slice the JSON with `jq` against a tempfile; `head`/`tail` cut mid-structure. stderr carries nudges addressed to the user's terminal (a version reminder, a config warning), so folding it into stdout with `2>&1` puts non-JSON text in front of `jq`.
 
 ## Reads
 
@@ -247,7 +247,7 @@ courier --imap <imap> --format json \
   read -u 200 \
   read -u 300 \
   -f INBOX > "$RESULTS"
-jq '[.[] | .[] | {uid, subject, from, date, has_attachments}]' "$RESULTS"
+jq 'map_values(map_values({uid, folder, subject, from, date, body}))' "$RESULTS"
 ```
 
 UIDs from a prior search go into one chain over a single IMAP session; trailing `-f FOLDER` peels off as the chain default. Login dominates the per-fetch cost; Gmail caps simultaneous IMAP connections per account, so N parallel `read` processes hit that cap.
@@ -272,7 +272,7 @@ courier --imap <imap> send-draft -f Drafts -u <uid>
 
 Subjects and bodies pass through as UTF-8 in whatever script the user writes; their correspondence runs in Spanish and Chinese as well as English.
 
-`-i NAME` (= `--identity NAME`) picks a configured `[identity.NAME]` block; reply inherits the parent's threading headers. Drop `--send` to save as a draft. `courier list` returns the configured identity names under its `identity` key; `courier <verb> --help` carries flags for relay-style sends and other less-common paths. For a reply, if the identity the thread was previously sent from isn't among those names, ask the user which identity to use rather than picking the closest match: the nearest name is often a personal address on a thread that needs a business one.
+`-i NAME` (= `--identity NAME`) picks a configured `[identity.NAME]` block; reply inherits the parent's threading headers. Drop `--send` to save as a draft. `courier list` returns the configured identity names under its `identity` key, as JSON already and with no format flag of its own; `courier <verb> --help` carries flags for relay-style sends and other less-common paths. For a reply, if the identity the thread was previously sent from isn't among those names, ask the user which identity to use rather than picking the closest match: the nearest name is often a personal address on a thread that needs a business one.
 """
 
 
