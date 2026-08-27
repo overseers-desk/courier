@@ -60,6 +60,9 @@ app = typer.Typer(
         "0 on success with results, 1 on success with zero results."
     ),
     no_args_is_help=True,
+    # Help text names config blocks as TOML tables ([imap.NAME], [smtp.*]);
+    # rich markup mode would parse those as markup tags and delete them.
+    rich_markup_mode=None,
 )
 
 # Module-level state set by the --config callback.
@@ -1937,7 +1940,7 @@ Repeat the verb to look up several keywords in one invocation:
 ``courier search foo search bar``.
 
 Output is a JSON object keyed first by operation string, then by
-\\[imap.NAME] block. Each per-block value is ``{"results": [...],
+[imap.NAME] block. Each per-block value is ``{"results": [...],
 "provenance": {...}}`` where ``provenance`` reports whether the
 result came from IMAP (``source: "remote"``) or from a local mu
 cache (``source: "local"``). ``--limit`` is applied per block.
