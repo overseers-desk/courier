@@ -27,9 +27,8 @@ When the user asks to "do the release", "release X.Y.Z", or "release now", they 
 Do **not** report the release as done if any of the above is missing. Do not stop at "the .deb is built, want me to upload?" — the user explicitly does not want that hand-off; the upload is part of the release.
 
 ## Environment Setup and Build Commands with `uv`
-- Create virtual environment: `uv venv`
+- Create and populate the virtual environment: `uv sync --extra dev` (installs the versions `uv.lock` pins, which are the ones CI enforces)
 - Activate virtual environment: `source .venv/bin/activate` (Unix/macOS) or `.venv\Scripts\activate` (Windows)
-- Install dependencies: `uv pip install -e ".[dev]"`
 - Install specific packages: `uv add package_name`
 - Run commands within the environment: `uv run command [args]`
 
@@ -42,7 +41,7 @@ Do **not** report the release as done if any of the above is missing. Do not sto
    - FORBIDDEN: `uv run python ...`
 
 ## Build and Test Commands
-- Install dependencies: `uv pip install -e ".[dev]"`
+- Install dependencies: `uv sync --extra dev`
 - Run all tests: `uv run pytest`
 - Run single test: `uv run pytest tests/test_file.py::TestClass::test_function -v`
 - Run with coverage: `uv run pytest --cov`

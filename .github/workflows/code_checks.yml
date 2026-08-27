@@ -10,6 +10,11 @@ on:
 jobs:
   code-quality:
     runs-on: ubuntu-latest
+    env:
+      # The toolchain versions the gate enforces come from uv.lock, not from
+      # whatever the index serves today; a lock that no longer matches
+      # pyproject.toml stops the run instead of being resolved around.
+      UV_LOCKED: "1"
     strategy:
       matrix:
         python-version: ["3.11"]
@@ -27,13 +32,9 @@ jobs:
         curl -LsSf https://astral.sh/uv/install.sh | sh
         echo "$HOME/.cargo/bin" >> $GITHUB_PATH
         
-    - name: Create virtual environment
-      run: uv venv
+    - name: Install the locked environment
+      run: uv sync --extra dev --extra mcp
       
-    - name: Install dependencies
-      run: |
-        uv pip install -e ".[dev,mcp]"
-        
     - name: Make scripts executable
       run: |
         chmod +x scripts/run_checks.sh
