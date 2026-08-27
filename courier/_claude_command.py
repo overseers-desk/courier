@@ -53,6 +53,12 @@ When a solution genuinely requires a rule (e.g. "avoid `2>&1` in examples"), the
 
 **Solution.** Examples open directly on the user's question. Configuration discovery appears exactly once, scoped to the case where it is genuinely needed (`courier list returns the configured identity names under its identity key`). The shape of every example does the work; the source leaves probing to the AI's judgement.
 
+### A5. Inventing a flag by analogy with the verbs that carry it
+
+**Failure case.** In a case where the AI needed the configured block names, it ran `courier list --format json`. Click refuses with "No such option: --format" and exits 2, naming no corrective form, while `list` emits JSON unconditionally and always did. The doc named `list` in prose only, while every verb it showed as a command line carried `--format json`, so the AI completed the pattern the doc had taught it.
+
+**Solution.** The Sending prose states that `list` returns JSON already and takes no format flag of its own, at the one place the AI meets the verb.
+
 ---
 
 ## B. Entity disambiguation in queries
@@ -86,6 +92,12 @@ When a solution genuinely requires a rule (e.g. "avoid `2>&1` in examples"), the
 
 **Solution.** The Searches prose states "Results sort newest-first; trailing `-n` peels off as a chain default (default 50) and applies to every `search` that doesn't set its own", so the order and the bound arrive together without a trip to `--help` on a routine request. No example sets `-n`: the examples bound the *reported* set at the `jq` step instead, and the prose says the tempfile still holds all 50.
 
+### B5. Inventing a date flag the CLI does not carry
+
+**Failure case.** In a case where the user asked for recent mail from a sender, the AI reached for `--since` and `--until`, which do not exist. Click refuses with "No such option" and exits 2, and the message names no corrective form. The parser's near-miss suggestions do not reach the case either: they fire within one Damerau-Levenshtein edit, and `since` is not one edit from `after`.
+
+**Solution.** The first search example carries `after:2026-01-01`. The token was previously in the second example only, as one item inside a demonstration of OR-clustering an entity's surfaces, which an AI needing a date bound reaches after it has already composed a command.
+
 ---
 
 ## C. Output handling
@@ -107,6 +119,18 @@ When a solution genuinely requires a rule (e.g. "avoid `2>&1` in examples"), the
 **Failure case.** In a case where the doc's search example showed `jq '... | {subject, from, date}'` and the AI copied the filter, it ran the search, returned `{subject, from, date}` to itself, then realised it had no `uid` or `folder` to feed into `read`. The AI then either ran a second search, guessed fields, or fell back to `--help`.
 
 **Solution.** Both examples filter through `map_values(map_values(...))`, which keeps the `{op_key: {imap_name: ...}}` envelope, so one idiom is taught rather than two. The search step trims each block's `results` in place without selecting fields, so every field a follow-up verb might need survives. The `read` step selects `{uid, folder, subject, from, date, body}`, all of which a read result carries.
+
+### C4. jq filter deletes the result envelope
+
+**Failure case.** In a case where the AI filtered a chain result through `[.[] | .[] | {...}]`, the flattening discarded the `{op_key: {imap_name: ...}}` envelope. On a search result that takes `provenance` and the block name with it, so the AI could no longer say which account a hit came from, or whether the rows came from the live server or the local index. The idiom transferred out of the `read` example, which sat twelve lines from a search example teaching the opposite shape.
+
+**Solution.** Both examples filter through `map_values(map_values(...))`, so the source teaches one idiom and it is the one that keeps the envelope.
+
+### C5. A folder that failed reported as a folder with nothing in it
+
+**Failure case.** In a case where one folder or IMAP block errored during a search, its entry came back as `results: []`, and the AI told the user no such email existed. The reading is correct given the payload: nothing in it separates a clean zero from a zero that never got to look.
+
+**Solution.** None in the source. This one does not yield to framing or example choice, because the AI's inference from `results: []` is sound and the omission is in what the payload says. Open pending a decision on where a per-folder failure surfaces.
 
 ---
 
