@@ -72,7 +72,8 @@ def test_install_follows_claude_config_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(configured))
     result = runner.invoke(app, ["install-claude-command"])
     assert result.exit_code == 0
-    assert f"version: {__version__}" in (
-        configured / "commands" / "courier.md"
-    ).read_text()
+    assert (
+        f"version: {__version__}"
+        in (configured / "commands" / "courier.md").read_text()
+    )
     assert not (home / ".claude").exists()
