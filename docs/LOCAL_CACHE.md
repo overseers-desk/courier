@@ -19,7 +19,11 @@ Courier does not run any IMAP-to-Maildir syncer (e.g. `offlineimap`), nor `mu in
 Install an IMAP-to-Maildir syncer (e.g. offlineimap) and mu through your package manager, and set up syncing and indexing per their upstream documentation:
 
 - offlineimap: https://github.com/OfflineIMAP/offlineimap (configuration in `~/.offlineimaprc`)
-- mu: https://www.djcbsoftware.nl/code/mu/ (`mu init --maildir=/path/to/maildir`, then `mu index`)
+- mu: https://www.djcbsoftware.nl/code/mu/ (`mu init --maildir=<store root>`, then `mu index`)
+
+One mu store can cover several accounts. Initialise it at a directory that contains the maildirs you want indexed. Give each `[imap.*]` block the subdirectory holding its own mail. mu reports every message's folder relative to the store root, and courier derives the block's scope from where its `maildir` sits under that root. With a single account, the store root and the block's `maildir` may be the same directory.
+
+The maildir holds plain-text mail, and the Xapian index is repetitive, so both compress well. On btrfs, mounting the filesystem that holds them with `compress=zstd` cuts their disk cost. None of the commands here change.
 
 A working setup ends with a maildir on disk and `mu find subject:hello` returning hits. Once that holds, courier can use it.
 
@@ -36,7 +40,7 @@ max_staleness_seconds = 4000
 host = "imap.gmail.com"
 username = "you@gmail.com"
 password = "..."
-maildir = "/var/local/mail/you-gmail-com"
+maildir = "/path/to/maildir/you-gmail-com"
 
 [identity.gmail]
 imap = "gmail"
@@ -45,11 +49,13 @@ address = "you@gmail.com"
 
 `max_staleness_seconds` is the threshold past which courier considers the index stale and falls back to IMAP for that query. Pick a value matching how often your sync job runs (e.g. if you run offlineimap every hour, `max_staleness_seconds = 4000` lets a slightly delayed sync still serve the query).
 
+Courier locates the mu store by asking `mu info store`, which follows mu's own resolution: the `MUHOME` environment variable when set, mu's default location otherwise. Set `mu_index` in `[local_cache]` to the muhome path whenever the store sits anywhere else. Courier may be invoked by a cron job, an MCP client, or a desktop session, and none of those need share the environment your shell has.
+
 ## Contract and fallback
 
-When `mu` is missing, the index is missing or stale, the query is untranslatable, `--no-cache` is given, or any error occurs, the call falls back to IMAP transparently. Folder-scoped searches are served from the cache like any other, under the same eligibility rule. Every `search` response carries a `provenance` field reporting `source` (`"local"` or `"remote"`), the index `indexed_at` timestamp, and a `fell_back_reason` tag when applicable. The caller can therefore detect when local served the query and when it did not.
+When `mu` is missing, the index is missing or stale, the query is untranslatable, `--no-cache` is given, or any error occurs, the call falls back to IMAP transparently. Folder-scoped searches are served from the cache like any other, under the same eligibility rule. Every `search` response carries a `provenance` field reporting `source` (`"local"` or `"remote"`), the index `indexed_at` timestamp, a `fell_back_reason` tag when applicable, a `date_source` naming which date a date bound was judged against (see [CONFIGURATION.md](CONFIGURATION.md)), and a `query` object recording the `dialect` the query was translated into along with any `approximations`, `fallbacks`, and terms `treated_as_text`. The caller can therefore detect when local served the query and when it did not.
 
-`read`, `links`, and `attachments` serve from disk under the same eligibility rule as `search`: when the index is fresh and the message file is present, the message is read from the maildir with its synced flags, looked up by the IMAP UID embedded in the mbsync-style filename (`,U=<uid>,`). The staleness window bounds how old those flags can be. When the index is stale, `--no-cache` is given, or the file is not yet on disk (e.g. a message arrived after the last sync), the call goes to live IMAP, which also reflects current flags. The UID is also surfaced on `search` results from the local cache, so search → read piping works the same way regardless of provenance. A maildir whose filenames do not embed `U=<uid>` (a non-mbsync layout) still serves `search`; `read` for such a maildir always goes to IMAP because there is no UID-to-file index.
+`read`, `links`, and `attachments` serve from disk under the same eligibility rule as `search`: when the index is fresh and the message file is present, the message is read from the maildir with its synced flags, looked up by the IMAP UID that the syncer embeds in the maildir filename. offlineimap writes that segment as `,U=<uid>,` and mbsync as `,U=<uid>:`, and courier reads both. The staleness window bounds how old those flags can be. When the index is stale, `--no-cache` is given, or the file is not yet on disk (e.g. a message arrived after the last sync), the call goes to live IMAP, which also reflects current flags. The UID is also surfaced on `search` results from the local cache, so search → read piping works the same way regardless of provenance. A maildir whose filenames carry no `U=<uid>` segment, written by a syncer that does not record the UID, still serves `search`; `read` for such a maildir always goes to IMAP because there is no UID-to-file index.
 
 Use `--no-cache` on `search` or `read` to force live IMAP for a single call: for freshness below the staleness window, to verify against the server, or when the index is not trusted.
 

@@ -98,7 +98,7 @@ port = 993
 username = "alias-host@gmail.com"      # IMAP login, not necessarily a From address
 password = "gmail-app-password"
 default_smtp = "gmail"                 # identities inherit unless they override
-maildir = "/var/local/mail/director"   # optional, only used if local_cache is enabled
+maildir = "/path/to/maildir/director"  # optional, only used if local_cache is enabled
 
 [identity.director]
 imap = "director"
@@ -117,4 +117,4 @@ address = "alias-host@gmail.com"
 # [local_cache]
 # indexer = "mu"
 # max_staleness_seconds = 4000
-# mu_index = "/var/local/cache/mu"
+# mu_index = "/path/to/muhome"        # only when the store is not in mu's default place
