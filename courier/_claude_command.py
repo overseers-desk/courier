@@ -226,7 +226,7 @@ When a solution genuinely requires a rule (e.g. "avoid `2>&1` in examples"), the
 - Niche send configuration. The doc pre-documented `--allow-no-copy`, `[identity.NAME].bcc`, `fcc` folder auto-detection and `save_sent = false`; the AI memorised configuration paths it almost never needs, while the error at the moment one matters names the exact corrective flag.
 - Superseded syntax. The doc carried "Migration: `-a <account>` → `--imap <name>`" for users coming from the pre-1.x CLI; a fresh AI session has never seen `-a` and reads the line as noise that wastes attention.
 
-**Solution.** Inventory lives in `--help`; the source demonstrates shape. Operator syntax comes from the example queries rather than a list. The Sending section carries the three verbs (`compose`, `reply`, `send-draft`), the flags a minimal send cannot omit (`--to`, `--subject`, `--body`, `--send`), and the identity flag (`-i NAME`). Relay-style sends, dispatch internals and niche configuration route to `courier <verb> --help`, where a runtime error at the point of failure beats a pre-explanation. Only current syntax is described.
+**Solution.** Inventory lives in `--help`; the source demonstrates shape. Operator syntax comes from the example queries rather than a list. The Sending section carries the three verbs (`compose`, `reply`, `send-draft`), one complete send's flags (`--to`, `--subject`, `--body`, `--send`, of which only `--body` is required), and the identity flag (`-i NAME`). Relay-style sends, dispatch internals and niche configuration route to `courier <verb> --help`, where a runtime error at the point of failure beats a pre-explanation. Only current syntax is described.
 """
 
 
