@@ -774,8 +774,8 @@ class ImapClient:
     ) -> Optional[Email]:
         """Fetch a single email by UID.
 
-        When the block is opted into the local cache and the index is
-        eligible (see :meth:`_disk_cache_eligible`), the call is served
+        When the block is opted into the local cache (see
+        :meth:`_disk_cache_eligible`), the call is served
         from the local synced file whose name carries the ``,U=<uid>``
         segment under ``<maildir>/<folder>/{cur,new}/`` (mbsync's colon
         form and offlineimap's comma form both match) and IMAP is not

@@ -200,9 +200,11 @@ class TestFallbackPhrasing:
             "labels are Gmail-only on this backend",
             "Scope the search with in:FOLDER instead.",
         )
-        text = compose_backend_error(exc, [{"backend": "cache", "reason": "stale"}])
+        text = compose_backend_error(
+            exc, [{"backend": "cache", "reason": "db_missing"}]
+        )
         assert str(exc) in text
-        assert "stale" in text
+        assert "its index database is missing" in text
 
     def test_compose_without_declines_is_the_refusal_alone(self):
         exc = UntranslatableForBackend("imap", "label:", "no mapping")
