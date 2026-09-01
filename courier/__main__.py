@@ -1642,9 +1642,8 @@ def status() -> None:
 
     Each [imap.NAME] block opted into the local cache (a [local_cache]
     table plus a per-block ``maildir``) also gets a CACHE cell reporting
-    index freshness and whether it has fallen past the staleness budget,
-    so a silently stale index is visible here rather than only as a
-    fallback reason in search provenance.
+    how old the mu index is, so the age is visible here as well as on
+    every search result's ``provenance.indexed_at``.
 
     Use ``list`` for the JSON inventory; ``status`` is a short
     operational view answering "which servers are reachable right
@@ -1804,9 +1803,8 @@ def _probe_cache(cfg: CourierConfig, block: ImapBlock) -> str:
     Produces the status table's CACHE cell. A block is "opted in" when
     the global [local_cache] table is configured and the block carries a
     ``maildir``; otherwise the cell is ``"-"``. For an opted-in block the
-    cell reflects the mu index: ``"ok (<age> old)"`` when fresh,
-    ``"STALE (<age> old, max <budget>)"`` when past the staleness budget,
-    or ``"mu not found"`` / ``"no index"`` when the backend cannot run.
+    cell reflects the mu index: ``"ok (<age> old)"``, or ``"mu not
+    found"`` / ``"no index"`` when the backend cannot run.
 
     Args:
         cfg: The loaded courier configuration.
@@ -1832,9 +1830,6 @@ def _probe_cache(cfg: CourierConfig, block: ImapBlock) -> str:
 
         delta = datetime.now(timezone.utc) - datetime.fromisoformat(mtime_iso)
         age = _format_age(delta.total_seconds())
-    if eligibility.reason == "stale":
-        budget = _format_age(cfg.local_cache.max_staleness_seconds)
-        return f"STALE ({age} old, max {budget})"
     if eligibility.eligible:
         return f"ok ({age} old)"
     return eligibility.reason or "unavailable"

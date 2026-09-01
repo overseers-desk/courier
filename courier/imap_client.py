@@ -752,12 +752,12 @@ class ImapClient:
         """Whether a read-shaped call may be served from the local maildir.
 
         The single gate shared by :meth:`fetch_email` and
-        :meth:`fetch_emails`, mirroring the search policy: the block is
-        opted into the local cache (a ``local_cache`` backend and a
-        ``maildir``), ``no_cache`` is not set, and the index passes
-        :meth:`MuBackend.is_eligible` (mu present, index present and
-        within the staleness window).  A stale index sends reads to
-        IMAP so flags reflect the server rather than the last sync.
+        :meth:`fetch_emails`: the block is opted into the local cache
+        (a ``local_cache`` backend and a ``maildir``) and ``no_cache``
+        is not set.  Reading a known UID's bytes from a maildir file
+        consults no search index, so index state does not gate it; the
+        flags come from the last sync, and the caller reads the index
+        age off ``provenance.indexed_at`` to judge them.
 
         Args:
             no_cache: When ``True``, the cache is declined unconditionally.
@@ -765,9 +765,9 @@ class ImapClient:
         Returns:
             ``True`` when the maildir may serve this call.
         """
-        if no_cache or self.local_cache is None or not self.block.maildir:
+        if no_cache or self.local_cache is None:
             return False
-        return self.local_cache.is_eligible(self.block).eligible
+        return bool(self.block.maildir)
 
     def fetch_email(
         self, uid: int, folder: str = "INBOX", no_cache: bool = False
@@ -780,9 +780,9 @@ class ImapClient:
         segment under ``<maildir>/<folder>/{cur,new}/`` (mbsync's colon
         form and offlineimap's comma form both match) and IMAP is not
         contacted; on disk miss (file not yet synced) the call falls
-        back to IMAP.  When the index is stale, ``no_cache`` is set, or
-        the block is not opted in, the call goes to live IMAP.  Redact
-        policy is applied to the resulting ``Email`` regardless of source.
+        back to IMAP.  When ``no_cache`` is set or the block is not
+        opted in, the call goes to live IMAP.  Redact policy is applied
+        to the resulting ``Email`` regardless of source.
 
         Args:
             uid: Email UID
@@ -924,12 +924,11 @@ class ImapClient:
     ) -> Dict[int, Email]:
         """Fetch multiple emails by UIDs.
 
-        When the block is opted into the local cache and the index is
-        eligible (see :meth:`_disk_cache_eligible`), each UID is resolved
-        from the local synced file first; UIDs whose file is not yet on
-        disk are fetched in a single IMAP batch.  When the index is
-        stale, ``no_cache`` is set, or the block is not opted in, every
-        UID is fetched from live IMAP.
+        When the block is opted into the local cache (see
+        :meth:`_disk_cache_eligible`), each UID is resolved from the
+        local synced file first; UIDs whose file is not yet on disk are
+        fetched in a single IMAP batch.  When ``no_cache`` is set or the
+        block is not opted in, every UID is fetched from live IMAP.
 
         Args:
             uids: List of email UIDs
@@ -1780,7 +1779,7 @@ class ImapClient:
             ``provenance`` carries ``source`` (``"local"`` or
             ``"remote"``), ``indexed_at`` (ISO 8601 or ``None``),
             ``fell_back_reason`` (``None`` or one of ``"no_cache"``,
-            ``"mu_missing"``, ``"db_missing"``, ``"stale"``,
+            ``"mu_missing"``, ``"db_missing"``,
             ``"untranslatable"``, ``"mu_no_matches"``,
             ``"maildir_not_indexed"``, ``"folder_not_synced"``,
             ``"folder_not_allowed"``, ``"exception"``), and ``query``,
@@ -1854,7 +1853,11 @@ class ImapClient:
         outcome.report.fallbacks = list(fallbacks)
         provenance = {
             "source": "remote",
-            "indexed_at": None,
+            "indexed_at": (
+                self.local_cache.index_mtime_iso()
+                if self.local_cache is not None
+                else None
+            ),
             "fell_back_reason": fell_back_reason,
             "query": outcome.report.as_dict(),
             "folders_searched": list(outcome.folders_searched),

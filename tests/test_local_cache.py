@@ -1,7 +1,6 @@
 """Tests for the optional local-cache search backend (mu)."""
 
 import json
-import os
 import subprocess
 from datetime import datetime
 from typing import Any, Dict
@@ -65,27 +64,10 @@ class TestMuBackendIsEligible:
         assert result.eligible is False
         assert result.reason == "db_missing"
 
-    def test_stale(self, tmp_path, monkeypatch):
-        """A xapian dir whose mtime is older than max_staleness_seconds
-        triggers a stale fallback."""
-        muhome = _make_xapian_dir(tmp_path)
-        xapian = os.path.join(muhome, "xapian")
-        # Backdate xapian mtime to two hours ago.
-        old_ts = datetime.now().timestamp() - 7200
-        os.utime(xapian, (old_ts, old_ts))
-        cfg = LocalCacheConfig(mu_index=muhome, max_staleness_seconds=3600)
-        backend = MuBackend(cfg)
-        monkeypatch.setattr("courier.local_cache.shutil.which", lambda _: "/usr/bin/mu")
-
-        result = backend.is_eligible(_make_block())
-
-        assert result.eligible is False
-        assert result.reason == "stale"
-
     def test_eligible(self, tmp_path, monkeypatch):
         """A fresh xapian dir plus mu on PATH yields eligibility."""
         muhome = _make_xapian_dir(tmp_path)
-        cfg = LocalCacheConfig(mu_index=muhome, max_staleness_seconds=86400)
+        cfg = LocalCacheConfig(mu_index=muhome)
         backend = MuBackend(cfg)
         monkeypatch.setattr("courier.local_cache.shutil.which", lambda _: "/usr/bin/mu")
 
@@ -99,7 +81,7 @@ class TestMuBackendIsEligible:
         is applied against the on-disk maildir file at search time, not
         by forcing an IMAP round-trip."""
         muhome = _make_xapian_dir(tmp_path)
-        cfg = LocalCacheConfig(mu_index=muhome, max_staleness_seconds=86400)
+        cfg = LocalCacheConfig(mu_index=muhome)
         backend = MuBackend(cfg)
         monkeypatch.setattr("courier.local_cache.shutil.which", lambda _: "/usr/bin/mu")
         block = ImapBlock(
@@ -124,7 +106,7 @@ class TestMuBackendSearch:
     def _backend(self, tmp_path) -> MuBackend:
         """Build a MuBackend with a real (empty) xapian dir at tmp_path."""
         muhome = _make_xapian_dir(tmp_path)
-        cfg = LocalCacheConfig(mu_index=muhome, max_staleness_seconds=86400)
+        cfg = LocalCacheConfig(mu_index=muhome)
         return MuBackend(cfg)
 
     def test_invokes_mu_with_correct_argv(self, tmp_path):
@@ -633,7 +615,7 @@ class TestFolderExistenceCheck:
 
     def _backend(self, tmp_path) -> MuBackend:
         muhome = _make_xapian_dir(tmp_path)
-        cfg = LocalCacheConfig(mu_index=muhome, max_staleness_seconds=86400)
+        cfg = LocalCacheConfig(mu_index=muhome)
         return MuBackend(cfg)
 
     def _maildir(self, tmp_path, *folders: str) -> str:
@@ -740,7 +722,7 @@ class TestAllowedFoldersScope:
 
     def _backend(self, tmp_path) -> MuBackend:
         muhome = _make_xapian_dir(tmp_path)
-        cfg = LocalCacheConfig(mu_index=muhome, max_staleness_seconds=86400)
+        cfg = LocalCacheConfig(mu_index=muhome)
         return MuBackend(cfg)
 
     def test_allowed_folders_reach_the_mu_query(self, tmp_path):
@@ -880,7 +862,7 @@ class TestScopePrefix:
 
     def _backend(self, tmp_path) -> MuBackend:
         muhome = _make_xapian_dir(tmp_path)
-        cfg = LocalCacheConfig(mu_index=muhome, max_staleness_seconds=86400)
+        cfg = LocalCacheConfig(mu_index=muhome)
         return MuBackend(cfg)
 
     def test_block_directly_under_root(self, tmp_path):
@@ -955,7 +937,7 @@ class TestStoreMaildirRoot:
 
     def _backend(self, tmp_path) -> MuBackend:
         muhome = _make_xapian_dir(tmp_path)
-        cfg = LocalCacheConfig(mu_index=muhome, max_staleness_seconds=86400)
+        cfg = LocalCacheConfig(mu_index=muhome)
         return MuBackend(cfg)
 
     def test_parses_maildir_row(self, tmp_path):
@@ -996,7 +978,7 @@ class TestWorldAsOfBoundsMuQuery:
 
     def _backend(self, tmp_path) -> MuBackend:
         muhome = _make_xapian_dir(tmp_path)
-        cfg = LocalCacheConfig(mu_index=muhome, max_staleness_seconds=86400)
+        cfg = LocalCacheConfig(mu_index=muhome)
         return MuBackend(cfg)
 
     def _capture_query(self, tmp_path, query: str) -> str:
@@ -1051,7 +1033,7 @@ class TestSearchTruncationProbe:
 
     def _backend(self, tmp_path) -> MuBackend:
         muhome = _make_xapian_dir(tmp_path)
-        cfg = LocalCacheConfig(mu_index=muhome, max_staleness_seconds=86400)
+        cfg = LocalCacheConfig(mu_index=muhome)
         return MuBackend(cfg)
 
     def _record(self, n: int) -> Dict[str, Any]:

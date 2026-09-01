@@ -261,7 +261,7 @@ courier -A --format json \
   > "$RESULTS"
 ```
 
-Output shape: `{op_key: {imap_name: {results: [...], provenance: {...}}}}`, and `folders_failed` alongside them in a block where a folder's search or fetch failed. `results: []` next to a `folders_failed` entry is a folder that was never looked in, not an absence; the exit code says the same, 1 for a clean zero and 2 for a zero with failures. `courier -A` queries every IMAP block; `--imap NAME` (repeats across the chain) selects specific blocks. Slice the JSON with `jq` against a tempfile; `head`/`tail` cut mid-structure. stderr carries nudges addressed to the user's terminal (a version reminder, a config warning), so folding it into stdout with `2>&1` puts non-JSON text in front of `jq`.
+Output shape: `{op_key: {imap_name: {results: [...], provenance: {...}}}}`, and `folders_failed` alongside them in a block where a folder's search or fetch failed. `results: []` next to a `folders_failed` entry is a folder that was never looked in, not an absence; the exit code says the same, 1 for a clean zero and 2 for a zero with failures. `courier -A` queries every IMAP block; `--imap NAME` (repeats across the chain) selects specific blocks. Slice the JSON with `jq` against a tempfile; `head`/`tail` cut mid-structure. stderr carries nudges addressed to the user's terminal (a version reminder, a config warning), so folding it into stdout with `2>&1` puts non-JSON text in front of `jq`. `provenance.indexed_at` is the local index's mtime, carried whether the answer came from the index or from IMAP; courier serves from the index at any age and leaves the judgement to you, so compare it against what your question tolerates and pass `--no-cache` when you need live data.
 
 ## Reads
 

@@ -16,7 +16,7 @@ The dispatcher's pure decisions live here so the I/O layer
   substrings.
 - **Fallback phrasing**: when every backend refuses, the terminal error
   names each decline in the ``fell_back_reason`` vocabulary, phrased
-  for the caller's next action (a stale cache says "refresh it", never
+  for the caller's next action (a missing index says "build it", never
   "enable a local mail cache").
 """
 
@@ -70,10 +70,6 @@ _FALLBACK_PHRASES: Dict[str, str] = {
     "db_missing": (
         "a local cache is configured but its index database is missing; "
         "build it with mu index"
-    ),
-    "stale": (
-        "your local cache exists but its index is stale; refresh the "
-        "maildir sync and re-run mu index"
     ),
     "untranslatable": "the local cache could not express this query",
     "mu_no_matches": "the local cache answered with mu's ambiguous no-matches exit",

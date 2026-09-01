@@ -142,16 +142,12 @@ class LocalCacheConfig:
 
     Attributes:
         indexer: Backend identifier; only ``"mu"`` is accepted in v1.
-        max_staleness_seconds: Maximum age of the index before the
-            backend declines and the call falls back to IMAP.  Default
-            4000 (~67 minutes), comfortably above an hourly index cron.
         mu_index: Optional explicit muhome path (the value passed to
             ``mu --muhome=...``).  If unset, the backend discovers it
             from ``mu info store`` on first use.
     """
 
     indexer: str = "mu"
-    max_staleness_seconds: int = 4000
     mu_index: Optional[str] = None
 
     @classmethod
@@ -159,7 +155,6 @@ class LocalCacheConfig:
         """Create local-cache configuration from a flat dictionary."""
         return cls(
             indexer=data.get("indexer", "mu"),
-            max_staleness_seconds=int(data.get("max_staleness_seconds", 4000)),
             mu_index=data.get("mu_index"),
         )
 

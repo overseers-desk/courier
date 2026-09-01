@@ -1044,29 +1044,27 @@ class TestImapClient:
         assert 2 in fetched_uids
         assert 1 not in fetched_uids
 
-    def test_fetch_email_stale_index_uses_imap(
+    def test_fetch_email_old_index_still_reads_from_disk(
         self, tmp_path, mock_imap_client, test_email_response_data
     ):
-        """A stale index sends a read to IMAP even though the file is on
-        disk: under one policy, read obeys the same staleness gate as
-        search so flags reflect the server."""
+        """Reading a known UID's bytes consults no search index, so an
+        index the caller might call old does not push the read to IMAP."""
         root = _make_maildir_root(tmp_path)
         _write_maildir_message(root, "INBOX", uid=12345, subject="On disk")
         mu = MagicMock()
-        mu.is_eligible.return_value = EligibilityResult(False, "stale")
+        mu.is_eligible.side_effect = AssertionError(
+            "disk reads must not consult index eligibility"
+        )
         client = ImapClient(_make_block_with_maildir(root), local_cache=mu)
 
         with patch("imapclient.IMAPClient") as mock_cls:
             mock_cls.return_value = mock_imap_client
-            mock_imap_client.select_folder.return_value = {b"EXISTS": 10}
-            mock_imap_client.fetch.return_value = {12345: test_email_response_data}
             client.connect()
             email_obj = client.fetch_email(12345, folder="INBOX")
 
         assert email_obj is not None
-        mock_imap_client.fetch.assert_called_once_with(
-            [12345], ["BODY.PEEK[]", "FLAGS"]
-        )
+        assert email_obj.subject == "On disk"
+        mock_imap_client.fetch.assert_not_called()
 
     def test_fetch_email_no_cache_skips_disk(
         self, tmp_path, mock_imap_client, test_email_response_data
@@ -2102,6 +2100,26 @@ class TestSearchEmailsDispatch:
             {"backend": "cache", "reason": "exception"}
         ]
 
+    def test_remote_result_still_reports_the_index_age(self):
+        """A result that went to IMAP still carries the index mtime, so
+        the caller can judge an age courier no longer judges for it."""
+        block = self._make_block_with_maildir()
+
+        mu = MagicMock()
+        mu.is_eligible.return_value = EligibilityResult(True)
+        mu.search.side_effect = MuFailure("boom")
+        mu.index_mtime_iso.return_value = "2025-04-01T12:00:00+00:00"
+
+        client = ImapClient(block, local_cache=mu)
+
+        with patch.object(
+            client, "_search_emails_imap", return_value=self._remote_outcome()
+        ):
+            result = client.search_emails("from:alice")
+
+        assert result["provenance"]["source"] == "remote"
+        assert result["provenance"]["indexed_at"] == "2025-04-01T12:00:00+00:00"
+
     def test_search_emails_falls_back_on_untranslatable(self):
         """An UntranslatableQuery from the backend triggers an IMAP fallback."""
         block = self._make_block_with_maildir()
@@ -2228,7 +2246,7 @@ class TestSearchEmailsDispatch:
         block = self._make_block_with_maildir()
 
         mu = MagicMock()
-        mu.is_eligible.return_value = EligibilityResult(False, "stale")
+        mu.is_eligible.return_value = EligibilityResult(False, "db_missing")
 
         client = ImapClient(block, local_cache=mu)
         with patch.object(
@@ -2242,7 +2260,7 @@ class TestSearchEmailsDispatch:
                 client.search_emails("label:work")
         message = str(excinfo.value)
         assert "label:" in message
-        assert "your local cache exists but its index is stale" in message
+        assert "its index database is missing" in message
 
 
 class TestAllowedFoldersLocalPaths:

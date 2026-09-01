@@ -34,7 +34,6 @@ Add a `[local_cache]` block and a `maildir` field on the `[imap.*]` block whose 
 ```toml
 [local_cache]
 indexer = "mu"
-max_staleness_seconds = 4000
 
 [imap.gmail]
 host = "imap.gmail.com"
@@ -47,7 +46,7 @@ imap = "gmail"
 address = "you@gmail.com"
 ```
 
-`max_staleness_seconds` is the threshold past which courier considers the index stale and falls back to IMAP for that query. Pick a value matching how often your sync job runs (e.g. if you run offlineimap every hour, `max_staleness_seconds = 4000` lets a slightly delayed sync still serve the query).
+Courier serves from the index whenever one is present, whatever its age, and reports that age as `provenance.indexed_at` on every result. How old is too old depends on the question being asked, which courier does not know: "when did I last write to this person" tolerates a week, "did anything arrive this morning" tolerates nothing. A caller that needs live data passes `--no-cache`.
 
 Courier locates the mu store by asking `mu info store`, which follows mu's own resolution: the `MUHOME` environment variable when set, mu's default location otherwise. Set `mu_index` in `[local_cache]` to the muhome path whenever the store sits anywhere else. Courier may be invoked by a cron job, an MCP client, or a desktop session, and none of those need share the environment your shell has.
 

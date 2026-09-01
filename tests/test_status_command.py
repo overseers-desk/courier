@@ -198,12 +198,12 @@ def _opted_in_block() -> ImapBlock:
     )
 
 
-def _cache_cfg(block: ImapBlock, max_staleness_seconds: int = 4000) -> CourierConfig:
+def _cache_cfg(block: ImapBlock) -> CourierConfig:
     """A config whose [local_cache] table opts the given block in."""
     return CourierConfig(
         imap_blocks={"a": block},
         smtp_blocks={},
-        local_cache=LocalCacheConfig(max_staleness_seconds=max_staleness_seconds),
+        local_cache=LocalCacheConfig(),
     )
 
 
@@ -211,8 +211,8 @@ class TestProbeCache:
     """`_probe_cache` renders the CACHE cell from backend eligibility.
 
     A block not opted into the cache renders ``"-"``; an opted-in block
-    renders freshness ('ok'), staleness ('STALE' with age and budget),
-    or the backend-unavailable reasons ('mu not found' / 'no index').
+    renders the index age ('ok'), or the backend-unavailable reasons
+    ('mu not found' / 'no index').
     """
 
     def test_dash_when_no_local_cache_configured(self):
@@ -236,19 +236,6 @@ class TestProbeCache:
         with patch("courier.__main__._get_mu_backend", return_value=backend):
             cell = _probe_cache(cfg, block)
         assert cell.startswith("ok (") and cell.endswith("old)")
-
-    def test_stale_reports_age_and_budget(self):
-        from datetime import datetime, timedelta, timezone
-
-        block = _opted_in_block()
-        cfg = _cache_cfg(block, max_staleness_seconds=3600)
-        backend = MagicMock()
-        backend.is_eligible.return_value = EligibilityResult(False, "stale")
-        old = datetime.now(timezone.utc) - timedelta(days=2)
-        backend.index_mtime_iso.return_value = old.isoformat(timespec="seconds")
-        with patch("courier.__main__._get_mu_backend", return_value=backend):
-            cell = _probe_cache(cfg, block)
-        assert cell.startswith("STALE (") and "max 1h" in cell
 
     def test_mu_missing_reason(self):
         block = _opted_in_block()

@@ -444,7 +444,7 @@ def register_tools(mcp: FastMCP, imap_client: ImapClient) -> None:
             index mtime when applicable; ``provenance.fell_back_reason``
             names the condition that forced an IMAP fallback
             (``"no_cache"``, ``"mu_missing"``, ``"db_missing"``,
-            ``"stale"``, ``"untranslatable"``, ``"exception"``) or is
+            ``"untranslatable"``, ``"exception"``) or is
             ``null``; ``provenance.query`` is the translation report.
             Untranslatable queries, refused charsets, and connection
             failures return ``{"error": ...}`` with the reason and the

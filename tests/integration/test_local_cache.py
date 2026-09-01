@@ -30,7 +30,6 @@ def test_mu_search_real_index() -> None:
 
     cfg = LocalCacheConfig(
         indexer="mu",
-        max_staleness_seconds=86400,
         mu_index=os.environ.get("COURIER_TEST_MU_INDEX"),
     )
     backend = MuBackend(cfg)

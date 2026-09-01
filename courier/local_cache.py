@@ -7,9 +7,11 @@ CLI is handled by the caller.
 
 The contract is "a maildir exists and mu indexes it".  This module does
 not invoke ``mu index``; it does not read external sync-tool state (e.g. offlineimap's);
-and it does not model any sync stack.  When the configured staleness
-budget is exceeded (or any other check fails), eligibility returns
-``False`` and the caller is expected to fall back to IMAP.
+and it does not model any sync stack.  It reports the index mtime and
+judges nothing by it: the caller reads the age off
+``provenance.indexed_at`` and decides what its own question tolerates.
+When a check fails, eligibility returns ``False`` and the caller is
+expected to fall back to IMAP.
 """
 
 import email as email_pkg
@@ -41,7 +43,7 @@ logger = logging.getLogger(__name__)
 class MuFailure(Exception):
     """Raised when invoking mu fails for a non-eligibility reason.
 
-    Eligibility failures (mu missing, db missing, stale index) are
+    Eligibility failures (mu missing, db missing) are
     reported via :class:`EligibilityResult`; this exception is reserved
     for runtime failures (timeout, non-zero exit, malformed output, an
     unservable maildir scope) that should trigger an IMAP fallback at
@@ -67,7 +69,7 @@ class EligibilityResult:
         eligible: Whether the local cache should be used for this call.
         reason: When ``eligible`` is ``False``, a short tag matching the
             ``provenance.fell_back_reason`` vocabulary used in search
-            responses (``"mu_missing"``, ``"db_missing"``, ``"stale"``).
+            responses (``"mu_missing"``, ``"db_missing"``).
             A block carrying a redact policy stays eligible: the policy
             is applied against the on-disk maildir file at format time,
             not by forcing an IMAP round-trip.
@@ -89,10 +91,10 @@ class MuBackend:
         """Initialise with the global local-cache configuration.
 
         Args:
-            cfg: Configuration block carrying ``indexer``,
-                ``max_staleness_seconds``, and an optional ``mu_index``
-                override.  When ``mu_index`` is unset, the muhome is
-                discovered lazily from ``mu info store`` on first use.
+            cfg: Configuration block carrying ``indexer`` and an
+                optional ``mu_index`` override.  When ``mu_index`` is
+                unset, the muhome is discovered lazily from ``mu info
+                store`` on first use.
         """
         self.cfg = cfg
         self._muhome: Optional[str] = cfg.mu_index
@@ -260,13 +262,6 @@ class MuBackend:
         xapian = self._xapian_dir()
         if not xapian or not os.path.isdir(xapian):
             return EligibilityResult(False, "db_missing")
-        try:
-            mtime = os.path.getmtime(xapian)
-        except OSError:
-            return EligibilityResult(False, "db_missing")
-        age = datetime.now().timestamp() - mtime
-        if age > self.cfg.max_staleness_seconds:
-            return EligibilityResult(False, "stale")
         return EligibilityResult(True)
 
     def index_mtime_iso(self) -> Optional[str]:

@@ -189,11 +189,6 @@ class TestCapabilityGates:
 class TestFallbackPhrasing:
     """Terminal refusals name every decline in cache-user vocabulary."""
 
-    def test_stale_names_the_existing_cache(self):
-        text = describe_fallbacks([{"backend": "cache", "reason": "stale"}])
-        assert "your local cache exists but its index is stale" in text
-        assert "enable" not in text
-
     def test_unknown_reason_passes_through(self):
         text = describe_fallbacks([{"backend": "cache", "reason": "novel_tag"}])
         assert "novel_tag" in text

@@ -116,5 +116,4 @@ address = "alias-host@gmail.com"
 
 # [local_cache]
 # indexer = "mu"
-# max_staleness_seconds = 4000
 # mu_index = "/path/to/muhome"        # only when the store is not in mu's default place
