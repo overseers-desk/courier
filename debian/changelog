@@ -1,3 +1,20 @@
+courier (1.1.20) unstable; urgency=medium
+
+  * read and reply take --message-id in place of -f/--uid. The lookup
+    needs an explicit --imap NAME, runs a live search on that account,
+    and refuses instead of guessing when the search fails, the server
+    does not honour it, or the ID sits in several folders (-f picks one).
+  * Text and oneline search output carry the UID, and oneline the folder,
+    so a hit can be passed straight to read, reply and the other verbs.
+  * The local index is served at any age: its mtime is reported as
+    provenance.indexed_at and the caller decides whether that is fresh
+    enough, with --no-cache for live data. max_staleness_seconds is no
+    longer read. Message bodies are read from disk without consulting
+    the index.
+  * --help shows bracketed TOML table names such as [imap.NAME] intact.
+
+ -- Weiwu Zhang <a@colourful.land>  Fri, 25 Sep 2026 00:00:00 +0000
+
 courier (1.1.19) unstable; urgency=medium
 
   * The Claude Code command installs into the configuration directory the

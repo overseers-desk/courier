@@ -1,5 +1,5 @@
 Name:           courier
-Version:        1.1.19
+Version:        1.1.20
 Release:        1%{?dist}
 Summary:        Email toolkit for AI assistants and command-line scripting
 License:        MIT
@@ -67,6 +67,12 @@ install -Dpm 644 debian/courier.1 %{buildroot}%{_mandir}/man1/courier.1
 %{_mandir}/man1/courier.1*
 
 %changelog
+* Fri Sep 25 2026 Weiwu Zhang <a@colourful.land> - 1.1.20-1
+- read and reply take --message-id in place of -f/--uid. The lookup needs an explicit --imap NAME, runs a live search on that account, and refuses instead of guessing when the search fails, the server does not honour it, or the ID sits in several folders (-f picks one).
+- Text and oneline search output carry the UID, and oneline the folder, so a hit can be passed straight to read, reply and the other verbs.
+- The local index is served at any age: its mtime is reported as provenance.indexed_at and the caller decides whether that is fresh enough, with --no-cache for live data. max_staleness_seconds is no longer read. Message bodies are read from disk without consulting the index.
+- --help shows bracketed TOML table names such as [imap.NAME] intact.
+
 * Thu Aug 20 2026 Weiwu Zhang <a@colourful.land> - 1.1.19-1
 - The Claude Code command installs into the configuration directory the session actually reads: $CLAUDE_CONFIG_DIR when it is set, ~/.claude otherwise. A machine with several configuration trees no longer takes the install in one and leaves the others without it.
 
