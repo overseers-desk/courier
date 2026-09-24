@@ -1440,6 +1440,7 @@ def _format_chain_text(result: Dict[str, Dict[str, Any]]) -> str:
                     lines.append(f"            from: {from_}")
                     lines.append(f"            to:   {to}")
                     lines.append(f"            folder: {folder}")
+                    lines.append(f"            uid:    {r.get('uid', '')}")
                     if message_id:
                         lines.append(f"            id:     {message_id}")
         sections.append("\n".join(lines))
@@ -1449,7 +1450,9 @@ def _format_chain_text(result: Dict[str, Dict[str, Any]]) -> str:
 def _format_chain_oneline(result: Dict[str, Dict[str, Any]]) -> str:
     """Render a chain result as one tab-separated line per result.
 
-    Columns: op_key, imap_name, date, subject, from -> to, message_id.
+    Columns: op_key, imap_name, date, subject, from -> to, folder, uid,
+    message_id. Folder and uid are what ``read``/``reply`` take as
+    ``-f``/``--uid``.
     """
     lines: List[str] = []
     for op_key, blocks in result.items():
@@ -1474,7 +1477,8 @@ def _format_chain_oneline(result: Dict[str, Dict[str, Any]]) -> str:
                 message_id = r.get("message_id", "")
                 lines.append(
                     f"{op_key}\t{imap_name}\t{date}\t{subject}"
-                    f"\t{from_addr} -> {to_addr}\t{message_id}"
+                    f"\t{from_addr} -> {to_addr}\t{r.get('folder', '')}"
+                    f"\t{r.get('uid', '')}\t{message_id}"
                 )
     return "\n".join(lines)
 

@@ -70,7 +70,17 @@ class TestFormatChainText:
         h = _hit()
         del h["message_id"]
         out = _format_chain_text(_wrap([h]))
-        assert "id:" not in out
+        assert not any(ln.strip().startswith("id:") for ln in out.splitlines())
+
+    def test_renders_uid_for_follow_up_verbs(self):
+        # read/reply/move take -f FOLDER --uid N, so both must be printed.
+        out = _format_chain_text(_wrap([_hit()]))
+        assert "folder: INBOX" in out
+        assert "uid:    42" in out
+
+    def test_read_message_renders_uid(self):
+        out = _format_chain_text(_read_wrap(_read_message()))
+        assert "uid:    7" in out
 
     def test_op_key_header_present(self):
         out = _format_chain_text(_wrap([_hit()], op_key="search from:alice"))
@@ -142,6 +152,12 @@ class TestFormatChainOneline:
         first = out.splitlines()[0]
         cols = first.split("\t")
         assert cols[-1] == ""
+
+    def test_folder_and_uid_precede_message_id(self):
+        # read/reply/move take -f FOLDER --uid N, so both must be printed.
+        out = _format_chain_oneline(_wrap([_hit("<t@example.com>")]))
+        cols = out.splitlines()[0].split("\t")
+        assert cols[-3:] == ["INBOX", "42", "<t@example.com>"]
 
     def test_op_key_is_first_column(self):
         out = _format_chain_oneline(_wrap([_hit()], op_key="search from:alice"))
