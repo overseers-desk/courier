@@ -93,7 +93,7 @@ install -Dpm 644 debian/courier.1 %{buildroot}%{_mandir}/man1/courier.1
 - Typed CLI exit codes for data-returning commands.
 - Sending and FCC filing available as library API.
 
-* Mon Jun 30 2026 Weiwu Zhang <a@colourful.land> - 1.1.16-1
+* Tue Jun 30 2026 Weiwu Zhang <a@colourful.land> - 1.1.16-1
 - Project renamed from mailroom to courier; package name on PyPI is now courier.
 - Install via pip: pip install courier or pip install "courier[mcp]".
 
