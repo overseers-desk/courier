@@ -18,7 +18,7 @@ display_help() {
     echo "  --test-only                 Run only tests without coverage"
     echo "  --coverage-only             Run only tests with coverage"
     echo "  --skip-integration          Skip integration tests"
-    echo "  --ci                        Run in CI mode (stricter checks)"
+    echo "  --ci                        Fail if test coverage is below the minimum"
     echo ""
     echo "If no options are provided, all checks will be run."
     exit 0
