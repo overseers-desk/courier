@@ -13,7 +13,7 @@ cd "$PROJECT_ROOT" || exit 1
 echo "=== Ensuring Project Virtual Environment (.venv) Exists ==="
 if [ ! -d ".venv" ]; then
     echo "Virtual environment .venv not found. Creating and installing dependencies..."
-    uv sync --extra dev || exit 1
+    uv sync --extra dev --extra mcp || exit 1
     # Activate venv for subsequent commands in this script context if needed,
     # although uv run should handle it.
     source .venv/bin/activate || exit 1 
