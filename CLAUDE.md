@@ -5,7 +5,7 @@ The invariants live in [`INVARIANTS.md`](INVARIANTS.md): the authority of `resea
 @INVARIANTS.md
 
 ## Versioning and Packaging
-- Version is defined in `pyproject.toml` (single source of truth) and mirrored in `courier/__init__.py`, `courier/__main__.py`, and `courier/mcp_server.py`. Do not hardcode version numbers in documentation — use generic references like "latest" or `<version>` placeholders.
+- Version is defined in `pyproject.toml` (single source of truth) and mirrored in `courier/__init__.py`, whose `__version__` the other modules import; `uv lock` carries it into `uv.lock`. Do not hardcode version numbers in documentation — use generic references like "latest" or `<version>` placeholders.
 - Do not bump the version unless the user asks for it.
 - Packaging: `debian/` for .deb, `courier.spec` for .rpm, and PyPI (`pip install courier`) as the primary channel. The Homebrew formula lives in the `overseers-desk/homebrew-od` tap repo at `Formula/courier.rb`; its `url`/`sha256` point at the PyPI sdist (the same tarball pip downloads), not the GitHub archive — see the release steps.
 
