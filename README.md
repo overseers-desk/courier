@@ -162,6 +162,7 @@ courier links -f INBOX -u 4523 -u 4524 -u 4525
 courier reply -f INBOX -u 4523 -b "Thanks, confirmed."
 courier reply -f INBOX -u 4523 -b "Invoice attached." --attach /tmp/invoice.pdf
 courier reply -f INBOX -u 4523 -b "Thanks, confirmed." --send
+courier --imap work reply --message-id "<abc@example.com>" -b "Thanks." --send
 
 # Compose a new message (--send requires --identity NAME, or
 # --smtp NAME --from EMAIL; see docs/CONFIGURATION.md)

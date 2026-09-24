@@ -33,6 +33,7 @@ from courier.errors import (
 from courier.imap_client import ImapClient
 from courier.logging_setup import setup_logging
 from courier.models import extract_links_batch
+from courier.query.ast import UntranslatableForBackend
 from courier.query.registry import render_operator_help
 from courier.watch import watch as watch_folder
 from courier.world_bound import world_as_of
@@ -332,6 +333,108 @@ def _build_op_key(subcmd: str, **kwargs: Any) -> str:
         uid = kwargs.get("uid", 0)
         parts += ["-f", folder, "--uid", str(uid)]
     return " ".join(parts)
+
+
+def _resolve_target(
+    client: ImapClient,
+    folder: Optional[str],
+    uid: Optional[int],
+    message_id: Optional[str],
+) -> Tuple[str, int]:
+    """Return the ``(folder, uid)`` a single-message verb acts on.
+
+    With ``--uid`` the pair is taken as given. With ``--message-id`` a
+    live ``msgid:`` search on the ``--imap`` block finds the message;
+    the local index is bypassed because its hits carry no UID. Any
+    answer short of exactly one folder holding that Message-ID refuses:
+    a failed search, a failed folder, or a hit whose Message-ID differs
+    (IMAP ``HEADER`` is a substring match, and some servers ignore it).
+
+    Args:
+        client: Connected client for the ``--imap`` block.
+        folder: ``-f`` value; with ``--message-id`` it narrows the search.
+        uid: ``--uid`` value, or ``None``.
+        message_id: ``--message-id`` value, with or without ``<>``.
+
+    Returns:
+        The folder and UID of the message.
+
+    Raises:
+        typer.Exit: 1 when the search fails, cannot be trusted, finds
+            nothing, or finds copies in several folders.
+    """
+    if message_id is None:
+        assert folder is not None and uid is not None
+        return folder, uid
+    bare = message_id.strip().strip("<>")
+    try:
+        envelope = client.search_emails(
+            f"msgid:<{bare}>", folder=folder, limit=20, no_cache=True
+        )
+    except (CourierError, UntranslatableForBackend, ValueError) as exc:
+        typer.echo(f"Error: cannot look up Message-ID on this account: {exc}", err=True)
+        raise typer.Exit(1)
+    hits: List[Dict[str, Any]] = envelope.get("results") or []
+    failed = envelope.get("folders_failed") or []
+    if failed:
+        names = ", ".join(f.get("folder", "?") for f in failed)
+        typer.echo(
+            f"Error: cannot look up Message-ID on this account: "
+            f"search failed in {names}",
+            err=True,
+        )
+        raise typer.Exit(1)
+    if any(str(h.get("message_id", "")).strip().strip("<>") != bare for h in hits):
+        typer.echo(
+            "Error: cannot look up Message-ID on this account: the server "
+            "returned messages with other Message-IDs, so it does not "
+            "honour the search",
+            err=True,
+        )
+        raise typer.Exit(1)
+    if not hits:
+        where = f" in {folder}" if folder else ""
+        typer.echo(f"Error: Message-ID <{bare}> not found{where}", err=True)
+        raise typer.Exit(1)
+    folders = sorted({h["folder"] for h in hits})
+    if len(folders) > 1:
+        typer.echo(
+            f"Error: Message-ID <{bare}> is in several folders "
+            f"({', '.join(folders)}); pass -f to choose one",
+            err=True,
+        )
+        raise typer.Exit(1)
+    return hits[0]["folder"], int(hits[0]["uid"])
+
+
+def _check_target_args(
+    folder: Optional[str], uid: Optional[int], message_id: Optional[str]
+) -> None:
+    """Validate the ``-f``/``--uid``/``--message-id`` combination.
+
+    Args:
+        folder: ``-f`` value.
+        uid: ``--uid`` value.
+        message_id: ``--message-id`` value.
+
+    Raises:
+        typer.Exit: 2 when both or neither of ``--uid`` and
+            ``--message-id`` are given, when ``--uid`` lacks ``-f``, or
+            when ``--message-id`` lacks an explicit ``--imap NAME``.
+    """
+    if (uid is None) == (message_id is None):
+        typer.echo("Error: give exactly one of --uid or --message-id", err=True)
+        raise typer.Exit(2)
+    if uid is not None and folder is None:
+        typer.echo("Error: --uid needs -f FOLDER", err=True)
+        raise typer.Exit(2)
+    if message_id is not None and len(_imap_names) != 1:
+        typer.echo(
+            "Error: --message-id needs --imap NAME: the lookup searches one "
+            "named account, never the default",
+            err=True,
+        )
+        raise typer.Exit(2)
 
 
 def _fetch_email_result(
@@ -2036,8 +2139,22 @@ def search(
 
 @app.command("read")
 def read(
-    folder: str = typer.Option(..., "--folder", "-f", help="Folder name."),
-    uid: int = typer.Option(..., "--uid", "-u", help="Email UID."),
+    folder: Optional[str] = typer.Option(
+        None,
+        "--folder",
+        "-f",
+        help="Folder name. Required with --uid; narrows a --message-id lookup.",
+    ),
+    uid: Optional[int] = typer.Option(None, "--uid", "-u", help="Email UID."),
+    message_id: Optional[str] = typer.Option(
+        None,
+        "--message-id",
+        help=(
+            "Find the message by Message-ID instead of --uid. Needs "
+            "--imap NAME; refuses when that account's search cannot give "
+            "one answer."
+        ),
+    ),
     no_cache: bool = typer.Option(
         False,
         "--no-cache",
@@ -2049,9 +2166,11 @@ def read(
     Output is a JSON object keyed by operation string, then by [imap.NAME]
     block name.
     """
+    _check_target_args(folder, uid, message_id)
     name = _resolve_single_imap_name()
     client = _make_client()
     try:
+        folder, uid = _resolve_target(client, folder, uid, message_id)
         result = _fetch_email_result(
             client, folder, uid, no_cache=no_cache or _no_cache
         )
@@ -2846,10 +2965,27 @@ def compose(
 
 @app.command("reply")
 def reply(
-    folder: str = typer.Option(
-        ..., "--folder", "-f", help="Folder containing the email."
+    folder: Optional[str] = typer.Option(
+        None,
+        "--folder",
+        "-f",
+        help=(
+            "Folder containing the email. Required with --uid; narrows a "
+            "--message-id lookup."
+        ),
     ),
-    uid: int = typer.Option(..., "--uid", "-u", help="Email UID to reply to."),
+    uid: Optional[int] = typer.Option(
+        None, "--uid", "-u", help="Email UID to reply to."
+    ),
+    message_id: Optional[str] = typer.Option(
+        None,
+        "--message-id",
+        help=(
+            "Reply to the message with this Message-ID instead of --uid. "
+            "Needs --imap NAME; refuses when that account's search cannot "
+            "give one answer."
+        ),
+    ),
     body: str = typer.Option(..., "--body", "-b", help="Reply body text."),
     no_thread: bool = typer.Option(
         False,
@@ -3000,11 +3136,13 @@ def reply(
         )
         raise typer.Exit(1)
 
+    _check_target_args(folder, uid, message_id)
     name = _resolve_single_imap_name()
     block = cfg.imap_blocks[name]
 
     client = _make_client()
     try:
+        folder, uid = _resolve_target(client, folder, uid, message_id)
         email_obj = client.fetch_email(uid, folder)
         if not email_obj:
             typer.echo(f"Email UID {uid} not found in {folder}", err=True)

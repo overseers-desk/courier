@@ -291,8 +291,11 @@ courier --imap <imap> export -f <folder> -u <uid> --raw -o /tmp/msg.eml
 ```bash
 courier compose --to recipient@example.com --subject "..." --body "..." --send -i NAME
 courier --imap <imap> reply -f <folder> -u <uid> --body "..." --send -i NAME
+courier --imap <imap> reply --message-id "<id>" --body "..." --send -i NAME
 courier --imap <imap> send-draft -f Drafts -u <uid>
 ```
+
+`read` and `reply` take `--message-id` in place of `-f`/`-u`. It needs an explicit `--imap`, and it refuses when that account's search fails or the ID sits in several folders; `-f` then picks the folder.
 
 Subjects and bodies pass through as UTF-8 in whatever script the user writes; their correspondence runs in Spanish and Chinese as well as English.
 
