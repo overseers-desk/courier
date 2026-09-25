@@ -1780,11 +1780,13 @@ class ImapClient:
             ``"remote"``), ``indexed_at`` (ISO 8601 or ``None``),
             ``fell_back_reason`` (``None`` or one of ``"no_cache"``,
             ``"mu_missing"``, ``"db_missing"``,
-            ``"untranslatable"``, ``"mu_no_matches"``,
+            ``"untranslatable"``,
             ``"maildir_not_indexed"``, ``"folder_not_synced"``,
             ``"folder_not_allowed"``, ``"exception"``), and ``query``,
             the translation report ``{dialect, approximations,
-            fallbacks, treated_as_text}``.  Remote provenance adds
+            fallbacks, treated_as_text}``.  An empty local answer adds
+            ``hint``, naming that the server was not consulted and the
+            ``--no-cache`` retry.  Remote provenance adds
             ``folders_searched``.  ``total_count`` is the match count
             before the limit cut (``None`` when the local cache cannot
             know it), and ``truncated`` reports whether the limit cut
@@ -1829,6 +1831,15 @@ class ImapClient:
             if self.world_as_of is not None:
                 provenance["world_as_of"] = self._world_as_of_provenance(
                     dropped_after_bound, date_source="mu_index"
+                )
+            if not local_results:
+                # A local miss is the caller's decision point, not a
+                # trigger for a live search: only the caller knows
+                # whether the interest is current enough to warrant the
+                # server round trip (issue #95).
+                provenance["hint"] = (
+                    "no match in the local index; the IMAP server was "
+                    "not searched; re-run with --no-cache to search it"
                 )
             return {
                 "results": local_results,

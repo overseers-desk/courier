@@ -331,13 +331,13 @@ class MuBackend:
             UntranslatableForBackend: When the query cannot be expressed
                 in mu (raised by the mu emitter; also importable under
                 its old name ``UntranslatableQuery``).
-            MuFailure: When mu invocation fails (timeout, non-zero
-                exit — including exit 2, which mu uses both for "no
-                matches" and for a query it silently failed to parse —
-                or malformed output), the block's maildir is not under
-                the mu store root, or a folder-scoped search names a
-                folder absent from the synced maildir (tagged
-                ``"folder_not_synced"``; issue #64).
+            MuFailure: When mu invocation fails (timeout, an exit code
+                other than 0 or 2, or malformed output), the block's
+                maildir is not under the mu store root, or a
+                folder-scoped search names a folder absent from the
+                synced maildir (tagged ``"folder_not_synced"``; issue
+                #64). Exit 2 is mu's no-match answer and returns an
+                empty result rather than raising.
             ValueError: When ``imap_block.maildir`` is not configured.
         """
         if not imap_block.maildir:
@@ -397,19 +397,15 @@ class MuBackend:
         except subprocess.TimeoutExpired as e:
             raise MuFailure(f"mu find timed out: {e}") from e
         if proc.returncode == 2:
-            # mu exits 2 both for a genuinely empty result and for a
-            # query it silently failed to parse (verified on mu
-            # 1.12.14: an unknown field like ``filename:x`` gives the
-            # same exit and the same "no matches" message as a real
-            # miss).  An empty that cannot be told apart from a
-            # rejected query must not be served as authoritative
-            # absence, so it surfaces here and the caller confirms the
-            # empty against IMAP (issue #64).
-            raise MuFailure(
-                f"mu find exited 2 (no matches, or a query mu could not "
-                f"parse): {proc.stderr.strip()}",
-                fell_back_reason="mu_no_matches",
-            )
+            # mu exits 2 for a no-match result. It rejects no field:
+            # an unknown one is reinterpreted as free text (visible
+            # via ``mu find --analyze``), and the queries mu receives
+            # come only from courier's emitter, whose field vocabulary
+            # is closed and whose user text travels as quoted values.
+            # Exit 2 on an emitter-produced query is therefore a
+            # genuine miss, served as one; the caller's envelope
+            # disclosure names the --no-cache retry (issue #95).
+            return [], emission.report, False
         if proc.returncode != 0:
             raise MuFailure(f"mu find exited {proc.returncode}: {proc.stderr.strip()}")
         if not proc.stdout.strip():

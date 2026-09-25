@@ -25,6 +25,7 @@ from courier.__main__ import (
     _chain_exit_code,
     _empty_result_for_subcmd,
     _execute_chain,
+    _format_provenance_line,
     _parse_read_args,
     _parse_search_args,
     _peel_chain_tail_flags,
@@ -1085,3 +1086,25 @@ class TestFormatFlagAnyPosition:
 
     def test_lone_verb_without_format_still_falls_to_typer(self):
         assert _split_chain_argv(["read", "-f", "INBOX", "-u", "1"]) is None
+
+
+class TestProvenanceLine:
+    """The text-mode provenance comment line."""
+
+    def test_hint_renders_on_its_own_line(self):
+        line = _format_provenance_line(
+            {
+                "source": "local",
+                "indexed_at": "2025-04-01T12:00:00+00:00",
+                "fell_back_reason": None,
+                "hint": "no match in the local index; re-run with --no-cache",
+            }
+        )
+        assert "source=local" in line
+        assert "--no-cache" in line
+
+    def test_no_hint_no_trace(self):
+        line = _format_provenance_line(
+            {"source": "remote", "indexed_at": None, "fell_back_reason": None}
+        )
+        assert "hint" not in line

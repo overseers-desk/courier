@@ -1503,7 +1503,11 @@ def _format_provenance_line(provenance: Dict[str, Any]) -> str:
     parts = [f"source={source}", f"indexed_at={indexed_at}"]
     if reason:
         parts.append(f"fell_back={reason}")
-    return "# " + " ".join(parts)
+    line = "# " + " ".join(parts)
+    hint = provenance.get("hint")
+    if hint:
+        line += f"\n# {hint}"
+    return line
 
 
 def _format_chain_text(result: Dict[str, Dict[str, Any]]) -> str:

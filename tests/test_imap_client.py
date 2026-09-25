@@ -2065,6 +2065,57 @@ class TestSearchEmailsDispatch:
         assert result["total_count"] == 1
         assert result["truncated"] is False
 
+    def test_empty_cache_answer_stays_local_with_hint(self):
+        """A local miss is served as a miss, not confirmed against IMAP.
+
+        The caller knows whether the interest warrants a live search;
+        provenance carries the hint naming --no-cache (issue #95)."""
+        block = self._make_block_with_maildir()
+        mu = MagicMock()
+        mu.is_eligible.return_value = EligibilityResult(True)
+        mu.search.return_value = _mu_hit([])
+        mu.index_mtime_iso.return_value = "2025-04-01T12:00:00+00:00"
+
+        client = ImapClient(block, local_cache=mu)
+
+        with patch.object(client, "_search_emails_imap") as mock_imap:
+            result = client.search_emails("from:nobody")
+
+        mock_imap.assert_not_called()
+        assert result["results"] == []
+        assert result["provenance"]["source"] == "local"
+        assert result["provenance"]["fell_back_reason"] is None
+        assert "--no-cache" in result["provenance"]["hint"]
+
+    def test_non_empty_cache_answer_carries_no_hint(self):
+        """The hint belongs to misses; a hit's provenance stays as is."""
+        block = self._make_block_with_maildir()
+        mu = MagicMock()
+        mu.is_eligible.return_value = EligibilityResult(True)
+        mu.search.return_value = _mu_hit(
+            [
+                {
+                    "message_id": "<x@y>",
+                    "path": "/var/local/mail/test-account/cur/1",
+                    "folder": "INBOX",
+                    "from": "Alice <a@b.com>",
+                    "to": ["c@d.com"],
+                    "subject": "Hi",
+                    "date": "2025-01-01T00:00:00+00:00",
+                    "flags": ["seen"],
+                    "has_attachments": False,
+                }
+            ]
+        )
+        mu.index_mtime_iso.return_value = "2025-04-01T12:00:00+00:00"
+
+        client = ImapClient(block, local_cache=mu)
+
+        with patch.object(client, "_search_emails_imap"):
+            result = client.search_emails("from:alice")
+
+        assert "hint" not in result["provenance"]
+
     def test_search_emails_truncated_cache_page_has_no_total(self):
         """A cache page cut at the limit cannot know the match count."""
         block = self._make_block_with_maildir()

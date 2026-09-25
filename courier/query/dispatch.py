@@ -72,7 +72,6 @@ _FALLBACK_PHRASES: Dict[str, str] = {
         "build it with mu index"
     ),
     "untranslatable": "the local cache could not express this query",
-    "mu_no_matches": "the local cache answered with mu's ambiguous no-matches exit",
     "maildir_not_indexed": (
         "the block's maildir lies outside the mu store root, so the "
         "local cache does not index it"

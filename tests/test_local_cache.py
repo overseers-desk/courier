@@ -191,14 +191,13 @@ class TestMuBackendSearch:
         assert rec["flags"] == ["seen", "attach"]
         assert rec["has_attachments"] is True
 
-    def test_exit_code_2_raises_mufailure_with_reason(self, tmp_path):
-        """mu exits 2 both for a genuinely empty result and for a query
-        it could not parse (verified on mu 1.12.14: an unknown field
-        like ``filename:`` reaches Xapian as a term that matches
-        nothing, same exit, same message). An empty that cannot be told
-        apart from a rejected query must not be served as authoritative
-        absence; it surfaces as a MuFailure so the caller falls back to
-        IMAP with a named reason (issue #64)."""
+    def test_exit_code_2_is_a_served_miss(self, tmp_path):
+        """mu exits 2 for a no-match result. It rejects no field: an
+        unknown one is reinterpreted as free text (visible via ``mu
+        find --analyze``), and courier's emitter has a closed field
+        vocabulary, so for emitter-produced queries exit 2 means a
+        genuine miss. The miss is served locally and disclosed in
+        provenance rather than confirmed against IMAP (issue #95)."""
         backend = self._backend(tmp_path)
         account_cfg = _make_block()
 
@@ -208,10 +207,26 @@ class TestMuBackendSearch:
                 args=[], returncode=2, stdout="", stderr="no matches\n"
             ),
         ):
-            with pytest.raises(MuFailure, match="exited 2") as excinfo:
-                backend.search(account_cfg, parse("from:nobody"), limit=10)
+            results, report, truncated = backend.search(
+                account_cfg, parse("from:nobody"), limit=10
+            )
 
-        assert excinfo.value.fell_back_reason == "mu_no_matches"
+        assert results == []
+        assert truncated is False
+
+    def test_other_nonzero_exit_raises_mufailure(self, tmp_path):
+        """Exit codes past 2 stay failures for the caller to fall back."""
+        backend = self._backend(tmp_path)
+        account_cfg = _make_block()
+
+        with patch(
+            "courier.local_cache.subprocess.run",
+            return_value=subprocess.CompletedProcess(
+                args=[], returncode=1, stdout="", stderr="boom\n"
+            ),
+        ):
+            with pytest.raises(MuFailure, match="exited 1"):
+                backend.search(account_cfg, parse("from:nobody"), limit=10)
 
     def test_timeout_raises_mufailure(self, tmp_path):
         """A subprocess timeout becomes a MuFailure for the caller to fall back."""
