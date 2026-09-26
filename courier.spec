@@ -1,5 +1,5 @@
 Name:           courier
-Version:        1.1.20
+Version:        1.1.21
 Release:        1%{?dist}
 Summary:        Email toolkit for AI assistants and command-line scripting
 License:        MIT
@@ -67,6 +67,9 @@ install -Dpm 644 debian/courier.1 %{buildroot}%{_mandir}/man1/courier.1
 %{_mandir}/man1/courier.1*
 
 %changelog
+* Sat Sep 26 2026 Weiwu Zhang <a@colourful.land> - 1.1.21-1
+- A local-index miss on read/search/attachments/links is served as an unconfirmed miss, not a confirmed one: the empty result's provenance names that IMAP was not consulted, and --no-cache re-runs the query live. Closes #95.
+
 * Fri Sep 25 2026 Weiwu Zhang <a@colourful.land> - 1.1.20-1
 - read and reply take --message-id in place of -f/--uid. The lookup needs an explicit --imap NAME, runs a live search on that account, and refuses instead of guessing when the search fails, the server does not honour it, or the ID sits in several folders (-f picks one).
 - Text and oneline search output carry the UID, and oneline the folder, so a hit can be passed straight to read, reply and the other verbs.

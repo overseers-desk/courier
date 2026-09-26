@@ -1,3 +1,12 @@
+courier (1.1.21) unstable; urgency=medium
+
+  * A local-index miss on read/search/attachments/links is served as an
+    unconfirmed miss, not a confirmed one: the empty result's provenance
+    names that IMAP was not consulted, and --no-cache re-runs the query
+    live. Closes #95.
+
+ -- Weiwu Zhang <a@colourful.land>  Sat, 26 Sep 2026 00:00:00 +0000
+
 courier (1.1.20) unstable; urgency=medium
 
   * read and reply take --message-id in place of -f/--uid. The lookup
