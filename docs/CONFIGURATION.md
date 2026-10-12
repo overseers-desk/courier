@@ -157,6 +157,6 @@ To register it, run:
 courier install-claude-command
 ```
 
-This writes `courier.md` into the commands directory of the configuration tree the session reads: `$CLAUDE_CONFIG_DIR` when set, `~/.claude` otherwise. A machine carrying several such trees needs the install run once per tree. The file is bundled inside the courier package, so the same command works regardless of how courier was installed (Homebrew, `.deb`, `.rpm`, `pip`, or `uv`).
+This writes `courier.md` into the commands directory of the configuration tree the session reads: `$CLAUDE_CONFIG_DIR` when set, `~/.claude` otherwise. The file is bundled inside the courier package, so the same command works regardless of how courier was installed (Homebrew, `.deb`, `.rpm`, `pip`, or `uv`).
 
-`courier status` will note if that directory is present but courier is not yet registered.
+After that, every courier run keeps the file current: when it is missing or differs from the bundled text, it is rewritten, so an upgrade carries the command along. A tree is refreshed by a run under it, so a machine carrying several trees has each brought up to date by its first courier run there. A same-named skill (`skills/courier`), if you keep one, takes precedence and the command is left alone.

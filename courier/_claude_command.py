@@ -261,7 +261,7 @@ courier -A --format json \
   > "$RESULTS"
 ```
 
-Output shape: `{op_key: {imap_name: {results: [...], provenance: {...}}}}`, and `folders_failed` alongside them in a block where a folder's search or fetch failed. `results: []` next to a `folders_failed` entry is a folder that was never looked in, not an absence; the exit code says the same, 1 for a clean zero and 2 for a zero with failures. `courier -A` queries every IMAP block; `--imap NAME` (repeats across the chain) selects specific blocks. Slice the JSON with `jq` against a tempfile; `head`/`tail` cut mid-structure. stderr carries nudges addressed to the user's terminal (a version reminder, a config warning), so folding it into stdout with `2>&1` puts non-JSON text in front of `jq`. `provenance.indexed_at` is the local index's mtime, carried whether the answer came from the index or from IMAP; courier serves from the index at any age and leaves the judgement to you, so compare it against what your question tolerates and pass `--no-cache` when you need live data.
+Output shape: `{op_key: {imap_name: {results: [...], provenance: {...}}}}`, and `folders_failed` alongside them in a block where a folder's search or fetch failed. `results: []` next to a `folders_failed` entry is a folder that was never looked in, not an absence; the exit code says the same, 1 for a clean zero and 2 for a zero with failures. `courier -A` queries every IMAP block; `--imap NAME` (repeats across the chain) selects specific blocks. Slice the JSON with `jq` against a tempfile; `head`/`tail` cut mid-structure. stderr carries notes addressed to the user's terminal (a config warning), so folding it into stdout with `2>&1` puts non-JSON text in front of `jq`. `provenance.indexed_at` is the local index's mtime, carried whether the answer came from the index or from IMAP; courier serves from the index at any age and leaves the judgement to you, so compare it against what your question tolerates and pass `--no-cache` when you need live data.
 
 ## Reads
 
@@ -301,20 +301,3 @@ Subjects and bodies pass through as UTF-8 in whatever script the user writes; th
 
 `-i NAME` (= `--identity NAME`) picks a configured `[identity.NAME]` block; reply inherits the parent's threading headers. Drop `--send` to save as a draft. `courier list` returns the configured identity names under its `identity` key, as JSON already and with no format flag of its own; `courier <verb> --help` carries flags for relay-style sends and other less-common paths. For a reply, if the identity the thread was previously sent from isn't among those names, ask the user which identity to use rather than picking the closest match: the nearest name is often a personal address on a thread that needs a business one.
 """
-
-
-def render(version: str) -> str:
-    """Return the slash-command body with ``version:`` stamped into the frontmatter.
-
-    Args:
-        version: The courier version string to record in the installed copy.
-
-    Returns:
-        The text written to the installed command file. The
-        ``version:`` line is inserted as the first field inside the YAML
-        frontmatter block when the body opens with ``---\\n``; otherwise
-        the body is returned unchanged.
-    """
-    if SLASH_COMMAND.startswith("---\n"):
-        return "---\nversion: " + version + "\n" + SLASH_COMMAND[4:]
-    return SLASH_COMMAND

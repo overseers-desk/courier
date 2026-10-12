@@ -97,18 +97,15 @@ def _unset_claude_config_dir(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _silence_claude_registration_nudge(monkeypatch):
-    """Pin the install-claude-command nudge to silent for all tests.
+def _no_claude_command_refresh(monkeypatch):
+    """Keep every run's command-file refresh away from the developer's tree.
 
-    The CLI prints a stderr note when the installed command file exists at
-    a different version than the source, under ``~/.claude`` or under a
-    ``CLAUDE_CONFIG_DIR`` tree. Click's ``CliRunner`` defaults to
-    ``mix_stderr=True``, so the note ends up concatenated into
-    ``result.output`` and breaks tests that parse stdout as JSON. Tests
-    must not depend on the developer's local Claude Code configuration.
+    Each CLI invocation rewrites the Claude Code command file under
+    ``~/.claude`` or a ``CLAUDE_CONFIG_DIR`` tree; a test run must not touch
+    the developer's local Claude Code configuration.
     """
     monkeypatch.setattr(
-        "courier.__main__._claude_registration_status",
+        "courier.__main__._refresh_claude_command",
         lambda: None,
     )
 

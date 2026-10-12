@@ -154,10 +154,7 @@ def _global_options(
     except WorldAsOfInvalid as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(1)
-    if ctx.invoked_subcommand not in ("install-claude-command", "config-sample"):
-        nudge = _claude_registration_status()
-        if nudge:
-            print(nudge, file=sys.stderr)
+    _refresh_claude_command()
 
 
 def _resolve_imap_names() -> List[str]:
@@ -1689,51 +1686,45 @@ def _claude_dir() -> Path:
     return Path(configured).expanduser() if configured else Path.home() / ".claude"
 
 
-def _installed_command_version() -> Optional[str]:
-    """Return the version stamped in the installed command file, or None.
-
-    Reads the ``version:`` frontmatter field written by ``install-claude-command``.
-    Returns None when the file is absent or carries no version field (pre-versioning
-    installs).
-    """
-    command_file = _claude_dir() / "commands" / "courier.md"
-    if not command_file.exists():
-        return None
-    for line in command_file.read_text().splitlines():
-        if line.startswith("version:"):
-            return line.split(":", 1)[1].strip()
-    return None
+def _claude_command_file() -> Path:
+    """Return the path of the courier command file in the Claude Code tree."""
+    return _claude_dir() / "commands" / "courier.md"
 
 
-def _claude_registration_status() -> Optional[str]:
-    """Return a nudge string when courier is unregistered or stale in Claude Code.
+def _claude_command_superseded() -> bool:
+    """Return True when Claude Code is absent or a same-named skill supersedes.
 
-    Returns None when the configuration directory is absent (user has no Claude
-    Code install) or when courier is already registered at the current version.
+    Returns:
+        True when the configuration directory does not exist, or when it holds
+        a ``skills/courier`` directory, which Claude Code prefers over the
+        command; the command file is then left alone.
     """
     claude_dir = _claude_dir()
-    if not claude_dir.exists():
-        return None
-    command_file = claude_dir / "commands" / "courier.md"
-    skill_dir = claude_dir / "skills" / "courier"
-    if skill_dir.exists():
-        return None
-    if not command_file.exists():
-        return (
-            "courier command not installed in Claude Code. "
-            "Run `courier install-claude-command` to install it, "
-            "then continue with the user's request."
-        )
-    installed = _installed_command_version()
-    if installed != __version__:
-        installed_label = installed if installed else "unknown"
-        return (
-            f"courier command file is at version {installed_label}, "
-            f"package is {__version__}. "
-            "Run `courier install-claude-command --yes` to update it, "
-            "then continue with the user's request."
-        )
-    return None
+    return not claude_dir.exists() or (claude_dir / "skills" / "courier").exists()
+
+
+def _refresh_claude_command() -> None:
+    """Rewrite the command file when it is missing or differs from the source.
+
+    Silent and idempotent, run on every invocation, so an upgraded courier
+    carries its command file along without anyone running
+    ``install-claude-command``. "Out of date" is content inequality with
+    ``SLASH_COMMAND``, so no version stamp is kept. A write that fails (a
+    read-only tree) is skipped, since the command the user asked for matters
+    more than the refresh.
+    """
+    from courier._claude_command import SLASH_COMMAND
+
+    if _claude_command_superseded():
+        return
+    dest = _claude_command_file()
+    try:
+        if dest.exists() and dest.read_text() == SLASH_COMMAND:
+            return
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(SLASH_COMMAND)
+    except OSError:
+        return
 
 
 @app.command("status")
@@ -1768,45 +1759,25 @@ def status() -> None:
 
 
 @app.command("install-claude-command")
-def install_claude_command(
-    yes: bool = typer.Option(
-        False,
-        "--yes",
-        "-y",
-        help="Replace an existing older version without prompting "
-        "(for non-interactive callers such as Claude Code sessions).",
-    ),
-) -> None:
-    """Copy the Claude Code command file into the commands directory.
+def install_claude_command() -> None:
+    """(Re)write the courier command for Claude Code and report where.
 
-    After running this command, Claude Code will recognise the ``courier``
-    skill and route email-related requests through the courier CLI.
-    If a previous version is already installed, you will be asked to confirm
-    before it is replaced, unless ``--yes`` is given.
+    Every run already keeps that file current silently; this writes it
+    explicitly, for a first install or a forced refresh, so Claude Code routes
+    email requests through the courier CLI.
     """
-    from courier._claude_command import render
+    from courier._claude_command import SLASH_COMMAND
 
-    dest_dir = _claude_dir() / "commands"
-    dest = dest_dir / "courier.md"
-    dest_dir.mkdir(parents=True, exist_ok=True)
-
-    if dest.exists():
-        installed = _installed_command_version()
-        installed_label = installed if installed else "unknown version"
-        if installed == __version__:
-            print(f"Already at {__version__}: {dest}")
-            return
-        if not yes:
-            confirmed = typer.confirm(
-                f"courier command already installed ({installed_label}). "
-                f"Replace with {__version__}?"
-            )
-            if not confirmed:
-                print("Aborted.")
-                raise typer.Exit(1)
-
-    dest.write_text(render(__version__))
-    print(f"Installed {__version__}: {dest}")
+    if _claude_command_superseded():
+        print(
+            "Skipped: Claude Code is not installed, or a same-named skill "
+            "supersedes the command."
+        )
+        return
+    dest = _claude_command_file()
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(SLASH_COMMAND)
+    print(f"Installed: {dest}")
 
 
 @app.command("config-sample")
