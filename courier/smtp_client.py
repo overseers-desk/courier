@@ -119,6 +119,19 @@ def parse_message_date(value: str) -> datetime:
         ) from e
 
 
+def _same_address(a: EmailAddress, b: EmailAddress) -> bool:
+    """Compare two addresses as mail systems do, ignoring letter case.
+
+    Args:
+        a: First address.
+        b: Second address.
+
+    Returns:
+        True when the two addr-specs match case-insensitively.
+    """
+    return a.address.lower() == b.address.lower()
+
+
 def create_mime(
     from_addr: EmailAddress,
     body: str,
@@ -143,7 +156,9 @@ def create_mime(
     the parent's ``From``. *reply_all* extends recipients to include the
     original To/Cc (minus the sender); when ``Reply-To`` diverts the primary
     list, the original ``From`` is added to Cc so the original sender still
-    sees the reply-all.
+    sees the reply-all. Explicit *to* and *cc* add to these lists rather
+    than replace them; Cc is deduplicated, and addresses compare
+    case-insensitively throughout.
 
     Args:
         from_addr: Address that appears in the ``From`` header.
@@ -154,8 +169,8 @@ def create_mime(
             distribution list) is permitted.
         subject: Subject (required when *original_email* is None; optional for
             replies — defaults to the original subject with ``"Re: "`` prefix).
-        cc: CC recipients. For replies with *reply_all*, defaults to the
-            original email's Cc list.
+        cc: CC recipients. For replies with *reply_all*, added after the
+            original email's Cc list; otherwise the whole Cc list.
         bcc: BCC recipients. Written to the ``Bcc`` header; most sending agents
             strip it before transmission.
         html_body: Optional HTML body. Triggers a ``multipart/alternative``
@@ -215,7 +230,7 @@ def create_mime(
             to_recipients.extend(
                 recipient
                 for recipient in original_email.to
-                if recipient.address != from_addr.address
+                if not _same_address(recipient, from_addr)
             )
         if to:
             to_recipients.extend(to)
@@ -225,25 +240,29 @@ def create_mime(
         msg["To"] = ", ".join(str(recipient) for recipient in to_recipients)
 
     cc_recipients: List[EmailAddress] = []
-    if cc:
-        cc_recipients.extend(cc)
-    elif is_reply and reply_all and original_email:
+    if is_reply and reply_all and original_email:
         if original_email.cc:
             cc_recipients.extend(
                 recipient
                 for recipient in original_email.cc
-                if recipient.address != from_addr.address
+                if not _same_address(recipient, from_addr)
             )
         # When Reply-To diverts the primary recipients, the original
         # sender is no longer in To. Include them in Cc so the original
         # sender still sees the reply-all.
         if original_email.reply_to:
-            reply_to_addrs = {a.address for a in original_email.reply_to}
-            if (
-                original_email.from_.address not in reply_to_addrs
-                and original_email.from_.address != from_addr.address
-            ):
-                cc_recipients.append(original_email.from_)
+            sender = original_email.from_
+            if not any(
+                _same_address(sender, a) for a in original_email.reply_to
+            ) and not _same_address(sender, from_addr):
+                cc_recipients.append(sender)
+    if cc:
+        cc_recipients.extend(cc)
+    unique_cc: List[EmailAddress] = []
+    for recipient in cc_recipients:
+        if not any(_same_address(recipient, kept) for kept in unique_cc):
+            unique_cc.append(recipient)
+    cc_recipients = unique_cc
     if cc_recipients:
         msg["Cc"] = ", ".join(str(recipient) for recipient in cc_recipients)
 
@@ -347,7 +366,8 @@ def compose_and_save_reply_draft(
         uid: UID of the original email.
         reply_body: Plain-text reply body.
         reply_all: Reply to all recipients.
-        cc: Optional CC addresses as strings.
+        cc: Optional CC addresses as strings. With *reply_all*, added to
+            the original Cc; otherwise the whole Cc list.
         bcc: Optional BCC addresses as strings.
         body_html: Optional HTML reply body.
         attachments: Optional list of filesystem paths to attach to the draft.

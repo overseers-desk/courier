@@ -146,7 +146,7 @@ class TestCreateReplyMime:
         assert mime_message["Cc"] == "CC Recipient <cc@example.com>"
 
     def test_create_reply_with_custom_cc(self, sample_email: Email):
-        """Test creating a reply with custom CC recipients."""
+        """Explicit CC on a reply-all is added after the thread's Cc (#70)."""
         reply_to = EmailAddress(name="Reply To", address="sender@example.com")
         subject = "Re: Test Subject"
         body = "This is a reply with custom CC."
@@ -163,11 +163,85 @@ class TestCreateReplyMime:
             cc=cc,
         )
 
-        # Check CC recipients
-        assert (
-            mime_message["Cc"]
-            == "Custom CC <custom@example.com>, Another CC <another@example.com>"
+        assert mime_message["Cc"] == (
+            "CC Recipient <cc@example.com>, Custom CC <custom@example.com>, "
+            "Another CC <another@example.com>"
         )
+
+    def test_reply_all_cc_dedups_case_insensitively(self, sample_email: Email):
+        """An explicit CC repeating a thread Cc address appears once."""
+        mime_message = create_mime(
+            original_email=sample_email,
+            from_addr=EmailAddress(name="Me", address="recipient@example.com"),
+            body="noted",
+            cc=[EmailAddress(name="", address="CC@Example.com")],
+        )
+
+        assert mime_message["Cc"] == "CC Recipient <cc@example.com>"
+
+    def test_reply_all_cc_keeps_reply_to_divert(self):
+        """With Reply-To diverting To, explicit CC still keeps the original From."""
+        parent = Email(
+            message_id="<forwarded3@example.com>",
+            subject="Test",
+            from_=EmailAddress(name="List Forwarder", address="list@group.example"),
+            to=[EmailAddress(name="Me", address="me@example.com")],
+            cc=[],
+            reply_to=[
+                EmailAddress(name="Original Sender", address="original@vendor.example")
+            ],
+            date=datetime.now(),
+            content=EmailContent(text="hello", html=""),
+        )
+
+        mime_message = create_mime(
+            original_email=parent,
+            from_addr=EmailAddress(name="Me", address="me@example.com"),
+            body="thanks",
+            cc=[EmailAddress(name="Boss", address="boss@example.com")],
+        )
+
+        assert mime_message["Cc"] == (
+            "List Forwarder <list@group.example>, Boss <boss@example.com>"
+        )
+
+    def test_reply_sender_only_cc_is_explicit_list(self, sample_email: Email):
+        """Without reply-all, Cc is exactly the explicit list."""
+        mime_message = create_mime(
+            original_email=sample_email,
+            from_addr=EmailAddress(name="Me", address="recipient@example.com"),
+            body="noted",
+            cc=[EmailAddress(name="Boss", address="boss@example.com")],
+            reply_all=False,
+        )
+
+        assert mime_message["Cc"] == "Boss <boss@example.com>"
+
+    def test_reply_all_excludes_sender_case_insensitively(self):
+        """The sender's own address in another casing leaves To and Cc (#86)."""
+        parent = Email(
+            message_id="<case@example.com>",
+            subject="Test",
+            from_=EmailAddress(name="Customer", address="customer@example.org"),
+            to=[
+                EmailAddress(name="Sales", address="Sales@Example.COM"),
+                EmailAddress(name="Other", address="other@example.org"),
+            ],
+            cc=[EmailAddress(name="Sales", address="SALES@example.com")],
+            date=datetime.now(),
+            content=EmailContent(text="hello", html=""),
+        )
+
+        mime_message = create_mime(
+            original_email=parent,
+            from_addr=EmailAddress(name="Sales", address="sales@example.com"),
+            body="thanks",
+        )
+
+        assert mime_message["To"] == (
+            "Customer <customer@example.org>, Other <other@example.org>"
+        )
+        assert mime_message["Cc"] is None
 
     def test_create_reply_with_subject_prefix(self, sample_email: Email):
         """Test creating a reply with a custom subject prefix."""

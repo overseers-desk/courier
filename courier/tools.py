@@ -176,7 +176,8 @@ def register_tools(mcp: FastMCP, imap_client: ImapClient) -> None:
             reply_body: Reply text content
             ctx: MCP context
             reply_all: Whether to reply to all recipients
-            cc: Optional CC recipients
+            cc: Optional CC recipients. With reply_all, added to the
+                original Cc; otherwise the whole Cc list.
             bcc: Optional BCC recipients
             body_html: Optional HTML version of the reply. ``None``
                 (default) auto-renders an HTML alternative when

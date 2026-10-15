@@ -2967,7 +2967,14 @@ def reply(
         "--no-thread",
         help="Reply to sender only, without carrying original thread recipients.",
     ),
-    cc: Optional[List[str]] = typer.Option(None, "--cc", help="CC recipients."),
+    cc: Optional[List[str]] = typer.Option(
+        None,
+        "--cc",
+        help=(
+            "CC recipients, added to the thread's Cc. With --no-thread, "
+            "the whole Cc list."
+        ),
+    ),
     bcc: Optional[List[str]] = typer.Option(
         None,
         "--bcc",
