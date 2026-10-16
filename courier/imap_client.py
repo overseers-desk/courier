@@ -908,6 +908,42 @@ class ImapClient:
             if ch in _MAILDIR_FLAG_CHARS
         ]
 
+    def fetch_email_path(
+        self, path: str, folder: str, uid: Optional[int] = None
+    ) -> Optional[Email]:
+        """Read a message from a known maildir file, with no UID lookup.
+
+        For a cache hit whose file name carries no ``,U=N`` segment (a
+        non-mbsync layout), so the UID that :meth:`fetch_email` keys on
+        is unknown. The folder gate, WORLD_AS_OF refusal and redact
+        policy apply exactly as on :meth:`fetch_email`.
+
+        Args:
+            path: Maildir file path, as the cache hit reported it.
+            folder: IMAP folder the hit belongs to.
+            uid: The UID when known; ``0`` is recorded when not.
+
+        Returns:
+            The :class:`Email`, or ``None`` when the file is unreadable
+            (the caller then goes to the server).
+
+        Raises:
+            ValueError: If the folder is not allowed.
+        """
+        if not self._is_folder_allowed(folder):
+            raise ValueError(f"Folder '{folder}' is not allowed")
+        try:
+            with open(path, "rb") as fh:
+                raw = fh.read()
+        except OSError as e:
+            logger.warning(f"Could not read maildir file {path!r}: {e}")
+            return None
+        email_obj = self._email_from_bytes(
+            raw, uid or 0, folder, self._parse_maildir_flags(path)
+        )
+        self._refuse_read_after_bound(email_obj.date)
+        return self._apply_redact(email_obj)
+
     def _apply_redact(self, email_obj: Email) -> Email:
         """Run the per-block redact policy and replace if matched."""
         policy = self.block.redact_policy
@@ -1886,6 +1922,32 @@ class ImapClient:
         if outcome.folders_failed:
             envelope["folders_failed"] = outcome.folders_failed
         return envelope
+
+    def local_message_id_hits(
+        self, bare: str, folder: Optional[str] = None
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Look a Message-ID up in the local cache alone, never the server.
+
+        Runs the same ``msgid:`` search :meth:`search_emails` would, but
+        stops at the cache: no connection is attempted whatever the
+        outcome. Cache hits carry the maildir ``path`` and ``folder``,
+        and a ``uid`` when the file name is mbsync-style (``,U=N``).
+
+        Args:
+            bare: The Message-ID without angle brackets.
+            folder: Narrows the lookup to one folder.
+
+        Returns:
+            The hits, or ``None`` when the cache cannot answer: no
+            local cache, an ineligible or failing index, a folder not
+            synced, or an index miss (the caller then searches live).
+        """
+        remaining, scope = query_dispatch.extract_scope(parse(f"msgid:<{bare}>"))
+        query_dispatch.ensure_no_folder_conflict(folder, scope)
+        local, _reason = self._try_local_cache_search(remaining, scope, folder, 20)
+        if local is None or not local[0]:
+            return None
+        return local[0]
 
     def _world_as_of_provenance(
         self, dropped_after_bound: int, date_source: str

@@ -184,3 +184,94 @@ class TestLazyConnection:
 
         assert world.attempts == ["connect"]
         assert result.exit_code == 1
+
+
+MID = "inbox-1@example.com"
+
+
+class TestReadByMessageIdFromCache:
+
+    def test_mbsync_name_gives_uid_and_reads_with_no_connection(self, world: World):
+        path = world.add_message("INBOX", "1700000000.1.host,U=7:2,S")
+        world.records = [world.hit(path, "INBOX", f"<{MID}>")]
+
+        result = world.invoke(["read", "--message-id", MID])
+
+        assert result.exit_code == 0, result.output
+        body = json.loads(result.stdout)["read -f INBOX --uid 7"]["acct"]
+        assert body["uid"] == 7
+        assert "Body read from disk." in body["body"]
+        assert "msgid:" in world.queries[-1]
+        assert world.attempts == []
+
+    def test_name_without_uid_reads_the_file_with_no_connection(self, world: World):
+        path = world.add_message("INBOX", "1700000000.1.host:2,S")
+        world.records = [world.hit(path, "INBOX", f"<{MID}>")]
+
+        result = world.invoke(["read", "--message-id", MID])
+
+        assert result.exit_code == 0, result.output
+        body = next(iter(json.loads(result.stdout).values()))["acct"]
+        assert body["uid"] is None
+        assert body["folder"] == "INBOX"
+        assert "Body read from disk." in body["body"]
+        assert world.attempts == []
+
+    def test_folder_narrows_the_cache_lookup(self, world: World):
+        path = world.add_message("Archive", "1700000000.1.host,U=3:2,S")
+        world.records = [world.hit(path, "Archive", f"<{MID}>")]
+
+        result = world.invoke(["read", "--message-id", MID, "-f", "Archive"])
+
+        assert result.exit_code == 0, result.output
+        assert 'maildir:"/work/Archive"' in world.queries[-1]
+        assert world.attempts == []
+
+    def test_copies_in_several_folders_are_refused_without_connecting(
+        self, world: World
+    ):
+        inbox = world.add_message("INBOX", "1700000000.1.host,U=7:2,S")
+        other = world.add_message("Archive", "1700000000.2.host,U=3:2,S")
+        world.records = [
+            world.hit(inbox, "INBOX", f"<{MID}>"),
+            world.hit(other, "Archive", f"<{MID}>"),
+        ]
+
+        result = world.invoke(["read", "--message-id", MID])
+
+        assert result.exit_code == 1
+        assert "several folders" in (result.output + result.stderr)
+        assert world.attempts == []
+
+    def test_index_miss_falls_back_to_the_live_search(self, world: World):
+        world.records = []
+
+        result = world.invoke(["read", "--message-id", MID])
+
+        assert world.attempts == ["connect"]
+        assert result.exit_code == 1
+
+    def test_hit_with_another_message_id_is_not_trusted(self, world: World):
+        path = world.add_message("INBOX", "1700000000.1.host,U=7:2,S")
+        world.records = [world.hit(path, "INBOX", "<someone-else@example.com>")]
+
+        world.invoke(["read", "--message-id", MID])
+
+        assert world.attempts == ["connect"]
+
+    def test_no_uid_and_file_gone_falls_back_to_the_live_search(self, world: World):
+        path = world.root / "work" / "INBOX" / "cur" / "gone.host:2,S"
+        world.records = [world.hit(path, "INBOX", f"<{MID}>")]
+
+        world.invoke(["read", "--message-id", MID])
+
+        assert world.attempts == ["connect"]
+
+    def test_no_cache_goes_live(self, world: World):
+        path = world.add_message("INBOX", "1700000000.1.host,U=7:2,S")
+        world.records = [world.hit(path, "INBOX", f"<{MID}>")]
+
+        world.invoke(["read", "--no-cache", "--message-id", MID])
+
+        assert world.attempts == ["connect"]
+        assert world.queries == []

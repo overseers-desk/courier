@@ -39,6 +39,7 @@ def _client(envelope: dict) -> MagicMock:
     c = MagicMock()
     c.search_emails.return_value = envelope
     c.fetch_email.return_value = None
+    c.local_message_id_hits.return_value = None
     return c
 
 

@@ -339,38 +339,98 @@ def _build_op_key(subcmd: str, **kwargs: Any) -> str:
     return " ".join(parts)
 
 
-def _resolve_target(
-    client: ImapClient,
-    folder: Optional[str],
-    uid: Optional[int],
-    message_id: Optional[str],
-) -> Tuple[str, int]:
-    """Return the ``(folder, uid)`` a single-message verb acts on.
+def _refuse_several_folders(folders: List[str], bare: str) -> NoReturn:
+    """Refuse a Message-ID held in more than one folder, naming them."""
+    typer.echo(
+        f"Error: Message-ID <{bare}> is in several folders "
+        f"({', '.join(folders)}); pass -f to choose one",
+        err=True,
+    )
+    raise typer.Exit(1)
 
-    With ``--uid`` the pair is taken as given. With ``--message-id`` a
-    live ``msgid:`` search on the ``--imap`` block finds the message;
-    the local index is bypassed because its hits carry no UID. Any
-    answer short of exactly one folder holding that Message-ID refuses:
-    a failed search, a failed folder, or a hit whose Message-ID differs
-    (IMAP ``HEADER`` is a substring match, and some servers ignore it).
+
+def _local_message_id_target(
+    client: ImapClient, folder: Optional[str], bare: str
+) -> Optional[Tuple[str, Optional[int], str]]:
+    """Resolve a Message-ID from the local cache, with no network.
+
+    The mu index gives the message's maildir path and folder, and its
+    UID when the file name is mbsync-style. The cache answers only when
+    every hit is that Message-ID with a folder and a path; anything
+    else (no cache, an index miss, a redacted or odd hit) is left to
+    the live search.
 
     Args:
-        client: Connected client for the ``--imap`` block.
-        folder: ``-f`` value; with ``--message-id`` it narrows the search.
-        uid: ``--uid`` value, or ``None``.
-        message_id: ``--message-id`` value, with or without ``<>``.
+        client: Client for the ``--imap`` block.
+        folder: ``-f`` value, or ``None``.
+        bare: The Message-ID without angle brackets.
 
     Returns:
-        The folder and UID of the message.
+        ``(folder, uid, path)``, with ``uid`` ``None`` when the file
+        name carries none; ``None`` when the cache cannot answer.
+
+    Raises:
+        typer.Exit: 1 when the copies sit in several folders.
+    """
+    try:
+        hits = client.local_message_id_hits(bare, folder)
+    except (CourierError, UntranslatableForBackend, ValueError):
+        return None
+    if not hits:
+        return None
+    for hit in hits:
+        got = str(hit.get("message_id", "")).strip().strip("<>")
+        if got != bare or not hit.get("folder") or not hit.get("path"):
+            return None
+    folders = sorted({h["folder"] for h in hits})
+    if len(folders) > 1:
+        _refuse_several_folders(folders, bare)
+    first = hits[0]
+    uid = first.get("uid")
+    return first["folder"], (int(uid) if uid is not None else None), first["path"]
+
+
+def _resolve_message_id(
+    client: ImapClient,
+    folder: Optional[str],
+    message_id: str,
+    need_uid: bool = True,
+    use_cache: bool = True,
+) -> Tuple[str, Optional[int], Optional[str]]:
+    """Find the folder, UID and (for a cache hit) file of a Message-ID.
+
+    The local cache is asked first and answers without a connection.
+    The live ``msgid:`` search runs only when the cache cannot answer,
+    or answers with a file whose UID is unknown while the caller needs
+    one, or whose file is not on disk. Any answer short of exactly one
+    folder holding that Message-ID refuses: a failed search, a failed
+    folder, or a hit whose Message-ID differs (IMAP ``HEADER`` is a
+    substring match, and some servers ignore it).
+
+    Args:
+        client: Client for the ``--imap`` block.
+        folder: ``-f`` value; narrows the lookup.
+        message_id: ``--message-id`` value, with or without ``<>``.
+        need_uid: When ``True`` the caller cannot use a bare file path.
+        use_cache: When ``False`` (``--no-cache``) the cache is skipped
+            and the live search answers.
+
+    Returns:
+        ``(folder, uid, path)``. ``path`` is set only when ``uid`` is
+        ``None`` and the body is on disk at ``path``.
 
     Raises:
         typer.Exit: 1 when the search fails, cannot be trusted, finds
             nothing, or finds copies in several folders.
     """
-    if message_id is None:
-        assert folder is not None and uid is not None
-        return folder, uid
     bare = message_id.strip().strip("<>")
+    local = _local_message_id_target(client, folder, bare) if use_cache else None
+    if local is not None:
+        found_folder, found_uid, path = local
+        if found_uid is not None:
+            return found_folder, found_uid, None
+        if not need_uid and os.path.isfile(path):
+            return found_folder, None, path
     try:
         envelope = client.search_emails(
             f"msgid:<{bare}>", folder=folder, limit=20, no_cache=True
@@ -402,13 +462,41 @@ def _resolve_target(
         raise typer.Exit(1)
     folders = sorted({h["folder"] for h in hits})
     if len(folders) > 1:
-        typer.echo(
-            f"Error: Message-ID <{bare}> is in several folders "
-            f"({', '.join(folders)}); pass -f to choose one",
-            err=True,
-        )
-        raise typer.Exit(1)
-    return hits[0]["folder"], int(hits[0]["uid"])
+        _refuse_several_folders(folders, bare)
+    return hits[0]["folder"], int(hits[0]["uid"]), None
+
+
+def _resolve_target(
+    client: ImapClient,
+    folder: Optional[str],
+    uid: Optional[int],
+    message_id: Optional[str],
+) -> Tuple[str, int]:
+    """Return the ``(folder, uid)`` a single-message verb acts on.
+
+    With ``--uid`` the pair is taken as given. With ``--message-id`` the
+    local cache is asked first and the live search is the fallback; see
+    :func:`_resolve_message_id`.
+
+    Args:
+        client: Client for the ``--imap`` block.
+        folder: ``-f`` value; with ``--message-id`` it narrows the search.
+        uid: ``--uid`` value, or ``None``.
+        message_id: ``--message-id`` value, with or without ``<>``.
+
+    Returns:
+        The folder and UID of the message.
+
+    Raises:
+        typer.Exit: 1 when the lookup fails, cannot be trusted, finds
+            nothing, or finds copies in several folders.
+    """
+    if message_id is None:
+        assert folder is not None and uid is not None
+        return folder, uid
+    found_folder, found_uid, _path = _resolve_message_id(client, folder, message_id)
+    assert found_uid is not None
+    return found_folder, found_uid
 
 
 def _check_target_args(
@@ -455,6 +543,21 @@ def _fetch_email_result(
         return {"error": str(exc)}
     if not email_obj:
         return {"error": f"Email UID {uid} not found in {folder}"}
+    return _email_result(email_obj, uid, folder)
+
+
+def _email_result(email_obj: Any, uid: Optional[int], folder: str) -> Dict[str, Any]:
+    """Render a fetched :class:`Email` as the ``read`` JSON object.
+
+    Args:
+        email_obj: The message to render.
+        uid: Its UID, or ``None`` when read from a cache file whose name
+            carries none.
+        folder: The folder it lives in.
+
+    Returns:
+        The result dict shared by ``read`` and the chain's ``read`` verb.
+    """
     result: Dict[str, Any] = {
         "uid": uid,
         "folder": folder,
@@ -2161,14 +2264,39 @@ def read(
     name = _resolve_single_imap_name()
     client = _make_client(lazy=True)
     try:
-        folder, uid = _resolve_target(client, folder, uid, message_id)
-        result = _fetch_email_result(
-            client, folder, uid, no_cache=no_cache or _no_cache
-        )
+        path: Optional[str] = None
+        if message_id is not None:
+            folder, uid, path = _resolve_message_id(
+                client,
+                folder,
+                message_id,
+                need_uid=False,
+                use_cache=not (no_cache or _no_cache),
+            )
+        else:
+            folder, uid = _resolve_target(client, folder, uid, message_id)
+        if path is not None:
+            assert folder is not None
+            try:
+                email_obj = client.fetch_email_path(path, folder)
+            except WorldBoundRefused as exc:
+                typer.echo(str(exc), err=True)
+                raise typer.Exit(1)
+            if email_obj is None:
+                typer.echo(f"Email file {path} could not be read", err=True)
+                raise typer.Exit(1)
+            result = _email_result(email_obj, None, folder)
+            assert message_id is not None
+            op_key = f"read -f {folder} --message-id {message_id.strip('<>')}"
+        else:
+            assert folder is not None and uid is not None
+            result = _fetch_email_result(
+                client, folder, uid, no_cache=no_cache or _no_cache
+            )
+            op_key = _build_op_key("read", folder=folder, uid=uid)
         if "error" in result:
             typer.echo(result["error"], err=True)
             raise typer.Exit(1)
-        op_key = _build_op_key("read", folder=folder, uid=uid)
         _out({op_key: {name: result}})
     except ConnectionError as exc:
         typer.echo(f"Error: failed to connect to IMAP server: {exc}", err=True)
