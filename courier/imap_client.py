@@ -925,7 +925,7 @@ class ImapClient:
 
         Returns:
             The :class:`Email`, or ``None`` when the file is unreadable
-            (the caller then goes to the server).
+            (the caller reports the failure).
 
         Raises:
             ValueError: If the folder is not allowed.
@@ -2054,7 +2054,16 @@ class ImapClient:
         eligibility = self.local_cache.is_eligible(self.block)
         if not eligibility.eligible:
             return None, eligibility.reason
-        serveable, cache_folder = query_dispatch.cache_folder_for_scope(scope, folder)
+        sent_folder: Optional[str] = None
+        if [v.lower() for v in scope.include] == ["sent"]:
+            sent_folder = self._cached_sent_folder()
+            if sent_folder is None:
+                # No Sent folder is known or synced here; the server
+                # answers, as for any folder the maildir lacks.
+                return None, "folder_not_synced"
+        serveable, cache_folder = query_dispatch.cache_folder_for_scope(
+            scope, folder, sent_folder
+        )
         if not serveable:
             # The cache's maildir predicate takes one exact folder or
             # the whole block; special-use scope needs the server.
@@ -2099,6 +2108,32 @@ class ImapClient:
             reason = getattr(e, "fell_back_reason", None) or "exception"
             return None, reason
         return outcome, None
+
+    def _cached_sent_folder(self) -> Optional[str]:
+        """Name the Sent folder without contacting the server.
+
+        The SPECIAL-USE ``\\Sent`` folder wins when this client has
+        already listed the server's folders. Otherwise the first name in
+        ``SENT_FOLDER_CANDIDATES`` (the order :meth:`resolve_sent_folder`
+        walks when no role is advertised) that exists in the synced
+        maildir is taken, which is what a cache-only call has to go on.
+
+        Returns:
+            The IMAP folder name, or ``None`` when no Sent folder is
+            known or present in the maildir.
+        """
+        from courier.local_cache import MuBackend
+
+        if self.folder_cache:
+            special = self.find_special_use_folder(b"\\Sent")
+            if special is not None:
+                return special
+        if not self.block.maildir:
+            return None
+        for candidate in SENT_FOLDER_CANDIDATES:
+            if MuBackend._folder_synced(self.block.maildir, candidate):
+                return candidate
+        return None
 
     def _resolve_in_folder(self, value: str) -> str:
         """Resolve one in: scope value to a concrete folder name.

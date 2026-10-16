@@ -158,6 +158,18 @@ class TestCacheFolderForScope:
         scope = scope_of(f"in:{value} x")
         assert cache_folder_for_scope(scope, None) == (False, None)
 
+    def test_sent_maps_to_the_resolved_sent_folder(self):
+        scope = scope_of("in:sent x")
+        assert cache_folder_for_scope(scope, None, "Sent Items") == (
+            True,
+            "Sent Items",
+        )
+
+    @pytest.mark.parametrize("value", ["spam", "trash"])
+    def test_sent_folder_does_not_unlock_other_special_use(self, value):
+        scope = scope_of(f"in:{value} x")
+        assert cache_folder_for_scope(scope, None, "Sent") == (False, None)
+
     def test_multiple_includes_decline(self):
         scope = scope_of("in:inbox in:Work x")
         assert cache_folder_for_scope(scope, None) == (False, None)

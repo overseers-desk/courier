@@ -5,7 +5,7 @@ Each test builds a real maildir on disk, a real ``MuBackend`` whose
 every connection attempt, then drives the CLI.  The assertion that
 matters is ``world.attempts == []``: courier answered with the network
 down.  Calls that do need the server are checked from the other side:
-they attempt a connection and fail as they always did.
+they attempt a connection and fail on it.
 """
 
 import json
@@ -274,4 +274,95 @@ class TestReadByMessageIdFromCache:
         world.invoke(["read", "--no-cache", "--message-id", MID])
 
         assert world.attempts == ["connect"]
+        assert world.queries == []
+
+
+class TestInSentFromCache:
+
+    def _sent_hit(self, world: World, folder: str) -> None:
+        path = world.add_message(folder, "1700000000.9.host,U=4:2,S")
+        world.records = [world.hit(path, folder, "<sent-1@example.com>")]
+
+    @pytest.mark.parametrize(
+        "folder", ["Sent", "INBOX.Sent", "Sent Items", "[Gmail]/Sent Mail"]
+    )
+    def test_in_sent_is_served_from_the_synced_sent_folder(
+        self, world: World, folder: str
+    ):
+        self._sent_hit(world, folder)
+
+        result = world.invoke(["search", "in:sent hello"])
+
+        assert result.exit_code == 0, result.output
+        out = json.loads(result.stdout)["search in:sent hello"]["acct"]
+        assert out["provenance"]["source"] == "local"
+        assert out["provenance"]["fell_back_reason"] is None
+        assert out["results"][0]["uid"] == 4
+        assert f'maildir:"/work/{folder}"' in world.queries[-1]
+        assert world.attempts == []
+
+    def test_in_sent_not_synced_falls_back_to_the_server(self, world: World):
+        world.records = []
+
+        result = world.invoke(["search", "in:sent hello"])
+
+        assert world.attempts == ["connect"]
+        assert world.queries == []
+        out = json.loads(result.stdout)["search in:sent hello"]["acct"]
+        assert out == {"error": "connection failed"}
+
+    def test_fallback_reports_folder_not_synced(self, world: World):
+        from courier.imap_client import ImapClient
+        from courier.query import dispatch, parse
+
+        client = ImapClient(world.block, local_cache=world.backend)
+        remaining, scope = dispatch.extract_scope(parse("in:sent hello"))
+
+        with patch.object(
+            MuBackend, "is_eligible", return_value=EligibilityResult(True)
+        ):
+            outcome, reason = client._try_local_cache_search(remaining, scope, None, 5)
+
+        assert outcome is None
+        assert reason == "folder_not_synced"
+
+    def test_listed_special_use_sent_folder_wins_over_the_name_guess(
+        self, world: World
+    ):
+        from courier.imap_client import ImapClient
+
+        self._sent_hit(world, "Sent")
+        (world.root / "work" / "Outbox" / "cur").mkdir(parents=True)
+        client = ImapClient(world.block, local_cache=world.backend)
+        client.folder_cache = {"Outbox": [b"\\Sent"], "Sent": []}
+
+        assert client._cached_sent_folder() == "Outbox"
+
+    def test_listed_special_use_folder_missing_on_disk_is_not_synced(
+        self, world: World
+    ):
+        from courier.imap_client import ImapClient
+        from courier.query import dispatch, parse
+
+        self._sent_hit(world, "Sent")
+        client = ImapClient(world.block, local_cache=world.backend)
+        client.folder_cache = {"Elsewhere": [b"\\Sent"]}
+        remaining, scope = dispatch.extract_scope(parse("in:sent hello"))
+
+        with (
+            patch.object(
+                MuBackend, "is_eligible", return_value=EligibilityResult(True)
+            ),
+            patch("courier.local_cache.subprocess.run") as run,
+        ):
+            outcome, reason = client._try_local_cache_search(remaining, scope, None, 5)
+
+        assert (outcome, reason) == (None, "folder_not_synced")
+        run.assert_not_called()
+
+    def test_spam_and_trash_still_go_to_the_server(self, world: World):
+        for scope in ("in:spam", "in:trash"):
+            result = world.invoke(["search", f"{scope} hello"])
+            assert result.exit_code != 0
+        assert world.attempts == ["connect", "connect"]
         assert world.queries == []

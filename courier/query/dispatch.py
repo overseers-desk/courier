@@ -201,20 +201,25 @@ def ensure_no_folder_conflict(folder: Optional[str], scope: Scope) -> None:
 
 
 def cache_folder_for_scope(
-    scope: Scope, folder: Optional[str]
+    scope: Scope, folder: Optional[str], sent_folder: Optional[str] = None
 ) -> Tuple[bool, Optional[str]]:
     """Decide whether the mu cache can serve a scope, and as what folder.
 
     The cache's scope predicate takes one exact folder or the whole
-    block. ``in:sent``/``in:spam``/``in:trash`` need the server's
+    block. ``in:inbox`` is the literal INBOX and ``in:sent`` is the
+    Sent folder the caller resolved from what it already knows
+    (``sent_folder``); ``in:spam``/``in:trash`` need the server's
     SPECIAL-USE resolution, which the cache cannot do, so they decline
-    to the remote backend; so do multiple includes and any exclude.
+    to the remote backend; so do multiple includes, any exclude, and
+    ``in:sent`` when no Sent folder was resolved.
 
     Args:
         scope: The extracted scope.
         folder: The caller's folder argument (only set when the scope
             is empty; :func:`ensure_no_folder_conflict` rejects the
             combination).
+        sent_folder: The block's Sent folder as resolved without the
+            server, or ``None`` when unknown.
 
     Returns:
         ``(serveable, folder)``: whether the cache can express the
@@ -233,6 +238,8 @@ def cache_folder_for_scope(
     lowered = value.lower()
     if lowered == "inbox":
         return True, "INBOX"
+    if lowered == "sent" and sent_folder is not None:
+        return True, sent_folder
     if lowered in SPECIAL_USE_FOR_IN:
         return False, None
     return True, value

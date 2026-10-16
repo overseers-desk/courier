@@ -202,7 +202,7 @@ def _make_client(imap_override: Optional[str] = None, lazy: bool = False) -> Ima
     miss or fallback, ``--no-cache``, a write): every network method
     reaches the server through ``ensure_connected``. A call the local
     cache answers therefore never touches the network. The caller of a
-    lazy client owns the connect-failure exit, since the failure now
+    lazy client owns the connect-failure exit, since the failure
     surfaces on the first call that needs the server.
 
     Args:
@@ -257,7 +257,7 @@ def _make_client_soft(name: str) -> Optional[ImapClient]:
 
     Used by the chain executor. No connection is made here: a call the
     local cache answers needs none, and a connection failure on a call
-    that does need the server is caught per block by
+    that does need the server is caught per operation by
     :func:`_execute_chain`, so one unreachable block does not abort the
     whole chain.
     """

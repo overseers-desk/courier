@@ -2235,7 +2235,24 @@ class TestSearchEmailsDispatch:
         )
 
     def test_search_emails_special_use_scope_declines_cache(self):
-        """in:sent needs the server's SPECIAL-USE; the cache declines."""
+        """in:spam needs the server's SPECIAL-USE; the cache declines."""
+        block = self._make_block_with_maildir()
+
+        mu = MagicMock()
+        mu.is_eligible.return_value = EligibilityResult(True)
+
+        client = ImapClient(block, local_cache=mu)
+        with patch.object(
+            client, "_search_emails_imap", return_value=self._remote_outcome()
+        ) as mock_imap:
+            result = client.search_emails("in:spam from:alice")
+
+        mu.search.assert_not_called()
+        mock_imap.assert_called_once()
+        assert result["provenance"]["fell_back_reason"] == "untranslatable"
+
+    def test_search_emails_in_sent_without_synced_sent_folder_falls_back(self):
+        """No Sent folder in the maildir: the server answers, reason named."""
         block = self._make_block_with_maildir()
 
         mu = MagicMock()
@@ -2249,7 +2266,8 @@ class TestSearchEmailsDispatch:
 
         mu.search.assert_not_called()
         mock_imap.assert_called_once()
-        assert result["provenance"]["fell_back_reason"] == "untranslatable"
+        assert result["provenance"]["source"] == "remote"
+        assert result["provenance"]["fell_back_reason"] == "folder_not_synced"
 
     def test_search_emails_no_cache_forces_imap(self):
         """``no_cache`` bypasses an eligible cache and reports the reason."""
