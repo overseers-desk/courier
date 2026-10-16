@@ -1,5 +1,5 @@
 Name:           courier
-Version:        1.1.21
+Version:        1.1.22
 Release:        1%{?dist}
 Summary:        Email toolkit for AI assistants and command-line scripting
 License:        MIT
@@ -67,6 +67,12 @@ install -Dpm 644 debian/courier.1 %{buildroot}%{_mandir}/man1/courier.1
 %{_mandir}/man1/courier.1*
 
 %changelog
+* Fri Oct 16 2026 Weiwu Zhang <a@colourful.land> - 1.1.22-1
+- An IMAP connection opens only when a call needs the server: a search or read the local index answers makes none, and in:sent is served from the index when the Sent folder is synced.
+- read --message-id resolves the message through the local index first, falling back to a live search.
+- An explicit --cc on a reply-all adds to the thread's Cc instead of replacing it; Cc is deduplicated case-insensitively. Closes #70.
+- Every run keeps the Claude Code command file current; install-claude-command writes it unconditionally and no longer takes --yes.
+
 * Sat Sep 26 2026 Weiwu Zhang <a@colourful.land> - 1.1.21-1
 - A local-index miss on read/search/attachments/links is served as an unconfirmed miss, not a confirmed one: the empty result's provenance names that IMAP was not consulted, and --no-cache re-runs the query live. Closes #95.
 
