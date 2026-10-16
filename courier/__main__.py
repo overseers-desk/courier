@@ -195,16 +195,24 @@ def _resolve_imap_names() -> List[str]:
     return resolved
 
 
-def _make_client(imap_override: Optional[str] = None) -> ImapClient:
-    """Create and connect an ImapClient.
+def _make_client(imap_override: Optional[str] = None, lazy: bool = False) -> ImapClient:
+    """Create an ImapClient, connecting it unless ``lazy``.
+
+    A lazy client logs in only when a call needs the server (a cache
+    miss or fallback, ``--no-cache``, a write): every network method
+    reaches the server through ``ensure_connected``. A call the local
+    cache answers therefore never touches the network. The caller of a
+    lazy client owns the connect-failure exit, since the failure now
+    surfaces on the first call that needs the server.
 
     Args:
         imap_override: If given, use this [imap.NAME] block instead of
             the global ``--imap`` flag.
+        lazy: When ``True``, skip the eager connect.
 
     Raises:
         typer.Exit: On config error, unknown [imap.NAME] block,
-            multi-block misuse, or IMAP connect failure.
+            multi-block misuse, or (eager only) IMAP connect failure.
     """
     try:
         cfg = load_config(_config_path)
@@ -234,6 +242,8 @@ def _make_client(imap_override: Optional[str] = None) -> ImapClient:
         typer.echo(f"Using [imap.{name}]", err=True)
     block = cfg.imap_blocks[name]
     client = ImapClient(block, local_cache=_get_mu_backend(cfg))
+    if lazy:
+        return client
     try:
         client.connect()
     except Exception as exc:
@@ -243,10 +253,13 @@ def _make_client(imap_override: Optional[str] = None) -> ImapClient:
 
 
 def _make_client_soft(name: str) -> Optional[ImapClient]:
-    """Connect for one [imap.NAME] block, returning None on failure.
+    """Build a lazily connected client for one [imap.NAME] block.
 
-    Used by the chain executor so one unreachable block does not abort
-    the whole chain. Emits a stderr warning on failure.
+    Used by the chain executor. No connection is made here: a call the
+    local cache answers needs none, and a connection failure on a call
+    that does need the server is caught per block by
+    :func:`_execute_chain`, so one unreachable block does not abort the
+    whole chain.
     """
     try:
         cfg = load_config(_config_path)
@@ -261,13 +274,7 @@ def _make_client_soft(name: str) -> Optional[ImapClient]:
         )
         raise typer.Exit(1)
     block = cfg.imap_blocks[name]
-    client = ImapClient(block, local_cache=_get_mu_backend(cfg))
-    try:
-        client.connect()
-    except Exception as exc:
-        typer.echo(f"warning: connect failed for [imap.{name}]: {exc}", err=True)
-        return None
-    return client
+    return ImapClient(block, local_cache=_get_mu_backend(cfg))
 
 
 def _resolve_single_imap_name() -> str:
@@ -517,8 +524,11 @@ def _execute_chain(
 ) -> Dict[str, Dict[str, Any]]:
     """Execute multiple ops block-first over one IMAP connection per block.
 
-    Opens one connection per [imap.NAME] block, runs every operation for
-    that block, then closes before moving to the next. Blocks are
+    Runs every operation for a block over one client, then closes it
+    before moving to the next. The connection opens lazily, on the
+    first operation the local cache cannot answer; an unreachable
+    server marks that operation ``{"error": "connection failed"}``
+    while operations the cache answers still succeed. Blocks are
     processed sequentially to avoid server-side throttling.
 
     Args:
@@ -546,6 +556,12 @@ def _execute_chain(
                     result[key][name] = _run_op(client, subcmd, kwargs)
                 except ValueError:
                     raise
+                except ConnectionError as exc:
+                    typer.echo(
+                        f"warning: connect failed for [imap.{name}]: {exc}",
+                        err=True,
+                    )
+                    result[key][name] = _empty_result_for_subcmd(subcmd)
                 except Exception as exc:
                     result[key][name] = {"error": str(exc)}
         finally:
@@ -2143,7 +2159,7 @@ def read(
     """
     _check_target_args(folder, uid, message_id)
     name = _resolve_single_imap_name()
-    client = _make_client()
+    client = _make_client(lazy=True)
     try:
         folder, uid = _resolve_target(client, folder, uid, message_id)
         result = _fetch_email_result(
@@ -2154,6 +2170,9 @@ def read(
             raise typer.Exit(1)
         op_key = _build_op_key("read", folder=folder, uid=uid)
         _out({op_key: {name: result}})
+    except ConnectionError as exc:
+        typer.echo(f"Error: failed to connect to IMAP server: {exc}", err=True)
+        raise typer.Exit(1)
     finally:
         client.disconnect()
 
@@ -2566,12 +2585,15 @@ def export(
     Default: HTML with embedded images.
     With --raw: the raw RFC 822 message as stored on the IMAP server.
     """
-    client = _make_client()
+    client = _make_client(lazy=not raw)
     try:
         if raw:
             _export_raw(client, folder, uid, save_path)
         else:
             _export_html(client, folder, uid, save_path)
+    except ConnectionError as exc:
+        typer.echo(f"Error: failed to connect to IMAP server: {exc}", err=True)
+        raise typer.Exit(1)
     except ValueError as e:
         typer.echo(str(e), err=True)
         raise typer.Exit(1)
