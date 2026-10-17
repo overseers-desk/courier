@@ -20,6 +20,7 @@ def test_parse_arguments():
 
     with (
         patch("sys.argv", ["gmail_auth.py"] + test_args),
+        patch("dotenv.load_dotenv"),
         patch("courier.gmail_auth.perform_oauth_flow") as mock_oauth_flow,
     ):
 

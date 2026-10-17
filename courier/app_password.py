@@ -49,6 +49,9 @@ def main() -> None:
     """Run the Gmail app password setup tool."""
     import argparse
 
+    from dotenv import load_dotenv
+
+    load_dotenv()
     parser = argparse.ArgumentParser(description="Configure Gmail with app password")
     parser.add_argument(
         "--username",

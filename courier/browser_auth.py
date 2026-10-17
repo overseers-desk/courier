@@ -364,6 +364,9 @@ def main() -> None:
     """Run the browser-based OAuth2 setup tool."""
     import argparse
 
+    from dotenv import load_dotenv
+
+    load_dotenv()
     parser = argparse.ArgumentParser(
         description="Browser-based OAuth2 authentication for Gmail"
     )

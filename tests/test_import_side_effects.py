@@ -1,11 +1,11 @@
-"""Importing courier has no side effect.
+"""Importing courier changes no environment variable, adds no root-logger
+handler and does not import dotenv.
 
-A library caller hands courier its configuration; the ``.env`` file and the
-logging setup belong to the entry points (``courier`` and the MCP server).
-Each import runs in a fresh interpreter whose cwd and HOME hold a planted
-``.env`` and ``~/.config/courier/config.toml``. ``-c`` is deliberate: with
-no ``__main__.__file__``, python-dotenv searches from the cwd, so an
-import-time ``load_dotenv()`` would find the planted file.
+A library caller hands courier its configuration; the entry points' ``main()``
+functions load ``.env`` and configure logging. Each import runs in a fresh
+interpreter whose cwd and HOME are a directory holding a planted ``.env``.
+``-c`` is deliberate: with no ``__main__.__file__``, python-dotenv searches
+from the cwd, so an import-time ``load_dotenv()`` would find the planted file.
 """
 
 import importlib.util
@@ -14,7 +14,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 from unittest import mock
 
 import pytest
@@ -51,22 +51,10 @@ def _plant(home: Path) -> None:
     (home / ".env").write_text(
         "".join(f"{key}={value}\n" for key, value in _PLANTED_ENV.items())
     )
-    config_dir = home / ".config" / "courier"
-    config_dir.mkdir(parents=True)
-    (config_dir / "config.toml").write_text(
-        "[imap.planted]\n"
-        'host = "imap.planted.invalid"\n'
-        'username = "planted@planted.invalid"\n'
-        'password = "planted"\n'
-    )
 
 
 def _import_in_fresh_interpreter(module: str, home: Path) -> Dict[str, Any]:
-    env = {
-        key: value
-        for key, value in os.environ.items()
-        if key not in _PLANTED_ENV and key not in ("COURIER_CONFIG", "XDG_CONFIG_HOME")
-    }
+    env = {key: value for key, value in os.environ.items() if key not in _PLANTED_ENV}
     env["HOME"] = str(home)
     result = subprocess.run(
         [sys.executable, "-c", _PROBE, module],
@@ -84,7 +72,9 @@ def _import_in_fresh_interpreter(module: str, home: Path) -> Dict[str, Any]:
 @pytest.mark.parametrize(
     "module", ["courier", "courier.auth_setup", "courier.gmail_auth"]
 )
-def test_import_has_no_side_effect(module: str, tmp_path: Path) -> None:
+def test_import_leaves_env_root_logger_and_dotenv_untouched(
+    module: str, tmp_path: Path
+) -> None:
     _plant(tmp_path)
     report = _import_in_fresh_interpreter(module, tmp_path)
     assert report["env_changed"] == []
@@ -93,7 +83,9 @@ def test_import_has_no_side_effect(module: str, tmp_path: Path) -> None:
 
 
 @_needs_mcp
-def test_import_mcp_server_has_no_side_effect(tmp_path: Path) -> None:
+def test_import_mcp_server_leaves_env_and_root_logger_untouched(
+    tmp_path: Path,
+) -> None:
     # dotenv is not checked here: the mcp SDK imports it through
     # pydantic-settings.
     _plant(tmp_path)
@@ -121,3 +113,69 @@ def test_mcp_server_main_loads_dotenv(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sys, "argv", ["courier-mcp", "--version"])
     mcp_server.main()
     load_dotenv.assert_called_once_with()
+
+
+@pytest.mark.parametrize(
+    "module, flow, argv, env_var, kwarg",
+    [
+        (
+            "courier.auth_setup",
+            "setup_gmail_oauth2",
+            [],
+            "GMAIL_CLIENT_ID",
+            "client_id",
+        ),
+        (
+            "courier.browser_auth",
+            "perform_oauth_flow",
+            [],
+            "GMAIL_CLIENT_SECRET",
+            "client_secret",
+        ),
+        (
+            "courier.app_password",
+            "setup_app_password",
+            ["--username", "me@gmail.com"],
+            "IMAP_PASSWORD",
+            "password",
+        ),
+    ],
+)
+def test_auth_tool_main_loads_dotenv_before_reading_defaults(
+    module: str,
+    flow: str,
+    argv: List[str],
+    env_var: str,
+    kwarg: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tool = importlib.import_module(module)
+    monkeypatch.delenv("GMAIL_APP_PASSWORD", raising=False)
+    monkeypatch.setattr(
+        "dotenv.load_dotenv", lambda: monkeypatch.setenv(env_var, "from-dotenv")
+    )
+    run_flow = mock.Mock()
+    monkeypatch.setattr(tool, flow, run_flow)
+    monkeypatch.setattr(sys, "argv", [module, *argv])
+    tool.main()
+    assert run_flow.call_args.kwargs[kwarg] == "from-dotenv"
+
+
+def test_gmail_auth_main_loads_dotenv_before_the_flow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from courier import gmail_auth
+
+    monkeypatch.setattr(
+        "dotenv.load_dotenv",
+        lambda: monkeypatch.setenv("GMAIL_CLIENT_ID", "from-dotenv"),
+    )
+    seen: List[Optional[str]] = []
+    monkeypatch.setattr(
+        gmail_auth,
+        "perform_oauth_flow",
+        lambda **kwargs: seen.append(os.environ.get("GMAIL_CLIENT_ID")),
+    )
+    monkeypatch.setattr(sys, "argv", ["gmail_auth"])
+    gmail_auth.main()
+    assert seen == ["from-dotenv"]

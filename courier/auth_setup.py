@@ -98,6 +98,9 @@ def setup_gmail_oauth2(
 
 def main() -> None:
     """Run the OAuth2 setup tool."""
+    from dotenv import load_dotenv
+
+    load_dotenv()
     parser = argparse.ArgumentParser(
         description="Set up OAuth2 authentication for Gmail"
     )

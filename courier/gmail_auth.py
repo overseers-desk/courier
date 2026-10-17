@@ -11,6 +11,9 @@ logger = logging.getLogger(__name__)
 
 def main() -> None:
     """Run the Gmail authentication tool."""
+    from dotenv import load_dotenv
+
+    load_dotenv()
     parser = argparse.ArgumentParser(description="Gmail authentication setup tool")
     parser.add_argument(
         "--client-id",
