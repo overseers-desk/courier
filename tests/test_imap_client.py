@@ -1128,6 +1128,27 @@ class TestImapClient:
         assert email_obj.subject == "Sent from disk"
         mock_imap.fetch.assert_not_called()
 
+    def test_fetch_email_path_without_uid_records_none(self, tmp_path):
+        """A file name with no ``,U=N`` segment gives an Email whose UID is
+        ``None``."""
+        root = _make_maildir_root(tmp_path)
+        path = Path(root) / "INBOX" / "cur" / "1700000000.1.host:2,S"
+        path.write_bytes(
+            b"From: alice@example.com\r\n"
+            b"Subject: no uid\r\n"
+            b"Message-ID: <no-uid@example.com>\r\n"
+            b"\r\n"
+            b"body\r\n"
+        )
+        client = ImapClient(_make_block_with_maildir(root))
+
+        email_obj = client.fetch_email_path(str(path), "INBOX")
+
+        assert email_obj is not None
+        assert email_obj.uid is None
+        assert email_obj.folder == "INBOX"
+        assert email_obj.flags == ["\\Seen"]
+
     def test_mark_email(self, mock_imap_client):
         """Test marking an email with a flag."""
         config = ImapBlock(

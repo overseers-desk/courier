@@ -293,6 +293,51 @@ class Email:
             result["redacted_by"] = self.redacted_by
         return result
 
+    def to_dict(self) -> Dict[str, Any]:
+        """Render this Email as the object the ``read`` command prints for it.
+
+        ``body`` is the HTML part when there is one, else the text part,
+        and ``content_type`` names which; ``date`` is in the host's local
+        zone. ``in_reply_to``, ``references``, ``cc`` and ``attachments``
+        appear only when non-empty. The headers stay on :attr:`headers`.
+
+        Returns:
+            The per-block dict of ``read`` and of the chain's ``read`` verb.
+        """
+        result: Dict[str, Any] = {
+            "uid": self.uid,
+            "folder": self.folder,
+            "from": str(self.from_),
+            "to": [str(to) for to in self.to],
+            "subject": self.subject,
+            "date": (self.date.astimezone().isoformat() if self.date else None),
+            "flags": self.flags,
+            "message_id": self.message_id,
+            "content_type": ("text/html" if self.content.html else "text/plain"),
+            "body": (
+                str(self.content.html)
+                if self.content.html
+                else str(self.content.text) if self.content.text else None
+            ),
+        }
+        if self.in_reply_to:
+            result["in_reply_to"] = self.in_reply_to
+        if self.references:
+            result["references"] = list(self.references)
+        if self.cc:
+            result["cc"] = [str(cc) for cc in self.cc]
+        if self.attachments:
+            result["attachments"] = [
+                {
+                    "index": i,
+                    "filename": att.filename,
+                    "size": att.size,
+                    "content_type": att.content_type,
+                }
+                for i, att in enumerate(self.attachments)
+            ]
+        return result
+
     @classmethod
     def from_message(
         cls, message: Message, uid: Optional[int] = None, folder: Optional[str] = None

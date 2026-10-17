@@ -548,54 +548,7 @@ def _fetch_email_result(
         return {"error": str(exc)}
     if not email_obj:
         return {"error": f"Email UID {uid} not found in {folder}"}
-    return _email_result(email_obj, uid, folder)
-
-
-def _email_result(email_obj: Any, uid: Optional[int], folder: str) -> Dict[str, Any]:
-    """Render a fetched :class:`Email` as the ``read`` JSON object.
-
-    Args:
-        email_obj: The message to render.
-        uid: Its UID, or ``None`` when read from a cache file whose name
-            carries none.
-        folder: The folder it lives in.
-
-    Returns:
-        The result dict shared by ``read`` and the chain's ``read`` verb.
-    """
-    result: Dict[str, Any] = {
-        "uid": uid,
-        "folder": folder,
-        "from": str(email_obj.from_),
-        "to": [str(to) for to in email_obj.to],
-        "subject": email_obj.subject,
-        "date": (email_obj.date.astimezone().isoformat() if email_obj.date else None),
-        "flags": email_obj.flags,
-        "message_id": email_obj.message_id,
-        "content_type": ("text/html" if email_obj.content.html else "text/plain"),
-        "body": (
-            str(email_obj.content.html)
-            if email_obj.content.html
-            else str(email_obj.content.text) if email_obj.content.text else None
-        ),
-    }
-    if email_obj.in_reply_to:
-        result["in_reply_to"] = email_obj.in_reply_to
-    if email_obj.references:
-        result["references"] = list(email_obj.references)
-    if email_obj.cc:
-        result["cc"] = [str(cc) for cc in email_obj.cc]
-    if email_obj.attachments:
-        result["attachments"] = [
-            {
-                "index": i,
-                "filename": att.filename,
-                "size": att.size,
-                "content_type": att.content_type,
-            }
-            for i, att in enumerate(email_obj.attachments)
-        ]
-    return result
+    return email_obj.to_dict()
 
 
 def _run_op(client: ImapClient, subcmd: str, kwargs: Dict[str, Any]) -> Dict[str, Any]:
@@ -2290,7 +2243,7 @@ def read(
             if email_obj is None:
                 typer.echo(f"Email file {path} could not be read", err=True)
                 raise typer.Exit(1)
-            result = _email_result(email_obj, None, folder)
+            result = email_obj.to_dict()
             assert message_id is not None
             op_key = f"read -f {folder} --message-id {message_id.strip('<>')}"
         else:

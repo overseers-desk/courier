@@ -14,7 +14,7 @@ from typer.testing import CliRunner
 
 from courier.__main__ import app
 from courier.config import CourierConfig, ImapBlock
-from courier.models import Email, EmailAddress, EmailContent
+from courier.models import Email, EmailAddress, EmailAttachment, EmailContent
 
 
 def _patch_config(imap_name: str = "default"):
@@ -130,6 +130,32 @@ class TestReadCLIThreadingHeaders:
         out = self._read_inner(result.output)
         assert "in_reply_to" not in out
         assert "references" not in out
+
+    def test_output_is_the_emails_to_dict(self):
+        email_obj = _make_email(
+            "<child@example.com>",
+            in_reply_to="<root@example.com>",
+            references=["<root@example.com>"],
+        )
+        email_obj.cc = [EmailAddress(name="", address="cc@example.com")]
+        email_obj.attachments = [
+            EmailAttachment(filename="a.pdf", content_type="application/pdf", size=3)
+        ]
+        client = MagicMock()
+        client.fetch_email.return_value = email_obj
+
+        runner = CliRunner()
+        with (
+            patch("courier.__main__._make_client", return_value=client),
+            _patch_config(),
+        ):
+            result = runner.invoke(
+                app,
+                ["read", "-f", "INBOX", "-u", "42"],
+            )
+
+        assert result.exit_code == 0
+        assert self._read_inner(result.output) == email_obj.to_dict()
 
     def test_no_cache_forwarded_to_client(self):
         client = MagicMock()

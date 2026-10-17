@@ -681,7 +681,9 @@ class ImapClient:
         return summaries
 
     @staticmethod
-    def _email_from_bytes(raw: bytes, uid: int, folder: str, flags: List[str]) -> Email:
+    def _email_from_bytes(
+        raw: bytes, uid: Optional[int], folder: str, flags: List[str]
+    ) -> Email:
         """Parse RFC 822 bytes into an :class:`Email` with the given flags.
 
         Used by every fetch path (IMAP single, IMAP batch, disk-first):
@@ -914,7 +916,7 @@ class ImapClient:
         Args:
             path: Maildir file path, as the cache hit reported it.
             folder: IMAP folder the hit belongs to.
-            uid: The UID when known; ``0`` is recorded when not.
+            uid: The UID when known; the Email carries ``None`` when not.
 
         Returns:
             The :class:`Email`, or ``None`` when the file is unreadable
@@ -932,7 +934,7 @@ class ImapClient:
             logger.warning(f"Could not read maildir file {path!r}: {e}")
             return None
         email_obj = self._email_from_bytes(
-            raw, uid or 0, folder, self._parse_maildir_flags(path)
+            raw, uid, folder, self._parse_maildir_flags(path)
         )
         self._refuse_read_after_bound(email_obj.date)
         return self._apply_redact(email_obj)

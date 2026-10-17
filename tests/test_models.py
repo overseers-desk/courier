@@ -2,11 +2,35 @@
 
 import email
 import unittest
+from datetime import datetime, timezone
 from email.header import Header
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
-from courier.models import Email, EmailAddress, decode_mime_header
+from courier.models import (
+    Email,
+    EmailAddress,
+    EmailAttachment,
+    EmailContent,
+    decode_mime_header,
+)
+
+
+def _email(**fields) -> Email:
+    base = dict(
+        message_id="<m@example.com>",
+        subject="Subject",
+        from_=EmailAddress(name="Sender", address="sender@example.com"),
+        to=[EmailAddress(name="", address="to@example.com")],
+        date=datetime(2026, 4, 1, 10, 0, tzinfo=timezone.utc),
+        content=EmailContent(text="plain body"),
+        flags=["\\Seen"],
+        headers={"Received": "from relay", "DKIM-Signature": "v=1"},
+        folder="INBOX",
+        uid=42,
+    )
+    base.update(fields)
+    return Email(**base)
 
 
 class TestModels(unittest.TestCase):
@@ -133,6 +157,97 @@ class TestModels(unittest.TestCase):
         email_obj = Email.from_message(msg)
 
         self.assertEqual(email_obj.reply_to, [])
+
+    def test_to_dict_plain_message_has_only_the_fixed_keys(self):
+        email_obj = _email()
+
+        self.assertEqual(
+            email_obj.to_dict(),
+            {
+                "uid": 42,
+                "folder": "INBOX",
+                "from": "Sender <sender@example.com>",
+                "to": ["to@example.com"],
+                "subject": "Subject",
+                "date": email_obj.date.astimezone().isoformat(),
+                "flags": ["\\Seen"],
+                "message_id": "<m@example.com>",
+                "content_type": "text/plain",
+                "body": "plain body",
+            },
+        )
+
+    def test_to_dict_html_part_wins_over_text(self):
+        out = _email(content=EmailContent(text="plain", html="<p>rich</p>")).to_dict()
+
+        self.assertEqual(out["content_type"], "text/html")
+        self.assertEqual(out["body"], "<p>rich</p>")
+
+    def test_to_dict_no_body(self):
+        out = _email(content=EmailContent(), date=None).to_dict()
+
+        self.assertEqual(out["content_type"], "text/plain")
+        self.assertIsNone(out["body"])
+        self.assertIsNone(out["date"])
+
+    def test_to_dict_optional_keys_appear_when_set(self):
+        out = _email(
+            cc=[EmailAddress(name="Smith, John", address="js@example.com")],
+            attachments=[
+                EmailAttachment(
+                    filename="a.pdf", content_type="application/pdf", size=3
+                )
+            ],
+            in_reply_to="<root@example.com>",
+            references=["<root@example.com>", "<mid@example.com>"],
+        ).to_dict()
+
+        self.assertEqual(out["cc"], ['"Smith, John" <js@example.com>'])
+        self.assertEqual(
+            out["attachments"],
+            [
+                {
+                    "index": 0,
+                    "filename": "a.pdf",
+                    "size": 3,
+                    "content_type": "application/pdf",
+                }
+            ],
+        )
+        self.assertEqual(out["in_reply_to"], "<root@example.com>")
+        self.assertEqual(out["references"], ["<root@example.com>", "<mid@example.com>"])
+
+    def test_to_dict_unknown_uid_is_none(self):
+        out = _email(uid=None).to_dict()
+
+        self.assertIsNone(out["uid"])
+        self.assertEqual(out["folder"], "INBOX")
+
+    def test_to_dict_redacted_message_renders_its_placeholders(self):
+        original = _email(
+            cc=[EmailAddress(name="", address="cc@example.com")],
+            attachments=[
+                EmailAttachment(
+                    filename="a.pdf", content_type="application/pdf", size=3
+                )
+            ],
+            in_reply_to="<root@example.com>",
+        )
+
+        out = original.redact("legal").to_dict()
+
+        self.assertEqual(out["subject"], "[redacted by rule legal]")
+        self.assertEqual(out["from"], "[redacted]")
+        self.assertEqual(out["to"], [])
+        self.assertEqual(out["content_type"], "text/plain")
+        self.assertEqual(out["body"], "[redacted by rule legal]")
+        self.assertEqual(
+            (out["uid"], out["folder"], out["message_id"], out["in_reply_to"]),
+            (42, "INBOX", "<m@example.com>", "<root@example.com>"),
+        )
+        self.assertNotIn("cc", out)
+        self.assertNotIn("attachments", out)
+        self.assertNotIn("redacted_by", out)
 
 
 if __name__ == "__main__":

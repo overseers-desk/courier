@@ -34,6 +34,7 @@ from courier.__main__ import (
     _split_chain_argv,
     app,
 )
+from courier.models import Email, EmailAddress, EmailContent
 
 runner = CliRunner()
 
@@ -402,6 +403,18 @@ def _fake_search_result(query: str = "q") -> dict:
     }
 
 
+def _fake_email() -> Email:
+    return Email(
+        message_id="<hello@example.com>",
+        subject="Hello",
+        from_=EmailAddress(name="", address="alice@example.com"),
+        to=[],
+        content=EmailContent(text="body"),
+        folder="INBOX",
+        uid=1,
+    )
+
+
 class TestExecuteChain:
     def _make_client(self):
         client = MagicMock()
@@ -601,20 +614,7 @@ class TestRunChain:
         def factory(name):
             client = MagicMock()
             client.search_emails.return_value = _fake_search_result()
-            email = MagicMock()
-            email.from_ = MagicMock(__str__=lambda s: "alice@example.com")
-            email.to = []
-            email.subject = "Hello"
-            email.date = None
-            email.flags = []
-            email.message_id = "<hello@example.com>"
-            email.content.html = None
-            email.content.text = "body"
-            email.in_reply_to = None
-            email.references = None
-            email.cc = []
-            email.attachments = []
-            client.fetch_email.return_value = email
+            client.fetch_email.return_value = _fake_email()
             return client
 
         with (
@@ -770,20 +770,7 @@ class TestRunChain:
         def factory(name):
             client = MagicMock()
             client.search_emails.return_value = _fake_search_result()
-            email = MagicMock()
-            email.from_ = MagicMock(__str__=lambda s: "alice@example.com")
-            email.to = []
-            email.subject = "Hello"
-            email.date = None
-            email.flags = []
-            email.message_id = "<hello@example.com>"
-            email.content.html = None
-            email.content.text = "body"
-            email.in_reply_to = None
-            email.references = None
-            email.cc = []
-            email.attachments = []
-            client.fetch_email.return_value = email
+            client.fetch_email.return_value = _fake_email()
             return client
 
         with (
