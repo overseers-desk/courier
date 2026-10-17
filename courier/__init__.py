@@ -21,6 +21,8 @@ from courier.errors import (
     MessageNotFound,
     PermanentError,
     TransientError,
+    WorldAsOfInvalid,
+    WorldBoundRefused,
 )
 from courier.identity import (
     IdentityNotFound,
@@ -65,6 +67,8 @@ __all__ = [
     "FolderNotFound",
     "CapabilityMissing",
     "FccUnresolved",
+    "WorldAsOfInvalid",
+    "WorldBoundRefused",
     # identity
     "resolve_identity_for_send",
     "resolve_identity_for_reply",

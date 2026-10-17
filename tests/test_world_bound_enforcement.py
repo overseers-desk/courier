@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from courier.config import ImapBlock
-from courier.errors import WorldBoundRefused
+from courier.errors import WorldAsOfInvalid, WorldBoundRefused
 from courier.imap_client import ImapClient, _apply_search_bound
 
 BOUND_STR = "2026-07-12T17:07:00+10:00"
@@ -65,28 +65,21 @@ def _wire(client: ImapClient) -> MagicMock:
     return client.client
 
 
-class TestConstructorBoundThreading:
-    """The bound is computed once at construction, not per call."""
+class TestConstructorBound:
+    """The client enforces the bound it is handed and reads no environment."""
 
-    def test_default_reads_environment(self, monkeypatch):
+    def test_default_ignores_environment(self, monkeypatch):
         monkeypatch.setenv("WORLD_AS_OF", BOUND_STR)
-        client = ImapClient(_block())
-        assert client.world_as_of == BOUND
-
-    def test_default_unset_is_unbounded(self, monkeypatch):
-        monkeypatch.delenv("WORLD_AS_OF", raising=False)
         client = ImapClient(_block())
         assert client.world_as_of is None
 
-    def test_explicit_bound_overrides_environment(self, monkeypatch):
-        monkeypatch.delenv("WORLD_AS_OF", raising=False)
+    def test_explicit_bound_is_kept(self):
         client = ImapClient(_block(), world_as_of=BOUND)
         assert client.world_as_of == BOUND
 
-    def test_explicit_none_is_unbounded(self, monkeypatch):
-        monkeypatch.setenv("WORLD_AS_OF", BOUND_STR)
-        client = ImapClient(_block(), world_as_of=None)
-        assert client.world_as_of is None
+    def test_naive_bound_raises(self):
+        with pytest.raises(WorldAsOfInvalid, match="timezone offset"):
+            ImapClient(_block(), world_as_of=datetime(2026, 7, 12, 17, 7))
 
 
 class TestSearchLayerOne:

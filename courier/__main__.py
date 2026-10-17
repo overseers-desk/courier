@@ -242,7 +242,9 @@ def _make_client(imap_override: Optional[str] = None, lazy: bool = False) -> Ima
     if not _imap_names and imap_override is None:
         typer.echo(f"Using [imap.{name}]", err=True)
     block = cfg.imap_blocks[name]
-    client = ImapClient(block, local_cache=_get_mu_backend(cfg))
+    client = ImapClient(
+        block, local_cache=_get_mu_backend(cfg), world_as_of=world_as_of()
+    )
     if lazy:
         return client
     try:
@@ -275,7 +277,9 @@ def _make_client_soft(name: str) -> Optional[ImapClient]:
         )
         raise typer.Exit(1)
     block = cfg.imap_blocks[name]
-    return ImapClient(block, local_cache=_get_mu_backend(cfg))
+    return ImapClient(
+        block, local_cache=_get_mu_backend(cfg), world_as_of=world_as_of()
+    )
 
 
 def _resolve_single_imap_name() -> str:
@@ -1951,7 +1955,7 @@ def _probe_all(cfg: CourierConfig) -> List[Tuple[str, str, str, str, str]]:
 
 def _probe_imap(block: ImapBlock) -> str:
     """Connect + login to an IMAP block; return ``ok`` or ``FAIL: <reason>``."""
-    client = ImapClient(block)
+    client = ImapClient(block, world_as_of=world_as_of())
     try:
         client.connect()
     except Exception as exc:
@@ -2111,7 +2115,7 @@ def watch_cmd(
     cfg = load_config(_config_path)
     block = cfg.imap_blocks[name]
     try:
-        for event in watch_folder(block, folder):
+        for event in watch_folder(block, folder, world_as_of=world_as_of()):
             print(json.dumps(asdict(event)), flush=True)
     except KeyboardInterrupt:
         raise typer.Exit(0)

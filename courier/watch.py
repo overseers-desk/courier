@@ -20,6 +20,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Iterator, Optional, Tuple
 
 from courier.config import ImapBlock
@@ -31,7 +32,6 @@ from courier.errors import (
     as_courier_error,
 )
 from courier.imap_client import ImapClient
-from courier.world_bound import world_as_of
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +92,7 @@ def watch(
     reissue_after: int = 15 * 60,
     poll_interval: float = 30.0,
     stop: Optional[threading.Event] = None,
+    world_as_of: Optional[datetime] = None,
 ) -> Iterator[WatchEvent]:
     """Yield mailbox change events for *folder* via IMAP IDLE.
 
@@ -120,7 +121,7 @@ def watch(
     NO after one successful SELECT is retried like a transient failure
     (the folder may come back).
 
-    Refused outright (eagerly, at call time) when ``WORLD_AS_OF`` is
+    Refused outright (eagerly, at call time) when *world_as_of* is
     set: a watch is a live tail of events after the bound, and every
     one of them would be dated in the bound's future.
 
@@ -131,19 +132,19 @@ def watch(
         poll_interval: idle_check timeout in seconds.
         stop: Optional event; setting it ends the generator (observed
             at poll granularity).
+        world_as_of: The WORLD_AS_OF bound the caller runs under, or
+            ``None`` for none; the environment is not read.
 
     Raises:
-        WorldBoundRefused: WORLD_AS_OF is set.
-        WorldAsOfInvalid: WORLD_AS_OF is set but unparseable or naive.
+        WorldBoundRefused: *world_as_of* is set.
         CapabilityMissing: The server does not advertise IDLE.
         FolderNotFound: The server answered NO to the first SELECT.
         PermanentError: The server answered NO/BAD.
     """
-    bound = world_as_of()
-    if bound is not None:
+    if world_as_of is not None:
         raise WorldBoundRefused(
             "watch refused: a live tail of the mailbox is meaningless "
-            f"under WORLD_AS_OF {bound.isoformat()}"
+            f"under WORLD_AS_OF {world_as_of.isoformat()}"
         )
     return _watch_events(
         block,

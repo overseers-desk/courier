@@ -41,10 +41,12 @@ class CapabilityMissing(PermanentError):
 
 
 class WorldAsOfInvalid(CourierError):
-    """WORLD_AS_OF is set but unparseable or lacks a timezone offset.
+    """A WORLD_AS_OF bound is unparseable or lacks a timezone offset.
 
-    Raised at process start (CLI global options, MCP server lifespan) so
-    no partial output escapes under a bound the tool cannot honour.
+    Raised at process start (CLI global options, MCP server lifespan) for
+    a bad environment variable, so no partial output escapes under a bound
+    the tool cannot honour, and by ``ImapClient`` for a naive
+    ``world_as_of``.
     """
 
 

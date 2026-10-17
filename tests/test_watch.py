@@ -8,6 +8,7 @@ per test; watch() builds its own ImapClient on top of it.
 import json
 import threading
 import time
+from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -21,6 +22,9 @@ from courier.watch import WatchEvent, watch
 from tests.conftest import patch_default_cli_config
 
 runner = CliRunner()
+
+BOUND_STR = "2026-07-12T17:07:00+10:00"
+BOUND = datetime.fromisoformat(BOUND_STR)
 
 
 def _block() -> ImapBlock:
@@ -353,19 +357,18 @@ class TestWatchCli:
 
 
 class TestWatchWorldBound:
-    """watch refuses under WORLD_AS_OF: a live tail of the future."""
+    """watch refuses the bound it is handed: a live tail of the future."""
 
-    def test_watch_refuses_eagerly_under_bound(self, monkeypatch):
+    def test_watch_refuses_eagerly_under_bound(self):
         from courier.errors import WorldBoundRefused
 
-        monkeypatch.setenv("WORLD_AS_OF", "2026-07-12T17:07:00+10:00")
         # Eager: the refusal fires at call time, before any iteration
         # (and before any connection is attempted).
         with pytest.raises(WorldBoundRefused, match="WORLD_AS_OF"):
-            watch(_block())
+            watch(_block(), world_as_of=BOUND)
 
-    def test_watch_unbounded_still_yields(self, monkeypatch):
-        monkeypatch.delenv("WORLD_AS_OF", raising=False)
+    def test_watch_ignores_environment(self, monkeypatch):
+        monkeypatch.setenv("WORLD_AS_OF", BOUND_STR)
         stop = threading.Event()
         inst = _mock_server()
 
@@ -379,7 +382,7 @@ class TestWatchWorldBound:
         assert [e.kind for e in events] == ["started"]
 
     def test_cli_watch_exits_one_under_bound(self, monkeypatch):
-        monkeypatch.setenv("WORLD_AS_OF", "2026-07-12T17:07:00+10:00")
+        monkeypatch.setenv("WORLD_AS_OF", BOUND_STR)
         with patch_default_cli_config():
             result = runner.invoke(app, ["watch"])
         assert result.exit_code == 1

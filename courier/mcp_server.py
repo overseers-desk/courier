@@ -105,10 +105,13 @@ def create_server(config_path: Optional[str] = None, debug: bool = False) -> Fas
     # Store config for access in the lifespan
     server._config = config  # type: ignore[attr-defined]
 
-    # Create a throwaway client for tool/resource registration (not used at runtime)
+    # The email:// resources answer from this client on the default block;
+    # the tools take theirs from the lifespan's per-block clients.
     first_block = config.imap_blocks[config.default_imap]
     mu_backend = MuBackend(config.local_cache) if config.local_cache else None
-    imap_client = ImapClient(first_block, local_cache=mu_backend)
+    imap_client = ImapClient(
+        first_block, local_cache=mu_backend, world_as_of=world_as_of()
+    )
 
     register_resources(server, imap_client)
     register_tools(server, imap_client)

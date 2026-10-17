@@ -8,7 +8,9 @@ The three semantics under test:
    surfaced as a hard failure at CLI and MCP-server startup.
 """
 
+import ast
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -22,6 +24,20 @@ runner = CliRunner()
 
 BOUND_STR = "2026-07-12T17:07:00+10:00"
 BOUND = datetime.fromisoformat(BOUND_STR)
+
+
+def _config() -> CourierConfig:
+    return CourierConfig(
+        imap_blocks={
+            "default": ImapBlock(
+                host="imap.example.com",
+                port=993,
+                username="u@example.com",
+                password="x",
+            )
+        },
+        _default_imap="default",
+    )
 
 
 class TestWorldAsOfParsing:
@@ -120,7 +136,7 @@ class TestUtcComparisonSanity:
 
 
 class TestCliStartupWiring:
-    """A bad WORLD_AS_OF is a hard failure before any verb runs."""
+    """A bad WORLD_AS_OF fails before any verb; a good one reaches every client."""
 
     def test_bad_bound_exits_one_with_message(self):
         from courier.__main__ import app
@@ -172,9 +188,20 @@ class TestCliStartupWiring:
             _apply_global_flags([])
         assert excinfo.value.code == 1
 
+    def test_clients_carry_the_bound(self, monkeypatch):
+        from courier import __main__ as cli
+        from tests.conftest import patch_default_cli_config
+
+        monkeypatch.setenv("WORLD_AS_OF", BOUND_STR)
+        monkeypatch.setattr(cli, "_imap_names", [])
+        monkeypatch.setattr(cli, "_all_imap", False)
+        with patch_default_cli_config():
+            clients = [cli._make_client(lazy=True), cli._make_client_soft("default")]
+        assert [c.world_as_of for c in clients] == [BOUND, BOUND]
+
 
 class TestMcpStartupWiring:
-    """The MCP server refuses to start under an invalid bound."""
+    """The MCP server refuses an invalid bound at start and hands a valid one on."""
 
     @pytest.mark.asyncio
     async def test_lifespan_refuses_bad_bound(self, monkeypatch):
@@ -182,17 +209,45 @@ class TestMcpStartupWiring:
 
         monkeypatch.setenv("WORLD_AS_OF", "garbage")
         server = MagicMock()
-        server._config = CourierConfig(
-            imap_blocks={
-                "default": ImapBlock(
-                    host="imap.example.com",
-                    port=993,
-                    username="u@example.com",
-                    password="x",
-                )
-            },
-            _default_imap="default",
-        )
+        server._config = _config()
         with pytest.raises(WorldAsOfInvalid):
             async with server_lifespan(server):
                 pass  # pragma: no cover - startup must refuse first
+
+    def test_resource_client_carries_the_bound(self, monkeypatch):
+        from courier.mcp_server import create_server
+
+        monkeypatch.setenv("WORLD_AS_OF", BOUND_STR)
+        registered = []
+        with (
+            patch("courier.mcp_server.load_config", return_value=_config()),
+            patch(
+                "courier.mcp_server.register_resources",
+                side_effect=lambda server, client: registered.append(client),
+            ),
+        ):
+            create_server()
+        assert [c.world_as_of for c in registered] == [BOUND]
+
+
+@pytest.mark.parametrize("module", ["__main__.py", "mcp_server.py"])
+def test_every_client_construction_passes_the_bound(module):
+    import courier
+
+    source = (Path(courier.__file__).parent / module).read_text()
+    calls = [
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Call)
+        and (
+            (isinstance(node.func, ast.Name) and node.func.id == "ImapClient")
+            or (isinstance(node.func, ast.Attribute) and node.func.attr == "ImapClient")
+        )
+    ]
+    assert calls
+    unbound = [
+        node.lineno
+        for node in calls
+        if "world_as_of" not in {kw.arg for kw in node.keywords}
+    ]
+    assert unbound == []

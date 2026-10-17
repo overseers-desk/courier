@@ -14,10 +14,11 @@ against the mailbox later yields the same answers. The three semantics:
    looks valid.
 
 This module is the single source of truth for parsing the variable and
-for the comparison predicates; enforcement lives in ``ImapClient``,
-``local_cache``, and ``watch``. Deliberately a function plus small
-predicates, not a class: the state is one ``Optional[datetime]`` and the
-behaviours are pure functions over it.
+for the comparison predicates. The command and the MCP server parse it
+and hand the bound to ``ImapClient`` and ``watch``; enforcement lives in
+those and in ``local_cache``, none of which reads the environment.
+Deliberately a function plus small predicates, not a class: the state is
+one ``Optional[datetime]`` and the behaviours are pure functions over it.
 """
 
 import os

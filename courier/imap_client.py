@@ -16,7 +16,6 @@ from typing import (
     Sequence,
     Tuple,
     Union,
-    cast,
 )
 
 import imapclient  # type: ignore[import-untyped]
@@ -31,6 +30,7 @@ from courier.errors import (
     MessageNotFound,
     PermanentError,
     TransientError,
+    WorldAsOfInvalid,
     WorldBoundRefused,
     as_courier_error,
 )
@@ -158,12 +158,6 @@ def _bodystructure_has_attachment(bodystructure: Any) -> bool:
     return False
 
 
-# Sentinel default for ImapClient's world_as_of parameter: "read the
-# WORLD_AS_OF environment variable at construction". Distinct from None,
-# which means an explicit unbounded client, so no construction site can
-# silently opt out of the bound by omitting the argument.
-_ENV_BOUND: Any = object()
-
 # IMAP month abbreviations for SEARCH date formatting. An explicit table
 # because %b is locale-dependent and RFC 3501 dates are always English.
 _IMAP_MONTHS = (
@@ -222,7 +216,7 @@ class ImapClient:
         self,
         block: ImapBlock,
         local_cache: Optional["MuBackend"] = None,
-        world_as_of: Union[Optional[datetime], object] = _ENV_BOUND,
+        world_as_of: Optional[datetime] = None,
     ):
         """Initialize IMAP client.
 
@@ -234,22 +228,22 @@ class ImapClient:
                 from a local mu index. When ``None`` or when the block's
                 ``maildir`` is unset, all searches are served by IMAP.
             world_as_of: The WORLD_AS_OF bound this client enforces on
-                every search and fetch. Defaults to reading the
-                environment variable once, here at construction (so a
-                construction site that does not thread the value still
-                gets the bound, and per-call re-reads never happen);
-                pass an aware ``datetime`` to bind explicitly, or
-                ``None`` for an explicitly unbounded client.
+                every search and fetch, as an aware ``datetime``;
+                ``None`` leaves the client unbounded. The client reads
+                no environment variable: the command and the MCP server
+                pass the bound they parsed.
 
         Raises:
-            WorldAsOfInvalid: When the default is used and the
-                environment variable is set but unparseable or naive.
+            WorldAsOfInvalid: When ``world_as_of`` has no timezone offset.
         """
+        if world_as_of is not None and world_as_of.utcoffset() is None:
+            raise WorldAsOfInvalid(
+                f"world_as_of {world_as_of.isoformat()} has no timezone "
+                "offset; a naive bound would silently bind against an "
+                "assumed zone. Pass an aware datetime."
+            )
         self.block = block
-        if world_as_of is _ENV_BOUND:
-            self.world_as_of: Optional[datetime] = world_bound.world_as_of()
-        else:
-            self.world_as_of = cast(Optional[datetime], world_as_of)
+        self.world_as_of = world_as_of
         self.allowed_folders = (
             set(block.allowed_folders) if block.allowed_folders else None
         )
