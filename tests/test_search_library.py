@@ -252,7 +252,7 @@ class TestCommand:
         with patch("courier.__main__.load_config", return_value=cfg):
             return CliRunner().invoke(app, ["--all-imap", *args])
 
-    def test_the_command_still_asks_for_50(self, server: SimpleNamespace):
+    def test_the_command_asks_for_50(self, server: SimpleNamespace):
         result = self._invoke(_config("a"), "search", "q")
         assert result.exit_code == 0, result.output
         assert server.search_emails.call_args.kwargs["limit"] == 50

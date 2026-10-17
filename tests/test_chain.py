@@ -76,12 +76,6 @@ class TestBuildOpKey:
 
 
 class TestEmptyResultForSubcmd:
-    def test_search_returns_error_dict(self):
-        """A dead connection is an error, never an empty mailbox."""
-        r = _empty_result_for_subcmd("search")
-        assert r == {"error": "connection failed", "status": "failed"}
-        assert "results" not in r
-
     def test_read_returns_error_dict(self):
         r = _empty_result_for_subcmd("read")
         assert r == {"error": "connection failed"}
@@ -482,14 +476,27 @@ class TestExecuteChain:
         assert mock_soft.call_count == 2
 
     @patch("courier.__main__._make_client_soft")
-    def test_failed_connection_produces_error_envelope(self, mock_soft):
-        mock_soft.return_value = None
+    def test_failed_search_connection_carries_the_reason(self, mock_soft, capsys):
+        client = MagicMock()
+        client.search_emails.side_effect = ConnectionError("network is down")
+        mock_soft.return_value = client
         ops = [("search q", "search", {"query": "q", "folder": None, "limit": 10})]
         result = _execute_chain(ops, ["acct1"])
         assert result["search q"]["acct1"] == {
-            "error": "connection failed",
+            "error": "connection failed: network is down",
             "status": "failed",
         }
+        assert capsys.readouterr().err == ""
+
+    @patch("courier.__main__._make_client_soft")
+    def test_failed_read_connection_warns_on_stderr(self, mock_soft, capsys):
+        client = MagicMock()
+        client.fetch_email.side_effect = ConnectionError("network is down")
+        mock_soft.return_value = client
+        ops = [("read", "read", {"folder": "INBOX", "uid": 7})]
+        result = _execute_chain(ops, ["acct1"])
+        assert result["read"]["acct1"] == {"error": "connection failed"}
+        assert "network is down" in capsys.readouterr().err
 
     @patch("courier.__main__._make_client_soft")
     def test_runtime_error_produces_error_dict(self, mock_soft):
@@ -951,9 +958,11 @@ class TestExitCodeTrichotomy:
 
     def test_all_blocks_connect_failed_exits_2(self, capsys):
         _apply_global_flags([])
+        client = MagicMock()
+        client.search_emails.side_effect = ConnectionError("network is down")
         with (
             _patch_config(),
-            patch("courier.__main__._make_client_soft", return_value=None),
+            patch("courier.__main__._make_client_soft", return_value=client),
         ):
             assert _run_chain([("search", ["foo"])], "json") == 2
 

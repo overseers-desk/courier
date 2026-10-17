@@ -1,11 +1,12 @@
 """Search [imap.NAME] blocks, for library callers and the CLI alike.
 
 Each block is searched over its own client, in order, and that client
-is closed before the next block. A block that fails is reported in its
-own dict, never raised, so one unreachable server leaves the other
-blocks' results standing. The client connects only when the search
-needs the server, so a block the local cache answers makes no
-connection.
+is closed before the next block. A block whose search ran and failed is
+reported in its own dict, so one unreachable server leaves the other
+blocks' results standing. A rejected query raises instead, since it
+would fail the same way on every block. The client connects only when
+the search needs the server, so a block the local cache answers makes
+no connection.
 """
 
 from datetime import datetime

@@ -201,18 +201,7 @@ class TestCliStartupWiring:
 
 
 class TestMcpStartupWiring:
-    """The MCP server refuses an invalid bound at start and hands a valid one on."""
-
-    @pytest.mark.asyncio
-    async def test_lifespan_refuses_bad_bound(self, monkeypatch):
-        from courier.mcp_server import server_lifespan
-
-        monkeypatch.setenv("WORLD_AS_OF", "garbage")
-        server = MagicMock()
-        server._config = _config()
-        with pytest.raises(WorldAsOfInvalid):
-            async with server_lifespan(server):
-                pass  # pragma: no cover - startup must refuse first
+    """The MCP server hands a valid bound to the client its resources read from."""
 
     def test_resource_client_carries_the_bound(self, monkeypatch):
         from courier.mcp_server import create_server

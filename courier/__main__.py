@@ -257,7 +257,7 @@ def _make_client(imap_override: Optional[str] = None, lazy: bool = False) -> Ima
     return client
 
 
-def _make_client_soft(name: str) -> Optional[ImapClient]:
+def _make_client_soft(name: str) -> ImapClient:
     """Build a lazily connected client for one [imap.NAME] block.
 
     Used by the chain executor. No connection is made here: a call the
@@ -311,14 +311,13 @@ def _resolve_single_imap_name() -> str:
 
 
 def _empty_result_for_subcmd(subcmd: str) -> Dict[str, Any]:
-    """Return the per-block value for a failed [imap.NAME] connection.
+    """Return the per-block value for a chain operation whose connection failed.
 
-    Every verb gets an error marker matching ``read``'s contract,
-    and a search also its ``status``. A search against an
-    unreachable server must never render as a clean empty mailbox.
+    The error marker keeps an unreachable server from rendering as an
+    empty result. Only a read arrives here: a search reports its own
+    connection failure, with the reason and ``status``, through
+    :func:`~courier.searching.search_block`.
     """
-    if subcmd == "search":
-        return {"error": "connection failed", "status": "failed"}
     return {"error": "connection failed"}
 
 
@@ -548,10 +547,6 @@ def _execute_chain(
     result: Dict[str, Dict[str, Any]] = {key: {} for key, _, _ in operations}
     for name in names:
         client = _make_client_soft(name)
-        if client is None:
-            for key, subcmd, _ in operations:
-                result[key][name] = _empty_result_for_subcmd(subcmd)
-            continue
         try:
             for key, subcmd, kwargs in operations:
                 try:

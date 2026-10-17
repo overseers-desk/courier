@@ -44,13 +44,7 @@ async def server_lifespan(server: FastMCP) -> AsyncIterator[Dict]:
     Yields:
         Context dictionary with ``imap_clients`` dict and ``default_imap``
     """
-    # WORLD_AS_OF hard-fails at startup: the server must refuse to start
-    # rather than silently serve an unbounded world under a bad bound.
-    try:
-        bound = world_as_of()
-    except WorldAsOfInvalid as exc:
-        logger.error(f"Refusing to start: {exc}")
-        raise
+    bound = world_as_of()
 
     config_attr = getattr(server, "_config", None)
     config: CourierConfig
@@ -166,7 +160,6 @@ def main() -> None:
         print(f"Courier MCP server version {__version__}")
         return
 
-    # create_server parses the bound before the lifespan's guard runs.
     try:
         world_as_of()
     except WorldAsOfInvalid as exc:

@@ -30,7 +30,7 @@ One function, one home: `world_as_of() -> Optional[datetime]` in a small module 
 Hard-failure points, both at process start so no partial output ever escapes:
 
 - CLI: `_global_options` in `__main__.py` (and `_apply_global_flags` for chain mode) call `world_as_of()` before any verb runs; on `WorldAsOfInvalid`, print the error and exit 1.
-- MCP server: `mcp_server.py` calls it during lifespan startup; the server refuses to start.
+- MCP server: `main()` in `mcp_server.py` calls it before building the server; on `WorldAsOfInvalid`, print the error and exit 1. `courier mcp` runs under the CLI's global options, which refuse first.
 
 The parsed value is computed once and threaded to `ImapClient` at construction (a `world_as_of` attribute on the client), not re-read from the environment at each call site.
 
