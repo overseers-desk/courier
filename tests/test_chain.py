@@ -77,7 +77,7 @@ class TestBuildOpKey:
 
 class TestEmptyResultForSubcmd:
     def test_search_returns_error_dict(self):
-        """E1: a dead connection is an error, never an empty mailbox."""
+        """A dead connection is an error, never an empty mailbox."""
         r = _empty_result_for_subcmd("search")
         assert r == {"error": "connection failed", "status": "failed"}
         assert "results" not in r
@@ -483,8 +483,6 @@ class TestExecuteChain:
 
     @patch("courier.__main__._make_client_soft")
     def test_failed_connection_produces_error_envelope(self, mock_soft):
-        """E1: the old shape fabricated a clean-empty search result for
-        a server that was never reached."""
         mock_soft.return_value = None
         ops = [("search q", "search", {"query": "q", "folder": None, "limit": 10})]
         result = _execute_chain(ops, ["acct1"])

@@ -313,8 +313,8 @@ def _resolve_single_imap_name() -> str:
 def _empty_result_for_subcmd(subcmd: str) -> Dict[str, Any]:
     """Return the per-block value for a failed [imap.NAME] connection.
 
-    Every verb gets an error marker matching ``read``'s existing
-    contract, and a search also its ``status``. A search against an
+    Every verb gets an error marker matching ``read``'s contract,
+    and a search also its ``status``. A search against an
     unreachable server must never render as a clean empty mailbox.
     """
     if subcmd == "search":
@@ -490,7 +490,7 @@ def _run_op(client: ImapClient, subcmd: str, kwargs: Dict[str, Any]) -> Dict[str
     """Dispatch one operation against the client for one [imap.NAME] block.
 
     Args:
-        client: ImapClient for the current [imap.NAME] block.
+        client: Client for the current [imap.NAME] block.
         subcmd: Subcommand name (``"search"`` or ``"read"``).
         kwargs: Parsed arguments for the subcommand.
 
@@ -529,8 +529,8 @@ def _execute_chain(
     first operation the local cache cannot answer; an unreachable
     server marks that operation failed while operations the cache
     answers still succeed. A failed search carries the reason in its
-    ``error`` (``"connection failed: <reason>"``); a failed read is
-    ``{"error": "connection failed"}`` with the reason on stderr.
+    ``error``; a failed read is ``{"error": "connection failed"}``
+    with the reason on stderr.
     Blocks are processed sequentially to avoid server-side throttling.
 
     Args:

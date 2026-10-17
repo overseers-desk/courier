@@ -91,7 +91,7 @@ def search(
 
     Args:
         config: The courier configuration. When it has a
-            ``[local_cache]`` table, one ``MuBackend`` serves every
+            ``[local_cache]`` table, one local-cache backend serves every
             block of this call.
         query: Gmail-style search query (see :func:`courier.parse`).
         blocks: [imap.NAME] block names to search; a name given twice is

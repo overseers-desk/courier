@@ -328,8 +328,7 @@ class ImapClient:
     def __enter__(self) -> "ImapClient":
         """Open a ``with`` block that ends with :meth:`disconnect`.
 
-        Entering makes no connection: each call connects when it needs
-        the server, so a block the local cache answers never reaches it.
+        Entering makes no connection: each call connects when it needs the server.
 
         Returns:
             This client.
