@@ -52,7 +52,7 @@ def _cached_location(
     Args:
         client: Client for the account to search.
         bare: The Message-ID without angle brackets.
-        scopes: Folders to look in, each once; ``[None]`` looks in all.
+        scopes: Folders to look in, in order; ``[None]`` looks in all.
         need_uid: When ``True`` the caller cannot use a bare file path.
 
     Returns:
@@ -100,7 +100,7 @@ def _live_location(
     Args:
         client: Client for the account to search.
         bare: The Message-ID without angle brackets.
-        scopes: Folders to search, each once; ``[None]`` searches all.
+        scopes: Folders to search, in order; ``[None]`` searches all.
 
     Returns:
         The location, or ``None`` when every folder was searched and
@@ -167,7 +167,7 @@ def locate_message_id(
         client: Client for the account to search; only the live search
             needs it connected.
         message_id: The Message-ID, with or without ``<>``.
-        folders: Folders to search, each once; ``None`` searches all.
+        folders: Folders to search, in order; ``None`` searches all.
         need_uid: When ``True`` the caller cannot use a bare file path.
         use_cache: When ``False`` the cache is skipped and the live
             search answers.

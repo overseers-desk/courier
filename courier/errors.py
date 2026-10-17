@@ -60,8 +60,11 @@ class WorldBoundRefused(PermanentError):
 class AmbiguousMessageId(CourierError):
     """A Message-ID is held in more than one folder, so no one copy is the answer.
 
-    The caller chooses by narrowing the lookup to one folder. ``matches``
-    lists every ``(folder, uid)`` found; ``folders`` names each folder once.
+    Neither a server failure (:class:`PermanentError`) nor retryable
+    (:class:`TransientError`), it subclasses :class:`CourierError`
+    directly: the caller resolves it by narrowing the lookup to one
+    folder. ``matches`` lists every ``(folder, uid)`` found; ``folders``
+    names each folder once.
     """
 
     def __init__(self, message_id: str, matches: List[Tuple[str, int]]):

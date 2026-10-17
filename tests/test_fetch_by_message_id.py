@@ -1,8 +1,8 @@
 """Tests for ``ImapClient.fetch_by_message_id`` and the client as a context manager.
 
 The client is real; its seams to the mu index and the server are
-replaced on the instance, so the cache-then-live lookup and the reads it
-leads to run as written.
+replaced on the instance, so the cache-then-live lookup, and the choice
+between the UID read and the file read it leads to, run as written.
 """
 
 import json
@@ -332,21 +332,37 @@ class TestReadParity:
 
 class TestContextManager:
 
-    def test_with_connects_and_disconnects(self):
+    def test_entering_does_not_connect(self):
         client = ImapClient(_block())
         with patch("courier.imap_client.imapclient.IMAPClient") as server:
             with client as entered:
                 assert entered is client
-                assert client.connected
+                server.assert_not_called()
+                assert not client.connected
+
+    def test_leaving_disconnects_once(self):
+        client = ImapClient(_block())
+        with (
+            patch("courier.imap_client.imapclient.IMAPClient") as server,
+            patch.object(client, "disconnect", wraps=client.disconnect) as leave,
+        ):
+            with client:
+                client.ensure_connected()
                 server.return_value.login.assert_called_once_with("u", "p")
+            leave.assert_called_once_with()
             server.return_value.logout.assert_called_once_with()
         assert not client.connected
 
     def test_an_exception_in_the_block_disconnects_and_propagates(self):
         client = ImapClient(_block())
-        with patch("courier.imap_client.imapclient.IMAPClient") as server:
+        with (
+            patch("courier.imap_client.imapclient.IMAPClient") as server,
+            patch.object(client, "disconnect", wraps=client.disconnect) as leave,
+        ):
             with pytest.raises(RuntimeError, match="boom"):
                 with client:
+                    client.ensure_connected()
                     raise RuntimeError("boom")
+            leave.assert_called_once_with()
             server.return_value.logout.assert_called_once_with()
         assert not client.connected

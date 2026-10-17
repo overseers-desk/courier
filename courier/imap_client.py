@@ -326,15 +326,14 @@ class ImapClient:
                 logger.info("Disconnected from IMAP server")
 
     def __enter__(self) -> "ImapClient":
-        """Connect, so the ``with`` block works on one session.
+        """Open a ``with`` block that ends with :meth:`disconnect`.
+
+        Entering makes no connection: each call connects when it needs
+        the server, so a block the local cache answers never reaches it.
 
         Returns:
-            This client, connected.
-
-        Raises:
-            ConnectionError: If connection fails
+            This client.
         """
-        self.connect()
         return self
 
     def __exit__(
@@ -975,7 +974,7 @@ class ImapClient:
 
         Args:
             message_id: The Message-ID, with or without ``<>``.
-            folders: Folders to search, each once; ``None`` searches all.
+            folders: Folders to search, in order; ``None`` searches all.
 
         Returns:
             The Email when exactly one folder holds the Message-ID;
