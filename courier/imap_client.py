@@ -230,8 +230,7 @@ class ImapClient:
             world_as_of: The WORLD_AS_OF bound this client enforces on
                 every search and fetch, as an aware ``datetime``;
                 ``None`` leaves the client unbounded. The client reads
-                no environment variable: the command and the MCP server
-                pass the bound they parsed.
+                no environment variable.
 
         Raises:
             WorldAsOfInvalid: When ``world_as_of`` has no timezone offset.

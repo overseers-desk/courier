@@ -14,7 +14,7 @@ against the mailbox later yields the same answers. The three semantics:
    looks valid.
 
 This module is the single source of truth for parsing the variable and
-for the comparison predicates. The command and the MCP server parse it
+for the comparison predicates. The CLI and the MCP server parse it
 and hand the bound to ``ImapClient`` and ``watch``; enforcement lives in
 those and in ``local_cache``, none of which reads the environment.
 Deliberately a function plus small predicates, not a class: the state is
