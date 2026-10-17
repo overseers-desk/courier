@@ -104,16 +104,11 @@ class OAuth2Config:
     def from_dict(cls, data: Dict[str, Any]) -> Optional["OAuth2Config"]:
         """Create OAuth2 configuration from a flat [imap.NAME] dictionary.
 
-        Looks for client_id/client_secret directly in the dict, falling
-        back to environment variables.
+        Returns None unless the dict carries both client_id and
+        client_secret.
         """
-        client_id = data.get("client_id") or os.environ.get("GMAIL_CLIENT_ID")
-        client_secret = data.get("client_secret") or os.environ.get(
-            "GMAIL_CLIENT_SECRET"
-        )
-        refresh_token = data.get("refresh_token") or os.environ.get(
-            "GMAIL_REFRESH_TOKEN"
-        )
+        client_id = data.get("client_id")
+        client_secret = data.get("client_secret")
 
         if not client_id or not client_secret:
             return None
@@ -121,7 +116,7 @@ class OAuth2Config:
         return cls(
             client_id=client_id,
             client_secret=client_secret,
-            refresh_token=refresh_token,
+            refresh_token=data.get("refresh_token"),
             access_token=data.get("access_token"),
             token_expiry=data.get("token_expiry"),
         )
@@ -392,7 +387,7 @@ class ImapBlock:
         host: IMAP server hostname.
         port: TCP port (993 for SSL, 143 otherwise).
         username: IMAP login.
-        password: Optional password (env: IMAP_PASSWORD).
+        password: Optional password.
         oauth2: Optional OAuth2 credentials (Gmail).
         use_ssl: Use IMAPS (SSL) or plaintext IMAP.
         idle_timeout: Seconds to keep the IMAP connection open. 0 closes
@@ -473,7 +468,7 @@ class ImapBlock:
         defaults = defaults or {}
 
         oauth2_config = OAuth2Config.from_dict(data)
-        password = data.get("password") or os.environ.get("IMAP_PASSWORD")
+        password = data.get("password")
 
         host = data.get("host", "")
         is_gmail = host.endswith("gmail.com") or host.endswith("googlemail.com")
@@ -483,10 +478,7 @@ class ImapBlock:
                 "Gmail requires either an app-specific password or OAuth2 credentials"
             )
         elif not is_gmail and not password and not oauth2_config:
-            raise ValueError(
-                "IMAP password must be specified in config or "
-                "IMAP_PASSWORD environment variable"
-            )
+            raise ValueError(f"IMAP password must be specified for {prefix}")
 
         default_smtp = data.get("default_smtp")
         if default_smtp is not None and not isinstance(default_smtp, str):
@@ -836,8 +828,47 @@ def _load_config_data(
     return config_data, config_dir
 
 
+_ENV_FALLBACKS = {
+    "password": "IMAP_PASSWORD",
+    "client_id": "GMAIL_CLIENT_ID",
+    "client_secret": "GMAIL_CLIENT_SECRET",
+    "refresh_token": "GMAIL_REFRESH_TOKEN",
+}
+
+
+def _apply_env_fallbacks(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Fill each [imap.NAME] block's empty credentials from the environment.
+
+    Args:
+        data: Parsed top-level configuration dictionary; left unchanged.
+
+    Returns:
+        A copy of ``data`` in which every ``_ENV_FALLBACKS`` key a block
+        leaves missing or empty takes its variable's value, when set.
+    """
+    imap_data = data.get("imap")
+    if not isinstance(imap_data, dict):
+        return dict(data)
+
+    filled: Dict[str, Any] = {}
+    for name, block_data in imap_data.items():
+        if isinstance(block_data, dict):
+            block_data = dict(block_data)
+            for key, env_var in _ENV_FALLBACKS.items():
+                value = os.environ.get(env_var)
+                if value and not block_data.get(key):
+                    block_data[key] = value
+        filled[name] = block_data
+    return {**data, "imap": filled}
+
+
 def load_config(config_path: Optional[str] = None) -> CourierConfig:
     """Load configuration from file or environment variables.
+
+    An [imap.NAME] block missing its password or OAuth2 credentials takes
+    them from ``IMAP_PASSWORD`` and ``GMAIL_CLIENT_ID``,
+    ``GMAIL_CLIENT_SECRET`` and ``GMAIL_REFRESH_TOKEN``;
+    ``CourierConfig.from_dict`` reads only the dict it is given.
 
     Args:
         config_path: Path to configuration file
@@ -849,6 +880,7 @@ def load_config(config_path: Optional[str] = None) -> CourierConfig:
         ValueError: If configuration is invalid
     """
     config_data, config_dir = _load_config_data(config_path)
+    config_data = _apply_env_fallbacks(config_data)
 
     try:
         return CourierConfig.from_dict(config_data, config_dir=config_dir)

@@ -10,6 +10,7 @@ from courier.config import (
     CourierConfig,
     Identity,
     ImapBlock,
+    OAuth2Config,
     SmtpConfig,
     load_config,
     load_config_with_warnings,
@@ -111,26 +112,19 @@ class TestImapBlock:
         block = ImapBlock.from_dict(data, defaults)
         assert block.idle_timeout == 60
 
-    def test_from_dict_with_env_password(self, monkeypatch):
-        """Test creating ImapBlock with password from environment variable."""
+    def test_from_dict_ignores_env_password(self, monkeypatch):
+        """Test that from_dict takes the password from its dict, not IMAP_PASSWORD."""
         monkeypatch.setenv("IMAP_PASSWORD", "env_password")
 
         data = {"host": "imap.example.com", "username": "test@example.com"}
-        block = ImapBlock.from_dict(data)
-        assert block.password == "env_password"
+        with pytest.raises(ValueError, match="IMAP password must be specified"):
+            ImapBlock.from_dict(data)
 
-        data_with_password = {
-            "host": "imap.example.com",
-            "username": "test@example.com",
-            "password": "dict_password",
-        }
-        block = ImapBlock.from_dict(data_with_password)
+        block = ImapBlock.from_dict({**data, "password": "dict_password"})
         assert block.password == "dict_password"
 
-    def test_from_dict_missing_password(self, monkeypatch):
-        """Test error when password is missing from both dict and environment."""
-        monkeypatch.delenv("IMAP_PASSWORD", raising=False)
-
+    def test_from_dict_missing_password(self):
+        """Test error when the dict carries no password."""
         data = {"host": "imap.example.com", "username": "test@example.com"}
 
         with pytest.raises(ValueError, match="IMAP password must be specified"):
@@ -241,8 +235,49 @@ class TestImapBlock:
             ImapBlock.from_dict(d, name="acc")
 
 
+class TestOAuth2Config:
+    """Test cases for OAuth2Config."""
+
+    def test_from_dict_ignores_env(self, monkeypatch):
+        """Test that from_dict takes credentials from its dict, not GMAIL_*."""
+        monkeypatch.setenv("GMAIL_CLIENT_ID", "env_id")
+        monkeypatch.setenv("GMAIL_CLIENT_SECRET", "env_secret")
+        monkeypatch.setenv("GMAIL_REFRESH_TOKEN", "env_token")
+
+        assert OAuth2Config.from_dict({"host": "imap.gmail.com"}) is None
+
+        oauth2 = OAuth2Config.from_dict(
+            {"client_id": "my_id", "client_secret": "my_secret"}
+        )
+        assert oauth2 is not None
+        assert oauth2.client_id == "my_id"
+        assert oauth2.client_secret == "my_secret"
+        assert oauth2.refresh_token is None
+
+
 class TestCourierConfig:
     """Test cases for CourierConfig."""
+
+    def test_from_dict_gmail_password_block_ignores_env_oauth2(self, monkeypatch):
+        """Test that GMAIL_* does not turn a password-only Gmail block into OAuth2."""
+        monkeypatch.setenv("GMAIL_CLIENT_ID", "env_id")
+        monkeypatch.setenv("GMAIL_CLIENT_SECRET", "env_secret")
+
+        cfg = CourierConfig.from_dict(
+            {
+                "imap": {
+                    "gmail": {
+                        "host": "imap.gmail.com",
+                        "username": "me@gmail.com",
+                        "password": "app_password",
+                    }
+                }
+            }
+        )
+
+        block = cfg.imap_blocks["gmail"]
+        assert block.oauth2 is None
+        assert block.password == "app_password"
 
     def test_default_imap_explicit(self):
         """Test explicit default_imap."""
@@ -318,6 +353,81 @@ password = "p"
 
             config = load_config(f.name)
             assert config.imap_blocks["test"].idle_timeout == 600
+
+    def test_load_config_takes_env_password(self, monkeypatch):
+        """Test that a block without a password takes IMAP_PASSWORD."""
+        monkeypatch.setenv("IMAP_PASSWORD", "env_password")
+        toml_content = """\
+[imap.bare]
+host = "imap.example.com"
+username = "u"
+
+[imap.own]
+host = "imap.example.com"
+username = "u"
+password = "dict_password"
+"""
+        with tempfile.NamedTemporaryFile(suffix=".toml", mode="wb") as f:
+            f.write(toml_content.encode())
+            f.flush()
+
+            config = load_config(f.name)
+
+            assert config.imap_blocks["bare"].password == "env_password"
+            assert config.imap_blocks["own"].password == "dict_password"
+
+    def test_load_config_takes_env_oauth2(self, monkeypatch):
+        """Test that each missing OAuth2 field takes its GMAIL_* variable."""
+        monkeypatch.setenv("GMAIL_CLIENT_ID", "env_id")
+        monkeypatch.setenv("GMAIL_CLIENT_SECRET", "env_secret")
+        monkeypatch.setenv("GMAIL_REFRESH_TOKEN", "env_token")
+        toml_content = """\
+[imap.bare]
+host = "imap.gmail.com"
+username = "me@gmail.com"
+
+[imap.own]
+host = "imap.gmail.com"
+username = "me@gmail.com"
+client_id = "my_id"
+"""
+        with tempfile.NamedTemporaryFile(suffix=".toml", mode="wb") as f:
+            f.write(toml_content.encode())
+            f.flush()
+
+            config = load_config(f.name)
+
+            bare = config.imap_blocks["bare"].oauth2
+            assert bare is not None
+            assert bare.client_id == "env_id"
+            assert bare.client_secret == "env_secret"
+            assert bare.refresh_token == "env_token"
+
+            own = config.imap_blocks["own"].oauth2
+            assert own is not None
+            assert own.client_id == "my_id"
+            assert own.client_secret == "env_secret"
+
+    def test_load_config_gmail_password_block_takes_env_oauth2(self, monkeypatch):
+        """Test that load_config gives a password-only Gmail block GMAIL_* OAuth2."""
+        monkeypatch.setenv("GMAIL_CLIENT_ID", "env_id")
+        monkeypatch.setenv("GMAIL_CLIENT_SECRET", "env_secret")
+        toml_content = """\
+[imap.gmail]
+host = "imap.gmail.com"
+username = "me@gmail.com"
+password = "app_password"
+"""
+        with tempfile.NamedTemporaryFile(suffix=".toml", mode="wb") as f:
+            f.write(toml_content.encode())
+            f.flush()
+
+            config = load_config(f.name)
+
+            block = config.imap_blocks["gmail"]
+            assert block.oauth2 is not None
+            assert block.oauth2.client_id == "env_id"
+            assert block.password == "app_password"
 
     def test_load_from_default_locations(self, monkeypatch, tmp_path):
         """Test loading configuration from default locations."""

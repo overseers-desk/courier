@@ -23,6 +23,7 @@ REQUIRED_ENV_VARS = [
 ]
 
 
+@pytest.mark.integration
 @pytest.mark.skipif(
     any(os.environ.get(var) is None for var in REQUIRED_ENV_VARS),
     reason="Gmail OAuth2 credentials are required for this test",

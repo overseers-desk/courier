@@ -110,6 +110,36 @@ def _no_claude_command_refresh(monkeypatch):
     )
 
 
+_HOST_ENV_VARS = (
+    "IMAP_HOST",
+    "IMAP_PORT",
+    "IMAP_USERNAME",
+    "IMAP_PASSWORD",
+    "IMAP_USE_SSL",
+    "IMAP_ALLOWED_FOLDERS",
+    "IMAP_IDLE_TIMEOUT",
+    "IMAP_VERIFY_WITH_NOOP",
+    "GMAIL_CLIENT_ID",
+    "GMAIL_CLIENT_SECRET",
+    "GMAIL_REFRESH_TOKEN",
+    "COURIER_CONFIG",
+)
+
+
+@pytest.fixture(autouse=True)
+def _no_host_environment(request, monkeypatch):
+    """Keep the developer's environment and ``.env.test`` out of the tests.
+
+    ``WORLD_AS_OF`` would bound every search, so it is cleared for every
+    test. The IMAP, Gmail and config variables would reach ``load_config``
+    and the CLI; integration tests keep them, since they connect with them.
+    """
+    monkeypatch.delenv("WORLD_AS_OF", raising=False)
+    if request.node.get_closest_marker("integration") is None:
+        for name in _HOST_ENV_VARS:
+            monkeypatch.delenv(name, raising=False)
+
+
 def pytest_configure(config):
     """Configure pytest with additional markers."""
     config.addinivalue_line(
