@@ -313,10 +313,9 @@ def _resolve_single_imap_name() -> str:
 def _empty_result_for_subcmd(subcmd: str) -> Dict[str, Any]:
     """Return the per-block value for a chain operation whose connection failed.
 
-    The error marker keeps an unreachable server from rendering as an
+    The ``error`` key keeps an unreachable server from rendering as an
     empty result. Only a read arrives here: a search reports its own
-    connection failure, with the reason and ``status``, through
-    :func:`~courier.searching.search_block`.
+    connection failure through :func:`~courier.searching.search_block`.
     """
     return {"error": "connection failed"}
 
