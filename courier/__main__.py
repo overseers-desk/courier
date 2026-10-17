@@ -537,11 +537,7 @@ def _check_target_args(
 def _fetch_email_result(
     client: ImapClient, folder: str, uid: int, no_cache: bool = False
 ) -> Dict[str, Any]:
-    """Fetch one email and return its JSON representation, or ``{"error": ...}``.
-
-    Extracted so both the standalone ``read`` command and the chain executor
-    share identical output structure.
-    """
+    """Fetch one email and return its JSON representation, or ``{"error": ...}``."""
     try:
         email_obj = client.fetch_email(uid, folder, no_cache=no_cache)
     except WorldBoundRefused as exc:

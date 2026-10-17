@@ -686,10 +686,9 @@ class ImapClient:
     ) -> Email:
         """Parse RFC 822 bytes into an :class:`Email` with the given flags.
 
-        Used by every fetch path (IMAP single, IMAP batch, disk-first):
-        each path produces its own ``flags`` list from a different
-        source (IMAP server response or maildir filename suffix) but
-        the message-bytes-to-Email pipeline is the same.
+        Used by every fetch path: each path produces its own ``flags``
+        list from a different source (IMAP server response or maildir
+        filename suffix) but the message-bytes-to-Email pipeline is the same.
         """
         message = email.message_from_bytes(raw)
         email_obj = Email.from_message(message, uid=uid, folder=folder)
