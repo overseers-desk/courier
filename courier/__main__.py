@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, NoReturn, Optional, Tuple, Union
 
 import typer
+from dotenv import load_dotenv
 
 from courier import __version__
 from courier.config import (
@@ -3747,8 +3748,9 @@ def mcp_serve(
     if version:
         print(f"Courier MCP server version {__version__}")
         raise typer.Exit()
-    from courier.mcp_server import create_server
+    from courier.mcp_server import create_server, setup_server_logging
 
+    setup_server_logging()
     server = create_server(config, debug)
     server.run()
 
@@ -3828,6 +3830,7 @@ def _rewrite_argv(argv: List[str]) -> List[str]:
 
 
 def main() -> None:
+    load_dotenv()
     sys.argv[1:] = _rewrite_argv(sys.argv[1:])
     chain = _split_chain_argv(sys.argv[1:])
     if chain is not None:

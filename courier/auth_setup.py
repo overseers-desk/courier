@@ -10,7 +10,6 @@ from courier.browser_auth import load_client_credentials
 from courier.config import OAuth2Config
 from courier.oauth2 import exchange_code_for_tokens, get_authorization_url
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
@@ -118,6 +117,8 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+
+    logging.basicConfig(level=logging.INFO)
 
     setup_gmail_oauth2(
         client_id=args.client_id,

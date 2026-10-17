@@ -6,6 +6,7 @@ import os
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Dict, Optional
 
+from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 
 from courier import __version__
@@ -19,14 +20,20 @@ from courier.resources import register_resources
 from courier.tools import register_tools
 from courier.world_bound import world_as_of
 
-# Set up logging: prefer the local syslog socket so MCP-server warnings
-# survive process restarts, with a timestamped stderr fallback when no
-# syslog daemon is reachable.
-setup_logging(
-    logging.INFO,
-    stderr_format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
 logger = logging.getLogger("courier")
+
+
+def setup_server_logging() -> None:
+    """Configure the root logger for the MCP server.
+
+    Prefers the local syslog socket so MCP-server warnings survive
+    process restarts, with a timestamped stderr fallback when no syslog
+    daemon is reachable.
+    """
+    setup_logging(
+        logging.INFO,
+        stderr_format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    )
 
 
 @asynccontextmanager
@@ -133,6 +140,7 @@ def create_server(config_path: Optional[str] = None, debug: bool = False) -> Fas
 
 def main() -> None:
     """Run the Courier MCP server."""
+    load_dotenv()
     parser = argparse.ArgumentParser(description="Courier MCP Server")
     parser.add_argument(
         "--config",
@@ -160,6 +168,7 @@ def main() -> None:
         print(f"Courier MCP server version {__version__}")
         return
 
+    setup_server_logging()
     if args.debug:
         logger.setLevel(logging.DEBUG)
 

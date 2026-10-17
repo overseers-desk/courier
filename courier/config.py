@@ -22,8 +22,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-from dotenv import load_dotenv
-
 # Display-name characters courier refuses to accept on configured
 # identities. Two groups, both rejected at config-load time:
 #
@@ -85,9 +83,6 @@ def smtp_has_own_creds(smtp: "SmtpConfig") -> bool:
 
 
 logger = logging.getLogger(__name__)
-
-# Load environment variables from .env file if it exists
-load_dotenv()
 
 # Hosts where a credential-less SMTP block can safely inherit per-block creds.
 # (smtp.gmail.com accepts each Gmail mailbox's own app password, so sharing one

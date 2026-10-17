@@ -6,8 +6,6 @@ import sys
 
 from courier.browser_auth import perform_oauth_flow
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
@@ -34,6 +32,8 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+
+    logging.basicConfig(level=logging.INFO)
 
     try:
         perform_oauth_flow(
