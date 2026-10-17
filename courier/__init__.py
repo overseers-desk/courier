@@ -2,7 +2,8 @@
 
 The names in ``__all__`` are courier's supported library surface: config
 loading, the error taxonomy, identity/SMTP resolution, the IMAP client,
-message models, the query grammar, MIME building, and send-with-FCC.
+search across [imap.NAME] blocks, message models, the query grammar, MIME
+building, and send-with-FCC.
 Anything not listed here is internal and may reshape without notice.
 """
 
@@ -42,6 +43,7 @@ from courier.query import (
     UntranslatableForBackend,
     parse,
 )
+from courier.searching import search
 from courier.sending import send_with_fcc
 from courier.smtp_client import create_mime
 from courier.smtp_transport import send as smtp_send
@@ -95,6 +97,8 @@ __all__ = [
     "QuerySyntaxError",
     "UntranslatableForBackend",
     "UntranslatableQuery",
+    # searching
+    "search",
     # sending
     "create_mime",
     "smtp_send",

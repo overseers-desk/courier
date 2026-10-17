@@ -37,6 +37,7 @@ from courier.logging_setup import setup_logging
 from courier.message_lookup import bare_message_id, locate_message_id
 from courier.models import extract_links_batch
 from courier.query.registry import render_operator_help
+from courier.searching import search_block
 from courier.watch import watch as watch_folder
 from courier.world_bound import world_as_of
 
@@ -312,11 +313,12 @@ def _resolve_single_imap_name() -> str:
 def _empty_result_for_subcmd(subcmd: str) -> Dict[str, Any]:
     """Return the per-block value for a failed [imap.NAME] connection.
 
-    Every verb gets the same honest shape: an error marker matching
-    ``read``'s existing contract. A search against an unreachable
-    server must never render as a clean empty mailbox.
+    Every verb gets an error marker matching ``read``'s existing
+    contract, and a search also its ``status``. A search against an
+    unreachable server must never render as a clean empty mailbox.
     """
-    del subcmd  # one shape for every verb
+    if subcmd == "search":
+        return {"error": "connection failed", "status": "failed"}
     return {"error": "connection failed"}
 
 
@@ -485,18 +487,22 @@ def _fetch_email_result(
 
 
 def _run_op(client: ImapClient, subcmd: str, kwargs: Dict[str, Any]) -> Dict[str, Any]:
-    """Dispatch one operation against an already-connected IMAP client.
+    """Dispatch one operation against the client for one [imap.NAME] block.
 
     Args:
-        client: Connected ImapClient for the current [imap.NAME] block.
+        client: ImapClient for the current [imap.NAME] block.
         subcmd: Subcommand name (``"search"`` or ``"read"``).
         kwargs: Parsed arguments for the subcommand.
 
     Returns:
         Per-block result dict suitable for inclusion in the chain output.
+        A failed search comes back as a dict (see
+        :func:`~courier.searching.search_block`); a read's connection
+        failure raises.
     """
     if subcmd == "search":
-        return client.search_emails(
+        return search_block(
+            client,
             kwargs["query"],
             folder=kwargs.get("folder"),
             limit=kwargs.get("limit", 50),
@@ -521,9 +527,11 @@ def _execute_chain(
     Runs every operation for a block over one client, then closes it
     before moving to the next. The connection opens lazily, on the
     first operation the local cache cannot answer; an unreachable
-    server marks that operation ``{"error": "connection failed"}``
-    while operations the cache answers still succeed. Blocks are
-    processed sequentially to avoid server-side throttling.
+    server marks that operation failed while operations the cache
+    answers still succeed. A failed search carries the reason in its
+    ``error`` (``"connection failed: <reason>"``); a failed read is
+    ``{"error": "connection failed"}`` with the reason on stderr.
+    Blocks are processed sequentially to avoid server-side throttling.
 
     Args:
         operations: List of ``(op_key, subcmd, kwargs)`` tuples. ``op_key`` is
@@ -2029,9 +2037,13 @@ Repeat the verb to look up several keywords in one invocation:
 
 Output is a JSON object keyed first by operation string, then by
 [imap.NAME] block. Each per-block value is ``{"results": [...],
-"provenance": {...}}`` where ``provenance`` reports whether the
-result came from IMAP (``source: "remote"``) or from a local mu
-cache (``source: "local"``). ``--limit`` is applied per block.
+"provenance": {...}, "status": ...}`` where ``provenance`` reports
+whether the result came from IMAP (``source: "remote"``) or from a
+local mu cache (``source: "local"``). ``status`` is ``complete``
+(every folder searched; a ``--limit`` cut leaves it complete),
+``partial`` (some folder failed, see ``folders_failed``) or ``failed``
+(the block carries ``error`` in place of results). ``--limit`` is
+applied per block.
 
 ``--format text`` renders multi-line, prompt-friendly output grouped
 by operation and block; ``--format oneline`` renders one

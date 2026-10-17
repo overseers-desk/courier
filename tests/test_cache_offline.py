@@ -151,7 +151,11 @@ class TestLazyConnection:
 
         assert world.attempts == ["connect"]
         out = json.loads(result.stdout)["search hello"]["acct"]
-        assert out == {"error": "connection failed"}
+        assert out == {
+            "error": "connection failed: Failed to connect to IMAP server: "
+            "network is down",
+            "status": "failed",
+        }
         assert result.exit_code != 0
 
     def test_read_with_body_not_on_disk_connects_and_exits_1(self, world: World):
@@ -309,7 +313,11 @@ class TestInSentFromCache:
         assert world.attempts == ["connect"]
         assert world.queries == []
         out = json.loads(result.stdout)["search in:sent hello"]["acct"]
-        assert out == {"error": "connection failed"}
+        assert out == {
+            "error": "connection failed: Failed to connect to IMAP server: "
+            "network is down",
+            "status": "failed",
+        }
 
     def test_fallback_reports_folder_not_synced(self, world: World):
         from courier.imap_client import ImapClient

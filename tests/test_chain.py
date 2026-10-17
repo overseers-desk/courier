@@ -79,7 +79,7 @@ class TestEmptyResultForSubcmd:
     def test_search_returns_error_dict(self):
         """E1: a dead connection is an error, never an empty mailbox."""
         r = _empty_result_for_subcmd("search")
-        assert r == {"error": "connection failed"}
+        assert r == {"error": "connection failed", "status": "failed"}
         assert "results" not in r
 
     def test_read_returns_error_dict(self):
@@ -488,7 +488,10 @@ class TestExecuteChain:
         mock_soft.return_value = None
         ops = [("search q", "search", {"query": "q", "folder": None, "limit": 10})]
         result = _execute_chain(ops, ["acct1"])
-        assert result["search q"]["acct1"] == {"error": "connection failed"}
+        assert result["search q"]["acct1"] == {
+            "error": "connection failed",
+            "status": "failed",
+        }
 
     @patch("courier.__main__._make_client_soft")
     def test_runtime_error_produces_error_dict(self, mock_soft):
