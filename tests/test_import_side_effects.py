@@ -3,7 +3,7 @@ handler and does not import dotenv.
 
 A library caller hands courier its configuration; the entry points' ``main()``
 functions load ``.env`` and configure logging. Each import runs in a fresh
-interpreter whose cwd and HOME are a directory holding a planted ``.env``.
+interpreter whose cwd is a directory holding a planted ``.env``.
 ``-c`` is deliberate: with no ``__main__.__file__``, python-dotenv searches
 from the cwd, so an import-time ``load_dotenv()`` would find the planted file.
 """
@@ -47,18 +47,17 @@ _needs_mcp = pytest.mark.skipif(
 )
 
 
-def _plant(home: Path) -> None:
-    (home / ".env").write_text(
+def _plant(cwd: Path) -> None:
+    (cwd / ".env").write_text(
         "".join(f"{key}={value}\n" for key, value in _PLANTED_ENV.items())
     )
 
 
-def _import_in_fresh_interpreter(module: str, home: Path) -> Dict[str, Any]:
+def _import_in_fresh_interpreter(module: str, cwd: Path) -> Dict[str, Any]:
     env = {key: value for key, value in os.environ.items() if key not in _PLANTED_ENV}
-    env["HOME"] = str(home)
     result = subprocess.run(
         [sys.executable, "-c", _PROBE, module],
-        cwd=home,
+        cwd=cwd,
         env=env,
         capture_output=True,
         text=True,

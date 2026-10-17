@@ -38,7 +38,13 @@ except ImportError:
         return None
 
 
-from courier.config import CourierConfig, Identity, ImapBlock, OAuth2Config
+from courier.config import (
+    _ENV_FALLBACKS,
+    CourierConfig,
+    Identity,
+    ImapBlock,
+    OAuth2Config,
+)
 from courier.imap_client import ImapClient
 from courier.models import Email, EmailAddress, EmailContent
 
@@ -110,7 +116,10 @@ def _no_claude_command_refresh(monkeypatch):
     )
 
 
-_HOST_ENV_VARS = (
+# load_config fills a file's blocks from the _ENV_FALLBACKS variables, and
+# _load_config_data builds a block from the IMAP_* ones when no file is found.
+_MACHINE_ENV_VARS = (
+    *_ENV_FALLBACKS.values(),
     "IMAP_HOST",
     "IMAP_PORT",
     "IMAP_USERNAME",
@@ -119,15 +128,12 @@ _HOST_ENV_VARS = (
     "IMAP_ALLOWED_FOLDERS",
     "IMAP_IDLE_TIMEOUT",
     "IMAP_VERIFY_WITH_NOOP",
-    "GMAIL_CLIENT_ID",
-    "GMAIL_CLIENT_SECRET",
-    "GMAIL_REFRESH_TOKEN",
     "COURIER_CONFIG",
 )
 
 
 @pytest.fixture(autouse=True)
-def _no_host_environment(request, monkeypatch):
+def _no_machine_environment(request, monkeypatch):
     """Keep the developer's environment and ``.env.test`` out of the tests.
 
     ``WORLD_AS_OF`` would bound every search, so it is cleared for every
@@ -136,7 +142,7 @@ def _no_host_environment(request, monkeypatch):
     """
     monkeypatch.delenv("WORLD_AS_OF", raising=False)
     if request.node.get_closest_marker("integration") is None:
-        for name in _HOST_ENV_VARS:
+        for name in _MACHINE_ENV_VARS:
             monkeypatch.delenv(name, raising=False)
 
 
