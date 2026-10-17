@@ -1,8 +1,8 @@
 """Tests for ``ImapClient.fetch_by_message_id`` and the client as a context manager.
 
-The client is real; its lookup seams (``local_message_id_hits``,
-``search_emails``, ``fetch_email``) are replaced on the instance, so the
-cache-then-live lookup and the reads it leads to run as written.
+The client is real; its seams to the mu index and the server are
+replaced on the instance, so the cache-then-live lookup and the reads it
+leads to run as written.
 """
 
 import json

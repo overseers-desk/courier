@@ -983,8 +983,7 @@ class ImapClient:
             it.
 
         Raises:
-            AmbiguousMessageId: When copies sit in several folders;
-                ``matches`` lists each ``(folder, uid)``.
+            AmbiguousMessageId: When copies sit in several folders.
             TransientError: When the search failed in some folder, the
                 connection failed, or the message found could not then
                 be read.

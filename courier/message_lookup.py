@@ -1,8 +1,4 @@
-"""Find the one folder holding a Message-ID: the local cache first, then IMAP.
-
-:meth:`ImapClient.fetch_by_message_id` raises the outcomes as they are;
-the command's ``--message-id`` option turns each into its refusal.
-"""
+"""Find the one folder holding a Message-ID: the local cache first, then IMAP."""
 
 import os
 from typing import TYPE_CHECKING, Any, Dict, List, NamedTuple, Optional
@@ -163,11 +159,9 @@ def locate_message_id(
     The local cache is asked first and answers without a connection.
     The live ``msgid:`` search runs only when the cache cannot answer,
     or answers with a file whose UID is unknown while the caller needs
-    one, or whose file is not on disk. Any answer short of exactly one
-    folder holding that Message-ID raises: a failed search, a failed
-    folder, a hit whose Message-ID differs (IMAP ``HEADER`` is a
-    substring match, and some servers ignore it), or copies in several
-    folders.
+    one, or whose file is not on disk. A live hit whose Message-ID
+    differs raises: IMAP ``HEADER`` is a substring match, and some
+    servers ignore it.
 
     Args:
         client: Client for the account to search; only the live search
