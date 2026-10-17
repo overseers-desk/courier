@@ -1,4 +1,4 @@
-"""The library calls other programs make, pinned by signature.
+"""Pins the signatures and names a library caller relies on across releases.
 
 Programs that import courier call these by keyword and catch these
 errors by class, so a renamed parameter, a changed default or a moved
