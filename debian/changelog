@@ -1,3 +1,38 @@
+courier (1.2.0) unstable; urgency=medium
+
+  * Used as a library, courier reads only what it is handed:
+    CourierConfig.from_dict reads only its dict, and ImapClient, search
+    and watch apply a WORLD_AS_OF bound only when it is passed as
+    world_as_of=, an aware datetime. The courier command and the MCP
+    server read the config file, .env and WORLD_AS_OF and pass them in;
+    load_config() is the command's loader, and fills the credentials a
+    config file leaves out from IMAP_PASSWORD and GMAIL_*.
+  * Importing courier has no side effect: it loads no .env file and
+    configures no logging.
+  * courier.search(config, query, blocks=...) runs one query over
+    [imap.NAME] blocks and gives each block's result a status: complete,
+    partial (folders_failed names the folders that failed) or failed
+    (error gives the reason, such as connection failed: <reason>). The
+    search command's JSON carries the same status per block.
+  * ImapClient.fetch_by_message_id(message_id) returns the one message a
+    Message-ID names, or None when every folder asked was searched and
+    none holds it; copies in several folders raise AmbiguousMessageId,
+    whose matches lists each (folder, uid), and a folder whose search
+    failed raises TransientError.
+  * Email.to_dict() gives the object courier read prints for the
+    message. read --message-id reports uid null for a message it serves
+    from a maildir file with no UID.
+  * ImapClient is a context manager: it connects when a call first needs
+    the server and disconnects when the with block ends.
+  * WorldAsOfInvalid (a malformed or naive bound) and WorldBoundRefused
+    (an operation that would surface data dated after the bound) are
+    exported from courier.
+  * The MCP server run on its own (python -m courier.mcp_server) refuses
+    a malformed WORLD_AS_OF with one line, Error: <reason>, and exit
+    status 1.
+
+ -- Weiwu Zhang <a@colourful.land>  Sat, 17 Oct 2026 00:00:00 +0000
+
 courier (1.1.22) unstable; urgency=medium
 
   * An IMAP connection opens only when a call needs the server: a search
