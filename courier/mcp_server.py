@@ -24,12 +24,7 @@ logger = logging.getLogger("courier")
 
 
 def setup_server_logging() -> None:
-    """Configure the root logger for the MCP server.
-
-    Prefers the local syslog socket so MCP-server warnings survive
-    process restarts, with a timestamped stderr fallback when no syslog
-    daemon is reachable.
-    """
+    """Configure the root logger for the MCP server."""
     setup_logging(
         logging.INFO,
         stderr_format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
