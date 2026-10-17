@@ -1,12 +1,15 @@
 courier (1.2.0) unstable; urgency=medium
 
-  * Used as a library, courier reads only what it is handed:
-    CourierConfig.from_dict reads only its dict, and ImapClient, search
-    and watch apply a WORLD_AS_OF bound only when it is passed as
-    world_as_of=, an aware datetime. The courier command and the MCP
-    server read the config file, .env and WORLD_AS_OF and pass them in;
-    load_config() is the command's loader, and fills the credentials a
-    config file leaves out from IMAP_PASSWORD and GMAIL_*.
+  * Used as a library, courier takes the configuration and the
+    WORLD_AS_OF bound as arguments: CourierConfig.from_dict reads only
+    its dict, and ImapClient, search and watch apply a WORLD_AS_OF bound
+    only when it is passed as world_as_of=, an aware datetime. The
+    courier command and the MCP server read the config file, .env and
+    WORLD_AS_OF and pass them in; load_config() is the command's loader,
+    and fills the credentials a config file leaves out from IMAP_PASSWORD
+    and GMAIL_*. A program that took the bound or those credentials from
+    its environment through the library now passes them in, or calls
+    load_config() for the command's behaviour.
   * Importing courier has no side effect: it loads no .env file and
     configures no logging.
   * courier.search(config, query, blocks=...) runs one query over
