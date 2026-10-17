@@ -122,11 +122,15 @@ Drafting (no `--send`) keeps the previous convenience defaults: the first identi
 
 ## `WORLD_AS_OF`: bounding the mailbox at an instant
 
-`WORLD_AS_OF` is an environment variable carrying an ISO-8601 timestamp with a timezone offset (e.g. `2026-07-12T17:07:00+10:00`). When set, nothing dated after that instant leaves courier, so a session replayed against the mailbox later sees the same world it saw the first time. The three semantics:
+`WORLD_AS_OF` is an environment variable carrying an ISO-8601 timestamp with a timezone offset (e.g. `2026-07-12T17:07:00+10:00`). When set, nothing dated after that instant leaves courier, so a session replayed against the mailbox later sees the same world it saw the first time.
+
+The `courier` command and the MCP server read the variable. Courier used as a Python library does not read it: a library caller passes the bound as `world_as_of=`, an aware `datetime`, to `search`, `ImapClient` or `watch`, and the semantics below then hold for that call or client. Leaving it out means unbounded, whatever the environment holds; a naive `datetime` raises `WorldAsOfInvalid`.
+
+The three semantics:
 
 1. **Unset**: unbounded, normal operation; existing callers pay nothing and no output shape changes.
 2. **Set**: searches gain a server-side prefilter (IMAP `SEARCH BEFORE`, day-granular and over-inclusive by up to a day; Gmail additionally `before:<epoch seconds>`; the local mu cache a `date:..<bound>` clause) *and* an exact client-side post-filter on each message's date. A direct read (`read`, `attachments`, `save`, `export`, `links`, a thread's root, `copy`'s source) of a message dated after the bound refuses with a message naming both instants. Thread members and search hits after the bound are dropped, before any `--limit` cut. `watch` refuses outright: a live tail of the future is meaningless under a bound. Relative query terms (`today`, `newer:7d`, …) resolve against the bound, not the wall clock.
-3. **Set but unparseable, or naive (no timezone offset)**: hard failure at startup. The CLI exits 1 and the MCP server refuses to start. Never a silent fallback, because a silently ignored bound produces a contaminated replay that looks valid.
+3. **Set but unparseable, or naive (no timezone offset)**: hard failure at startup. The CLI and the MCP server print one line naming the value and exit 1 before doing any work. Never a silent fallback, because a silently ignored bound produces a contaminated replay that looks valid.
 
 **The date compared is INTERNALDATE** (server receipt time), not the sender-supplied `Date` header: INTERNALDATE is when the message entered this mailbox, which is when it entered the world a session could see, and it cannot be forged by the sender. Two consequences to know about: a message imported or copied recently carries a recent INTERNALDATE even if it was sent long ago, and results served from a local cache (maildir file or mu index) are judged by their indexed Date-header date instead, flagged as `date_source: "mu_index"` in provenance.
 

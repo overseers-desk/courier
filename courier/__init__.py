@@ -1,10 +1,18 @@
 """Email toolkit for AI assistants and command-line scripting.
 
 The names in ``__all__`` are courier's supported library surface: config
-loading, the error taxonomy, identity/SMTP resolution, the IMAP client,
-search across [imap.NAME] blocks, message models, the query grammar, MIME
-building, and send-with-FCC.
+(``CourierConfig.from_dict`` for a dict the caller builds, ``load_config``
+for the file and environment the ``courier`` command reads), the error
+taxonomy (``AmbiguousMessageId`` and the WORLD_AS_OF errors among it),
+identity/SMTP resolution, the IMAP client and its Message-ID lookup,
+``search`` across [imap.NAME] blocks, ``watch``, message models with
+``Email.to_dict``, the query grammar, MIME building, and send-with-FCC.
 Anything not listed here is internal and may reshape without notice.
+
+The library reads only what it is handed. Importing it loads no ``.env``
+file and configures no logging, and ``search``, ``ImapClient`` and
+``watch`` take the WORLD_AS_OF bound as their ``world_as_of`` argument;
+``None`` leaves them unbounded whatever the environment holds.
 """
 
 from courier.config import (

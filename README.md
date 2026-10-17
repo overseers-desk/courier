@@ -219,7 +219,50 @@ AI agents with skill/hook systems call Courier the same way: define a skill that
 
 ## Library use
 
-Courier is also a Python library. Import from the top-level `courier` package. The names in `courier.__all__` are the supported import surface: config loading, the error taxonomy, identity and SMTP resolution, the `ImapClient`, message models, the query parser, MIME building, and `send_with_fcc`. Anything not listed in `__all__` is internal and may reshape without announcement.
+Courier is also a Python library. Import from the top-level `courier` package. The names in `courier.__all__` are the supported import surface: config loading, the error taxonomy, identity and SMTP resolution, the `ImapClient`, search across `[imap.NAME]` blocks, message models, the query parser, MIME building, and `send_with_fcc`. Anything not listed in `__all__` is internal and may reshape without announcement.
+
+The library reads only what it is handed: the configuration and the `WORLD_AS_OF` bound arrive as arguments, and importing courier loads no `.env` file and configures no logging, so a program importing it behaves the same on a host with its own courier setup as on one with none. The `courier` command and the MCP server read the config file, `.env` and `WORLD_AS_OF` themselves and pass the results in; `load_config()` is the command's loader, for callers who want the tool's own config: it reads `~/.config/courier/config.toml` (or the path it is given) and fills credentials the file leaves out from `IMAP_PASSWORD` and the `GMAIL_*` variables. To bound a session at an instant, pass an aware `datetime` as `world_as_of=` to `search`, `ImapClient` or `watch`; without it there is no bound, whatever `WORLD_AS_OF` holds, and a naive `datetime` raises `WorldAsOfInvalid`.
+
+A config built from a dict, and one query over its blocks:
+
+```python
+from courier import CourierConfig, ImapClient, search
+
+cfg = CourierConfig.from_dict({
+    "imap": {
+        "work": {
+            "host": "imap.example.com",
+            "username": "me@example.com",
+            "password": "app-password",
+        },
+    },
+})
+
+found = search(cfg, "from:alice invoice", blocks=["work"], limit=20)
+work = found["work"]
+if work["status"] == "failed":
+    print(work["error"])
+else:
+    for hit in work["results"]:
+        print(hit["date"], hit["folder"], hit["subject"])
+    for failure in work.get("folders_failed", []):
+        print("not searched:", failure["folder"], failure["error"])
+```
+
+`search` returns `{block name: result}` in the order searched (`blocks=None` is every block in config order), and each result's `status` says how far it got: `complete` (every folder searched; a `limit` cut leaves it complete), `partial` (`folders_failed` names the folders that failed; `results` holds what the rest matched) or `failed` (`error` gives the reason, such as `connection failed: <reason>`, in place of `results`). One failed block leaves the others' results standing, while a malformed query raises `QuerySyntaxError` before any block is searched. A `[local_cache]` table without `mu_index` leaves `mu` to find its own store, through `MUHOME` or its default location under the home directory; set `mu_index` to the store's directory to hand that in as well.
+
+One message by its Message-ID:
+
+```python
+with ImapClient(cfg.imap_blocks["work"]) as client:
+    email = client.fetch_by_message_id("<CAF1234@mail.example.com>")
+if email is not None:
+    print(email.to_dict())
+```
+
+The client connects when a call first needs the server and disconnects when the `with` block ends. `fetch_by_message_id` returns `None` only when every folder asked was searched and none holds the message; copies in several folders raise `AmbiguousMessageId`, whose `matches` lists each `(folder, uid)`, and a folder whose search failed raises `TransientError`. `to_dict()` gives the object `courier read` prints for the message; the raw header map is left out of it and stays on `email.headers`.
+
+Sending as a configured identity, with the sent copy filed:
 
 ```python
 from courier import (
@@ -236,9 +279,6 @@ identity = cfg.identities["work"]
 imap_block = cfg.imap_blocks[identity.imap]
 smtp = resolve_smtp_for_identity(identity, imap_block, identity.imap, cfg.smtp_blocks)
 
-client = ImapClient(imap_block)
-client.connect()
-
 mime = create_mime(
     from_addr=EmailAddress(name=identity.name, address=identity.address),
     to=[EmailAddress.parse("alice@example.com")],
@@ -247,7 +287,8 @@ mime = create_mime(
 )
 
 # fcc_client files the sent copy in the server's Sent folder; drop it to skip.
-result = send_with_fcc(mime, smtp, fcc_client=client)
+with ImapClient(imap_block) as client:
+    result = send_with_fcc(mime, smtp, fcc_client=client)
 print(result["fcc_uid"], result["fcc_error"])
 ```
 
