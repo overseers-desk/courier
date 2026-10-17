@@ -232,6 +232,8 @@ class TestMcpStartupWiring:
 
 @pytest.mark.parametrize("module", ["__main__.py", "mcp_server.py"])
 def test_every_client_construction_passes_the_bound(module):
+    """No ``ImapClient(`` call in the CLI or the MCP server omits
+    ``world_as_of=``, since a client built without it is unbounded."""
     import courier
 
     source = (Path(courier.__file__).parent / module).read_text()

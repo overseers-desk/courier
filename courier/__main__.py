@@ -2062,7 +2062,8 @@ def watch_cmd(
     {"kind": ..., "folder": ..., "uidvalidity": ..., "count": ...,
     "raw": ...} where kind is started, exists, expunge, flags, or
     reconnected. Transient failures reconnect internally; exits 1 when
-    the server lacks IDLE or answers NO/BAD.
+    the server lacks IDLE or answers NO/BAD, and under WORLD_AS_OF,
+    since a watch is a live tail of the future.
     """
     name = _resolve_single_imap_name()
     cfg = load_config(_config_path)

@@ -1,4 +1,4 @@
-"""WORLD_AS_OF: the office-wide as-of bound, parsed once, enforced downstream.
+"""WORLD_AS_OF: the office-wide as-of bound, parsed by the entry points, enforced downstream.
 
 ``WORLD_AS_OF`` is an environment variable carrying an ISO-8601 timestamp
 with a timezone offset (e.g. ``2026-07-12T17:07:00+10:00``). When set,

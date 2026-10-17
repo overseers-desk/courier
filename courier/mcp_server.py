@@ -166,6 +166,12 @@ def main() -> None:
         print(f"Courier MCP server version {__version__}")
         return
 
+    # create_server parses the bound before the lifespan's guard runs.
+    try:
+        world_as_of()
+    except WorldAsOfInvalid as exc:
+        parser.exit(1, f"Error: {exc}\n")
+
     setup_server_logging()
     if args.debug:
         logger.setLevel(logging.DEBUG)

@@ -158,6 +158,24 @@ class TestServer:
                         mock_server.run.assert_called_once()
                         mock_logger.setLevel.assert_called_with(logging.DEBUG)
 
+    def test_main_refuses_an_invalid_bound(self, monkeypatch, capsys):
+        """A bad WORLD_AS_OF stops main() with one line on stderr and exit 1,
+        before any server is built."""
+        monkeypatch.setenv("WORLD_AS_OF", "garbage")
+
+        with (
+            mock.patch("sys.argv", ["server.py"]),
+            mock.patch("courier.mcp_server.create_server") as mock_create_server,
+            pytest.raises(SystemExit) as exc,
+        ):
+            main()
+
+        assert exc.value.code == 1
+        mock_create_server.assert_not_called()
+        err = capsys.readouterr().err
+        assert err.startswith("Error: WORLD_AS_OF='garbage'")
+        assert len(err.splitlines()) == 1
+
     def test_main_env_config(self, monkeypatch):
         """Test main function with config from environment variable."""
         monkeypatch.setenv("COURIER_CONFIG", "env_config.toml")
