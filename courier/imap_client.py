@@ -6,6 +6,7 @@ import logging
 import os
 import re
 from datetime import date, datetime, timedelta
+from types import TracebackType
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -15,6 +16,7 @@ from typing import (
     Optional,
     Sequence,
     Tuple,
+    Type,
     Union,
 )
 
@@ -34,6 +36,7 @@ from courier.errors import (
     WorldBoundRefused,
     as_courier_error,
 )
+from courier.message_lookup import bare_message_id, locate_message_id
 from courier.models import Email
 from courier.oauth2 import get_access_token
 from courier.query import ParseResult
@@ -321,6 +324,27 @@ class ImapClient:
                 self.connected = False
                 self.last_activity = None  # Reset activity tracking
                 logger.info("Disconnected from IMAP server")
+
+    def __enter__(self) -> "ImapClient":
+        """Connect, so the ``with`` block works on one session.
+
+        Returns:
+            This client, connected.
+
+        Raises:
+            ConnectionError: If connection fails
+        """
+        self.connect()
+        return self
+
+    def __exit__(
+        self,
+        exc_type: Optional[Type[BaseException]],
+        exc: Optional[BaseException],
+        tb: Optional[TracebackType],
+    ) -> None:
+        """Disconnect; an exception raised in the block propagates."""
+        self.disconnect()
 
     def _is_connection_stale(self) -> bool:
         """Check if connection is likely stale based on idle timeout.
@@ -937,6 +961,57 @@ class ImapClient:
         )
         self._refuse_read_after_bound(email_obj.date)
         return self._apply_redact(email_obj)
+
+    def fetch_by_message_id(
+        self, message_id: str, folders: Optional[List[str]] = None
+    ) -> Optional[Email]:
+        """Fetch the one message carrying a Message-ID.
+
+        The local cache is asked first and the live ``msgid:`` search is
+        the fallback (see :func:`courier.message_lookup.locate_message_id`).
+        A cache hit whose file name carries no UID is read from its file,
+        and the Email's ``uid`` is then ``None``. The client connects only
+        when a step needs the server.
+
+        Args:
+            message_id: The Message-ID, with or without ``<>``.
+            folders: Folders to search, each once; ``None`` searches all.
+
+        Returns:
+            The Email when exactly one folder holds the Message-ID;
+            ``None`` when every folder asked was searched and none holds
+            it.
+
+        Raises:
+            AmbiguousMessageId: When copies sit in several folders;
+                ``matches`` lists each ``(folder, uid)``.
+            TransientError: When the search failed in some folder, the
+                connection failed, or the message found could not then
+                be read.
+            PermanentError: When the search cannot run on this account,
+                or the server returned messages with other Message-IDs.
+            WorldBoundRefused: When the message is dated after the
+                client's bound.
+            TypeError: When ``folders`` is one name rather than a list.
+            ValueError: When a folder is not allowed.
+        """
+        try:
+            location = locate_message_id(self, message_id, folders, need_uid=False)
+            if location is None:
+                return None
+            if location.uid is not None:
+                email_obj = self.fetch_email(location.uid, location.folder)
+            else:
+                assert location.path is not None
+                email_obj = self.fetch_email_path(location.path, location.folder)
+        except ConnectionError as e:
+            raise as_courier_error(e) from e
+        if email_obj is None:
+            raise TransientError(
+                f"Message-ID <{bare_message_id(message_id)}> was found in "
+                f"{location.folder} but could not then be read"
+            )
+        return email_obj
 
     def _apply_redact(self, email_obj: Email) -> Email:
         """Run the per-block redact policy and replace if matched."""

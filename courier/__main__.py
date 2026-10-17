@@ -25,6 +25,7 @@ from courier.config import (
     load_config_with_warnings,
 )
 from courier.errors import (
+    AmbiguousMessageId,
     CourierError,
     FccUnresolved,
     TransientError,
@@ -33,8 +34,8 @@ from courier.errors import (
 )
 from courier.imap_client import ImapClient
 from courier.logging_setup import setup_logging
+from courier.message_lookup import bare_message_id, locate_message_id
 from courier.models import extract_links_batch
-from courier.query.ast import UntranslatableForBackend
 from courier.query.registry import render_operator_help
 from courier.watch import watch as watch_folder
 from courier.world_bound import world_as_of
@@ -354,47 +355,6 @@ def _refuse_several_folders(folders: List[str], bare: str) -> NoReturn:
     raise typer.Exit(1)
 
 
-def _local_message_id_target(
-    client: ImapClient, folder: Optional[str], bare: str
-) -> Optional[Tuple[str, Optional[int], str]]:
-    """Resolve a Message-ID from the local cache, with no network.
-
-    The mu index gives the message's maildir path and folder, and its
-    UID when the file name is mbsync-style. The cache answers only when
-    every hit is that Message-ID with a folder and a path; anything
-    else (no cache, an index miss, a redacted or odd hit) is left to
-    the live search.
-
-    Args:
-        client: Client for the ``--imap`` block.
-        folder: ``-f`` value, or ``None``.
-        bare: The Message-ID without angle brackets.
-
-    Returns:
-        ``(folder, uid, path)``, with ``uid`` ``None`` when the file
-        name carries none; ``None`` when the cache cannot answer.
-
-    Raises:
-        typer.Exit: 1 when the copies sit in several folders.
-    """
-    try:
-        hits = client.local_message_id_hits(bare, folder)
-    except (CourierError, UntranslatableForBackend, ValueError):
-        return None
-    if not hits:
-        return None
-    for hit in hits:
-        got = str(hit.get("message_id", "")).strip().strip("<>")
-        if got != bare or not hit.get("folder") or not hit.get("path"):
-            return None
-    folders = sorted({h["folder"] for h in hits})
-    if len(folders) > 1:
-        _refuse_several_folders(folders, bare)
-    first = hits[0]
-    uid = first.get("uid")
-    return first["folder"], (int(uid) if uid is not None else None), first["path"]
-
-
 def _resolve_message_id(
     client: ImapClient,
     folder: Optional[str],
@@ -404,13 +364,9 @@ def _resolve_message_id(
 ) -> Tuple[str, Optional[int], Optional[str]]:
     """Find the folder, UID and (for a cache hit) file of a Message-ID.
 
-    The local cache is asked first and answers without a connection.
-    The live ``msgid:`` search runs only when the cache cannot answer,
-    or answers with a file whose UID is unknown while the caller needs
-    one, or whose file is not on disk. Any answer short of exactly one
-    folder holding that Message-ID refuses: a failed search, a failed
-    folder, or a hit whose Message-ID differs (IMAP ``HEADER`` is a
-    substring match, and some servers ignore it).
+    :func:`~courier.message_lookup.locate_message_id` does the lookup,
+    cache first; this turns every answer short of exactly one folder
+    holding that Message-ID into the command's refusal.
 
     Args:
         client: Client for the ``--imap`` block.
@@ -428,47 +384,28 @@ def _resolve_message_id(
         typer.Exit: 1 when the search fails, cannot be trusted, finds
             nothing, or finds copies in several folders.
     """
-    bare = message_id.strip().strip("<>")
-    local = _local_message_id_target(client, folder, bare) if use_cache else None
-    if local is not None:
-        found_folder, found_uid, path = local
-        if found_uid is not None:
-            return found_folder, found_uid, None
-        if not need_uid and os.path.isfile(path):
-            return found_folder, None, path
+    bare = bare_message_id(message_id)
     try:
-        envelope = client.search_emails(
-            f"msgid:<{bare}>", folder=folder, limit=20, no_cache=True
+        location = locate_message_id(
+            client,
+            message_id,
+            None if folder is None else [folder],
+            need_uid=need_uid,
+            use_cache=use_cache,
         )
-    except (CourierError, UntranslatableForBackend, ValueError) as exc:
+    except AmbiguousMessageId as exc:
+        _refuse_several_folders(exc.folders, bare)
+    except CourierError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1)
+    except ValueError as exc:
         typer.echo(f"Error: cannot look up Message-ID on this account: {exc}", err=True)
         raise typer.Exit(1)
-    hits: List[Dict[str, Any]] = envelope.get("results") or []
-    failed = envelope.get("folders_failed") or []
-    if failed:
-        names = ", ".join(f.get("folder", "?") for f in failed)
-        typer.echo(
-            f"Error: cannot look up Message-ID on this account: "
-            f"search failed in {names}",
-            err=True,
-        )
-        raise typer.Exit(1)
-    if any(str(h.get("message_id", "")).strip().strip("<>") != bare for h in hits):
-        typer.echo(
-            "Error: cannot look up Message-ID on this account: the server "
-            "returned messages with other Message-IDs, so it does not "
-            "honour the search",
-            err=True,
-        )
-        raise typer.Exit(1)
-    if not hits:
+    if location is None:
         where = f" in {folder}" if folder else ""
         typer.echo(f"Error: Message-ID <{bare}> not found{where}", err=True)
         raise typer.Exit(1)
-    folders = sorted({h["folder"] for h in hits})
-    if len(folders) > 1:
-        _refuse_several_folders(folders, bare)
-    return hits[0]["folder"], int(hits[0]["uid"]), None
+    return location
 
 
 def _resolve_target(

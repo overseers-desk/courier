@@ -14,6 +14,7 @@ from courier.config import (
     load_config,
 )
 from courier.errors import (
+    AmbiguousMessageId,
     CapabilityMissing,
     CourierError,
     FccUnresolved,
@@ -69,6 +70,7 @@ __all__ = [
     "FccUnresolved",
     "WorldAsOfInvalid",
     "WorldBoundRefused",
+    "AmbiguousMessageId",
     # identity
     "resolve_identity_for_send",
     "resolve_identity_for_reply",

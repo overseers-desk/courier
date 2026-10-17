@@ -299,7 +299,9 @@ class Email:
         ``body`` is the HTML part when there is one, else the text part,
         and ``content_type`` names which; ``date`` is in the host's local
         zone. ``in_reply_to``, ``references``, ``cc`` and ``attachments``
-        appear only when non-empty. The headers stay on :attr:`headers`.
+        appear only when non-empty. The raw header map is left out, since
+        every AI-agent read of the object would then carry the Received,
+        DKIM and ARC chains; callers that want it read :attr:`headers`.
 
         Returns:
             The per-block dict of ``read`` and of the chain's ``read`` verb.

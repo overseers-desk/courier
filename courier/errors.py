@@ -8,7 +8,7 @@ Two retry classes cover every IMAP failure mode:
   identical command is useless.
 """
 
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 from imapclient.exceptions import (  # type: ignore[import-untyped]
     IMAPClientAbortError,
@@ -55,6 +55,27 @@ class WorldBoundRefused(PermanentError):
     Raised on a direct read of a message dated after the bound, and by
     ``watch`` (a live tail of the future is meaningless under a bound).
     """
+
+
+class AmbiguousMessageId(CourierError):
+    """A Message-ID is held in more than one folder, so no one copy is the answer.
+
+    The caller chooses by narrowing the lookup to one folder. ``matches``
+    lists every ``(folder, uid)`` found; ``folders`` names each folder once.
+    """
+
+    def __init__(self, message_id: str, matches: List[Tuple[str, int]]):
+        self.message_id = message_id
+        self.matches = matches
+        super().__init__(
+            f"Message-ID <{message_id}> is in several folders "
+            f"({', '.join(self.folders)})"
+        )
+
+    @property
+    def folders(self) -> List[str]:
+        """The folders holding the Message-ID, sorted, each once."""
+        return sorted({folder for folder, _uid in self.matches})
 
 
 class FccUnresolved(PermanentError):
