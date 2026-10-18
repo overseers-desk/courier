@@ -360,3 +360,42 @@ class TestSendValidation:
         msg.set_content("x")
         with pytest.raises(ValueError, match="no To/Cc/Bcc recipients"):
             send(msg, SmtpConfig(host="h"), transport=_FakeSMTPBase)
+
+
+class TestRepeatedRecipientHeaders:
+    """A message whose To, Cc or Bcc field occurs twice, as a draft from
+    another mail client can, is delivered to every address in every
+    occurrence, and every Bcc occurrence is stripped from the wire copy."""
+
+    RAW = (
+        b"From: me@example.com\r\n"
+        b"To: a@example.com\r\n"
+        b"To: b@example.com\r\n"
+        b"Cc: c@example.com\r\n"
+        b"Cc: d@example.com\r\n"
+        b"Bcc: e@example.com\r\n"
+        b"Bcc: f@example.com\r\n"
+        b"Subject: s\r\n"
+        b"\r\n"
+        b"body\r\n"
+    )
+
+    def test_every_occurrence_reaches_rcpt_to(self):
+        import email
+
+        from courier.smtp_transport import _all_recipients
+
+        msg = email.message_from_bytes(self.RAW)
+        assert _all_recipients(msg) == [
+            "a@example.com",
+            "b@example.com",
+            "c@example.com",
+            "d@example.com",
+            "e@example.com",
+            "f@example.com",
+        ]
+
+    def test_every_bcc_occurrence_is_stripped(self):
+        from courier.smtp_transport import _strip_bcc
+
+        assert b"Bcc" not in _strip_bcc(self.RAW)

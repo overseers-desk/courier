@@ -252,3 +252,27 @@ class TestModels(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_repeated_recipient_fields_keep_every_address():
+    """A message carrying To, Cc, Bcc or Reply-To twice keeps the
+    addresses of every occurrence, not only the first."""
+    raw = (
+        b"From: a@example.com\r\n"
+        b"To: b@example.com\r\n"
+        b"To: c@example.com\r\n"
+        b"Cc: d@example.com\r\n"
+        b"Cc: e@example.com\r\n"
+        b"Bcc: f@example.com\r\n"
+        b"Bcc: g@example.com\r\n"
+        b"Reply-To: h@example.com\r\n"
+        b"Reply-To: i@example.com\r\n"
+        b"Subject: s\r\n"
+        b"\r\n"
+        b"body\r\n"
+    )
+    parsed = Email.from_message(email.message_from_bytes(raw))
+    assert [a.address for a in parsed.to] == ["b@example.com", "c@example.com"]
+    assert [a.address for a in parsed.cc] == ["d@example.com", "e@example.com"]
+    assert [a.address for a in parsed.bcc] == ["f@example.com", "g@example.com"]
+    assert [a.address for a in parsed.reply_to] == ["h@example.com", "i@example.com"]

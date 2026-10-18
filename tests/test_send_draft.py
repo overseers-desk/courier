@@ -255,3 +255,63 @@ class TestSendDraftBcc:
         # The MIME passed to send() must carry the new Bcc.
         bcc_value = str(captured_msg[0].get("Bcc", "") or "")
         assert "audit@x.com" in bcc_value
+
+
+class TestSendDraftRepeatedBcc:
+    """A draft carrying Bcc twice keeps both occurrences' addresses when
+    --bcc adds another, and the send result reports all of them."""
+
+    RAW = (
+        b"From: alice@x.com\r\n"
+        b"To: recipient@y.com\r\n"
+        b"Bcc: one@y.com\r\n"
+        b"Bcc: two@y.com\r\n"
+        b"Subject: draft\r\n"
+        b"Message-ID: <draft@local>\r\n"
+        b"\r\n"
+        b"body\r\n"
+    )
+
+    def test_bcc_merge_keeps_every_draft_occurrence(self):
+        cfg = _cfg_with_identities()
+        client = _client_with_draft()
+        client.fetch_raw.return_value = {"raw": self.RAW, "subject": "draft"}
+        captured_msg: list = []
+
+        def fake_send(msg, smtp_cfg, transport=None):
+            captured_msg.append(msg)
+            return (self.RAW, _build_send_result())
+
+        with (
+            patch("courier.__main__.load_config", return_value=cfg),
+            patch("courier.__main__._make_client", return_value=client),
+            patch("courier.smtp_transport.send", side_effect=fake_send),
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "send-draft",
+                    "-f",
+                    "Drafts",
+                    "-u",
+                    "42",
+                    "--bcc",
+                    "audit@x.com",
+                    "--allow-no-copy",
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        bcc_values = captured_msg[0].get_all("Bcc")
+        assert len(bcc_values) == 1
+        for addr in ("one@y.com", "two@y.com", "audit@x.com"):
+            assert addr in bcc_values[0]
+
+    def test_send_result_reports_every_bcc_occurrence(self):
+        import email
+
+        from courier.__main__ import _message_bcc
+
+        assert _message_bcc(email.message_from_bytes(self.RAW)) == [
+            "one@y.com",
+            "two@y.com",
+        ]

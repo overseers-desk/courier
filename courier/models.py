@@ -357,10 +357,12 @@ class Email:
         # Parse headers
         subject = decode_mime_header(message.get("Subject", ""))
         from_str = decode_mime_header(message.get("From", ""))
-        to_str = decode_mime_header(message.get("To", ""))
-        cc_str = decode_mime_header(message.get("Cc", ""))
-        bcc_str = decode_mime_header(message.get("Bcc", ""))
-        reply_to_str = decode_mime_header(message.get("Reply-To", ""))
+        # An address field a message carries twice contributes the
+        # addresses of every occurrence.
+        to_str, cc_str, bcc_str, reply_to_str = (
+            ", ".join(decode_mime_header(v) for v in message.get_all(name, []))
+            for name in ("To", "Cc", "Bcc", "Reply-To")
+        )
         date_str = message.get("Date")
         message_id = message.get("Message-ID", "")
         if message_id:

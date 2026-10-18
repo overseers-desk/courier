@@ -59,10 +59,8 @@ def _extract_addresses(mime: Any, header: str) -> List[str]:
     junk fragments that the server would 501-reject or a relay would
     qualify and misdeliver.
     """
-    raw = mime.get(header)
-    if not raw:
-        return []
-    return [addr for _name, addr in getaddresses([str(raw)]) if addr]
+    values = mime.get_all(header) or []
+    return [addr for _name, addr in getaddresses([str(v) for v in values]) if addr]
 
 
 def _from_address(mime: Any) -> str:

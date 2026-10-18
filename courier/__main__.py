@@ -1191,10 +1191,12 @@ def _message_bcc(mime_message: Any) -> List[str]:
     """
     import email.utils
 
-    raw = mime_message.get("Bcc")
-    if not raw:
-        return []
-    return [addr for _name, addr in email.utils.getaddresses([str(raw)]) if addr]
+    values = mime_message.get_all("Bcc") or []
+    return [
+        addr
+        for _name, addr in email.utils.getaddresses([str(v) for v in values])
+        if addr
+    ]
 
 
 def _perform_send(
@@ -3509,7 +3511,9 @@ def send_draft(
         if getattr(identity, "bcc", None):
             envelope_bcc.extend(identity.bcc)
         if envelope_bcc:
-            existing = str(msg.get("Bcc", "") or "").strip()
+            existing = ", ".join(
+                str(v).strip() for v in msg.get_all("Bcc") or [] if str(v).strip()
+            )
             merged = (
                 ", ".join([existing] + envelope_bcc)
                 if existing
