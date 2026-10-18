@@ -1093,3 +1093,28 @@ class TestSearchTruncationProbe:
             tmp_path, [self._record(1)], limit=5
         )
         assert report.dialect == "mu"
+
+
+class TestMuLaunchFailures:
+    """A mu binary that cannot be launched is a MuFailure, so the caller
+    falls back to IMAP as it does after a timeout or a bad exit."""
+
+    def test_search_unlaunchable_mu_raises_mufailure(self, tmp_path):
+        backend = MuBackend(LocalCacheConfig(mu_index=_make_xapian_dir(tmp_path)))
+        cannot = PermissionError(13, "Permission denied")
+
+        with patch("courier.local_cache.subprocess.run", side_effect=cannot):
+            with pytest.raises(MuFailure, match="could not run") as info:
+                backend.search(_make_block(), parse("from:alice"), limit=10)
+        assert info.value.__cause__ is cannot
+
+    def test_muhome_discovery_unlaunchable_mu_raises_mufailure(self, tmp_path):
+        backend = MuBackend(LocalCacheConfig())
+        cannot = PermissionError(13, "Permission denied")
+
+        with (
+            patch("courier.local_cache.shutil.which", return_value="/usr/bin/mu"),
+            patch("courier.local_cache.subprocess.run", side_effect=cannot),
+        ):
+            with pytest.raises(MuFailure, match="could not run"):
+                backend._discover_muhome()

@@ -142,6 +142,8 @@ class MuBackend:
                 timeout=10,
                 check=True,
             )
+        except OSError as e:
+            raise MuFailure(f"mu info store could not run: {e}") from e
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
             raise MuFailure(f"mu info store failed: {e}") from e
         root_match = re.search(r"\bmaildir\s*\|\s*(\S+)", proc.stdout)
@@ -396,6 +398,8 @@ class MuBackend:
             )
         except subprocess.TimeoutExpired as e:
             raise MuFailure(f"mu find timed out: {e}") from e
+        except OSError as e:
+            raise MuFailure(f"mu find could not run: {e}") from e
         if proc.returncode == 2:
             # mu exits 2 for a no-match result. It rejects no field:
             # an unknown one is reinterpreted as free text (visible
