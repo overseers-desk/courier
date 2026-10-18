@@ -27,6 +27,7 @@ class TestCreateReplyMime:
                 text="Original message content\nOn multiple lines.",
                 html="<p>Original message content</p><p>On multiple lines.</p>",
             ),
+            references=["<previous@example.com>"],
             headers={"References": "<previous@example.com>"},
         )
 
@@ -668,3 +669,25 @@ class TestParseMessageDate:
         with pytest.raises(ValueError) as exc:
             parse_message_date("last Tuesday")
         assert "2019-03-04" in str(exc.value)
+
+
+def test_reply_references_come_from_the_parsed_field():
+    """The reply's References chain is built from the parent's parsed
+    references, whatever case its header name was written in."""
+    parent = Email(
+        message_id="<c@example.com>",
+        subject="s",
+        from_=EmailAddress(name="", address="sender@example.com"),
+        to=[EmailAddress(name="", address="me@example.com")],
+        date=datetime.now(),
+        content=EmailContent(text="t"),
+        references=["<a@example.com>", "<b@example.com>"],
+        headers={"references": "<a@example.com> <b@example.com>"},
+    )
+    reply = create_mime(
+        from_addr=EmailAddress(name="", address="me@example.com"),
+        body="r",
+        original_email=parent,
+    )
+    assert reply["References"] == "<a@example.com> <b@example.com> <c@example.com>"
+    assert reply["In-Reply-To"] == "<c@example.com>"

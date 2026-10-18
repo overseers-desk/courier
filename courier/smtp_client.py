@@ -283,9 +283,7 @@ def create_mime(
 
     if is_reply:
         assert original_email is not None
-        references = []
-        if "References" in original_email.headers:
-            references.append(" ".join(original_email.headers["References"].split()))
+        references = list(original_email.references)
         if original_email.message_id:
             references.append(" ".join(original_email.message_id.split()))
         if references:
