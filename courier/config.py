@@ -467,10 +467,16 @@ class ImapBlock:
         prefix = f"[imap.{name}]" if name else "[imap]"
         defaults = defaults or {}
 
+        host = data.get("host")
+        if not isinstance(host, str) or not host.strip():
+            raise ValueError(f"{prefix}: 'host' must be a non-empty string")
+        username = data.get("username")
+        if not isinstance(username, str) or not username.strip():
+            raise ValueError(f"{prefix}: 'username' must be a non-empty string")
+
         oauth2_config = OAuth2Config.from_dict(data)
         password = data.get("password")
 
-        host = data.get("host", "")
         is_gmail = host.endswith("gmail.com") or host.endswith("googlemail.com")
 
         if is_gmail and not oauth2_config and not password:
@@ -483,6 +489,16 @@ class ImapBlock:
         default_smtp = data.get("default_smtp")
         if default_smtp is not None and not isinstance(default_smtp, str):
             raise ValueError(f"{prefix}: 'default_smtp' must be a string")
+
+        allowed_folders = data.get("allowed_folders")
+        if allowed_folders is not None and (
+            not isinstance(allowed_folders, list)
+            or not all(isinstance(f, str) and f.strip() for f in allowed_folders)
+        ):
+            raise ValueError(
+                f"{prefix}: 'allowed_folders' must be a list of non-empty "
+                "folder names"
+            )
 
         redact_policy: Optional[Any] = None
         redact_raw = data.get("redact")
@@ -506,9 +522,9 @@ class ImapBlock:
         use_ssl = data.get("use_ssl", True)
 
         return cls(
-            host=data["host"],
+            host=host,
             port=data.get("port", 993 if use_ssl else 143),
-            username=data["username"],
+            username=username,
             password=password,
             oauth2=oauth2_config,
             use_ssl=use_ssl,
@@ -516,7 +532,7 @@ class ImapBlock:
             verify_with_noop=data.get(
                 "verify_with_noop", defaults.get("verify_with_noop", True)
             ),
-            allowed_folders=data.get("allowed_folders"),
+            allowed_folders=allowed_folders,
             maildir=data.get("maildir"),
             default_smtp=default_smtp,
             redact_policy=redact_policy,
@@ -882,10 +898,7 @@ def load_config(config_path: Optional[str] = None) -> CourierConfig:
     config_data, config_dir = _load_config_data(config_path)
     config_data = _apply_env_fallbacks(config_data)
 
-    try:
-        return CourierConfig.from_dict(config_data, config_dir=config_dir)
-    except KeyError as e:
-        raise ValueError(f"Missing required configuration: {e}")
+    return CourierConfig.from_dict(config_data, config_dir=config_dir)
 
 
 def load_config_with_warnings(

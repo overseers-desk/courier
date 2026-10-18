@@ -131,13 +131,13 @@ class TestImapBlock:
             ImapBlock.from_dict(data)
 
     def test_from_dict_missing_required_fields(self):
-        """Test error when required fields are missing."""
-        with pytest.raises(KeyError):
+        """A block without a host or a username is refused with ValueError."""
+        with pytest.raises(ValueError, match="'host' must be a non-empty string"):
             ImapBlock.from_dict(
                 {"username": "test@example.com", "password": "password"}
             )
 
-        with pytest.raises(KeyError):
+        with pytest.raises(ValueError, match="'username' must be a non-empty string"):
             ImapBlock.from_dict({"host": "imap.example.com", "password": "password"})
 
     def test_default_smtp_string(self):
@@ -519,7 +519,7 @@ password = "password"
             f.write(toml_content.encode())
             f.flush()
 
-            with pytest.raises(ValueError, match="Missing required configuration"):
+            with pytest.raises(ValueError, match="'host' must be a non-empty string"):
                 load_config(f.name)
 
     def test_no_imap_blocks(self):
@@ -1166,3 +1166,44 @@ address = "u@example.com"
             cfg, warnings = load_config_with_warnings(f.name)
         assert isinstance(cfg, CourierConfig)
         assert warnings is cfg.warnings
+
+
+class TestImapBlockFieldTypes:
+    """A structural problem in an [imap.NAME] block raises ValueError
+    naming the block and the field, as the loader promises."""
+
+    def test_non_string_host_is_refused(self):
+        with pytest.raises(
+            ValueError, match=r"\[imap\.acc\]: 'host' must be a non-empty string"
+        ):
+            ImapBlock.from_dict(
+                {"host": 993, "username": "u", "password": "p"}, name="acc"
+            )
+
+    def test_blank_username_is_refused(self):
+        with pytest.raises(ValueError, match="'username' must be a non-empty string"):
+            ImapBlock.from_dict(
+                {"host": "imap.example.com", "username": "  ", "password": "p"}
+            )
+
+    def test_allowed_folders_as_one_string_is_refused(self):
+        with pytest.raises(ValueError, match="'allowed_folders' must be a list"):
+            ImapBlock.from_dict(
+                {
+                    "host": "imap.example.com",
+                    "username": "u",
+                    "password": "p",
+                    "allowed_folders": "INBOX",
+                }
+            )
+
+    def test_allowed_folders_with_a_blank_name_is_refused(self):
+        with pytest.raises(ValueError, match="'allowed_folders' must be a list"):
+            ImapBlock.from_dict(
+                {
+                    "host": "imap.example.com",
+                    "username": "u",
+                    "password": "p",
+                    "allowed_folders": ["INBOX", " "],
+                }
+            )
