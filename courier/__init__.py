@@ -61,7 +61,7 @@ from courier.watch import WatchEvent, watch
 # from the old translator; the cache-fallback semantics are unchanged.
 UntranslatableQuery = UntranslatableForBackend
 
-__version__ = "1.2.0"
+__version__ = "1.2.1"
 
 __all__ = [
     # config
