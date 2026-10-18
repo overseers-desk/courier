@@ -705,7 +705,10 @@ class ImapClient:
         Returns:
             One summary dict per surviving UID, newest first by UID, each with
             ``uid``, ``folder``, ``from``, ``to``, ``subject``,
-            ``date``, ``flags``, and ``has_attachments``.
+            ``date``, ``flags``, and ``has_attachments``. A message the
+            block's redact policy matches has its parties and subject
+            blanked, ``has_attachments`` false, and ``redacted_by`` set,
+            as in a search result.
 
         Raises:
             ConnectionError: If the connection cannot be made, or drops,
@@ -730,29 +733,29 @@ class ImapClient:
                 continue
             header_bytes = record.get(b"BODY[HEADER]", b"")
             message = email.message_from_bytes(header_bytes)
-            email_obj = Email.from_message(message, uid=uid, folder=folder)
+            email_obj = self._apply_redact(
+                Email.from_message(message, uid=uid, folder=folder)
+            )
             flags = [
                 f.decode("utf-8") if isinstance(f, bytes) else str(f)
                 for f in record.get(b"FLAGS", ())
             ]
-            summaries.append(
-                {
-                    "uid": uid,
-                    "folder": folder,
-                    "from": str(email_obj.from_),
-                    "to": [str(to) for to in email_obj.to],
-                    "subject": email_obj.subject,
-                    "date": (
-                        email_obj.date.astimezone().isoformat()
-                        if email_obj.date
-                        else None
-                    ),
-                    "flags": flags,
-                    "has_attachments": _bodystructure_has_attachment(
-                        record.get(b"BODYSTRUCTURE")
-                    ),
-                }
-            )
+            summary: Dict[str, Any] = {
+                "uid": uid,
+                "folder": folder,
+                "from": str(email_obj.from_),
+                "to": [str(to) for to in email_obj.to],
+                "subject": email_obj.subject,
+                "date": (
+                    email_obj.date.astimezone().isoformat() if email_obj.date else None
+                ),
+                "flags": flags,
+                "has_attachments": email_obj.redacted_by is None
+                and _bodystructure_has_attachment(record.get(b"BODYSTRUCTURE")),
+            }
+            if email_obj.redacted_by is not None:
+                summary["redacted_by"] = email_obj.redacted_by
+            summaries.append(summary)
         return summaries
 
     @staticmethod

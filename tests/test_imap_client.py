@@ -1,5 +1,6 @@
 """Tests for the IMAP client."""
 
+import json
 from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
@@ -3255,3 +3256,54 @@ class TestReadPathErrorMapping:
 
         with pytest.raises(ConnectionError, match="timed out"):
             client.fetch_summaries([42], folder="INBOX")
+
+
+class TestFetchSummariesRedaction:
+    """The folder list applies the block's redact policy, as fetch_email
+    and search do, so a hidden message shows no party or subject there."""
+
+    HEADER = (
+        b"From: Bank <notices@bank.example>\r\n"
+        b"To: me@example.com\r\n"
+        b"Subject: Your statement is ready\r\n"
+        b"Message-ID: <s1@bank.example>\r\n"
+        b"\r\n"
+    )
+
+    def _client(self, mock_imap_client, policy) -> ImapClient:
+        block = ImapBlock(
+            host="imap.example.com",
+            port=993,
+            username="test@example.com",
+            password="password",
+            use_ssl=True,
+            redact_policy=policy,
+        )
+        client = ImapClient(block)
+        with patch("imapclient.IMAPClient") as mock_client_class:
+            mock_client_class.return_value = mock_imap_client
+            client.connect()
+        mock_imap_client.fetch.return_value = {
+            7: {b"BODY[HEADER]": self.HEADER, b"FLAGS": (b"\\Seen",)}
+        }
+        return client
+
+    def test_a_matching_message_is_redacted(self, mock_imap_client):
+        client = self._client(mock_imap_client, lambda e: "bank" in str(e.from_))
+
+        [row] = client.fetch_summaries([7], folder="INBOX")
+
+        assert row["redacted_by"] == "redacted"
+        assert "bank" not in json.dumps(row)
+        assert "statement" not in json.dumps(row)
+        assert row["to"] == []
+        assert row["has_attachments"] is False
+        assert row["uid"] == 7
+
+    def test_a_message_the_policy_passes_is_listed_whole(self, mock_imap_client):
+        client = self._client(mock_imap_client, lambda e: False)
+
+        [row] = client.fetch_summaries([7], folder="INBOX")
+
+        assert "redacted_by" not in row
+        assert row["subject"] == "Your statement is ready"
