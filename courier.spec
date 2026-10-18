@@ -1,5 +1,5 @@
 Name:           courier
-Version:        1.2.0
+Version:        1.2.1
 Release:        1%{?dist}
 Summary:        Email toolkit for AI assistants and command-line scripting
 License:        MIT
@@ -67,6 +67,14 @@ install -Dpm 644 debian/courier.1 %{buildroot}%{_mandir}/man1/courier.1
 %{_mandir}/man1/courier.1*
 
 %changelog
+* Sun Oct 18 2026 Weiwu Zhang <a@colourful.land> - 1.2.1-1
+- A socket error, an SSL error or a read timeout during a server call raises ConnectionError, the class each method documents, and no longer escapes raw. This covers fetch_email, fetch_emails, fetch_raw, fetch_summaries, search, list_folders, get_capabilities and has_capability, and the SELECT a read starts with. A server NO or BAD on these calls raises PermanentError.
+- ImapClient.fetch_by_message_id raises only courier errors: TransientError when the connection fails, drops or times out, and PermanentError when the server refuses the read. It also takes no_cache=True, which skips the local index for both the lookup and the read.
+- A FETCH reply that answers a UID without the message body raises PermanentError instead of KeyError.
+- When the mu binary cannot be launched, a search falls back to IMAP, as it does when mu times out.
+- An [imap.NAME] block without a host or username, or with one that is not a string, is refused with a ValueError naming the block and the field. allowed_folders must be a list of folder names: a single string such as "INBOX" is refused, where it used to make every folder look not allowed.
+- Requests to Google's OAuth token endpoint time out after 30 seconds instead of waiting indefinitely.
+
 * Sat Oct 17 2026 Weiwu Zhang <a@colourful.land> - 1.2.0-1
 - Used as a library, courier takes the configuration and the WORLD_AS_OF bound as arguments: CourierConfig.from_dict reads only its dict, and ImapClient, search and watch apply a WORLD_AS_OF bound only when it is passed as world_as_of=, an aware datetime. The courier command and the MCP server read the config file, .env and WORLD_AS_OF and pass them in; load_config() is the command's loader, and fills the credentials a config file leaves out from IMAP_PASSWORD and GMAIL_*. A program that took the bound or those credentials from its environment through the library now passes them in, or calls load_config() for the command's behaviour.
 - Importing courier has no side effect: it loads no .env file and configures no logging.
