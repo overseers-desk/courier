@@ -113,7 +113,7 @@ class TestOutcomes:
         client.search_emails.assert_called_once_with(
             f"msgid:<{MID}>", folder=None, limit=20, no_cache=True
         )
-        client.fetch_email.assert_called_once_with(42, "INBOX")
+        client.fetch_email.assert_called_once_with(42, "INBOX", no_cache=False)
 
     def test_no_folder_holding_it_gives_none(self, client: ImapClient):
         assert client.fetch_by_message_id(MID) is None
@@ -242,7 +242,7 @@ class TestFolders:
             call(MID, "A"),
             call(MID, "B"),
         ]
-        client.fetch_email.assert_called_once_with(5, "B")
+        client.fetch_email.assert_called_once_with(5, "B", no_cache=False)
 
     def test_one_folder_name_in_place_of_a_list_is_refused(self, client: ImapClient):
         with pytest.raises(TypeError):
@@ -261,7 +261,7 @@ class TestCache:
         client.fetch_by_message_id(MID)
 
         client.search_emails.assert_not_called()
-        client.fetch_email.assert_called_once_with(7, "INBOX")
+        client.fetch_email.assert_called_once_with(7, "INBOX", no_cache=False)
 
     def test_cache_copies_in_several_folders_are_ambiguous_with_no_live_call(
         self, client: ImapClient
@@ -400,3 +400,26 @@ class TestRawErrorsFromTheServer:
         with pytest.raises(TransientError) as info:
             client.fetch_by_message_id(MID)
         assert info.value.__cause__ is dropped
+
+
+class TestNoCache:
+    """``no_cache=True`` skips the local cache for the lookup and the read,
+    as it does on fetch_email."""
+
+    def test_no_cache_asks_the_server_for_both_steps(self, client: ImapClient):
+        client.local_message_id_hits.return_value = [_cache_hit("INBOX", "/x", 42)]
+        client.search_emails.return_value = _envelope([_hit("INBOX", 42)])
+        client.fetch_email.return_value = _email()
+
+        assert client.fetch_by_message_id(MID, no_cache=True) is not None
+        client.local_message_id_hits.assert_not_called()
+        client.fetch_email.assert_called_once_with(42, "INBOX", no_cache=True)
+
+    def test_the_cache_is_asked_by_default(self, client: ImapClient):
+        client.local_message_id_hits.return_value = [_cache_hit("INBOX", "/x", 42)]
+        client.fetch_email.return_value = _email()
+
+        client.fetch_by_message_id(MID)
+        client.local_message_id_hits.assert_called()
+        client.fetch_email.assert_called_once_with(42, "INBOX", no_cache=False)
+        client.search_emails.assert_not_called()

@@ -1018,7 +1018,11 @@ class ImapClient:
         return self._apply_redact(email_obj)
 
     def fetch_by_message_id(
-        self, message_id: str, folders: Optional[List[str]] = None
+        self,
+        message_id: str,
+        folders: Optional[List[str]] = None,
+        *,
+        no_cache: bool = False,
     ) -> Optional[Email]:
         """Fetch the one message carrying a Message-ID.
 
@@ -1031,6 +1035,8 @@ class ImapClient:
         Args:
             message_id: The Message-ID, with or without ``<>``.
             folders: Folders to search, in order; ``None`` searches all.
+            no_cache: When ``True``, skip the local cache for both the
+                lookup and the read, and ask the live server.
 
         Returns:
             The Email when exactly one folder holds the Message-ID;
@@ -1051,11 +1057,15 @@ class ImapClient:
             ValueError: When a folder is not allowed.
         """
         try:
-            location = locate_message_id(self, message_id, folders, need_uid=False)
+            location = locate_message_id(
+                self, message_id, folders, need_uid=False, use_cache=not no_cache
+            )
             if location is None:
                 return None
             if location.uid is not None:
-                email_obj = self.fetch_email(location.uid, location.folder)
+                email_obj = self.fetch_email(
+                    location.uid, location.folder, no_cache=no_cache
+                )
             else:
                 assert location.path is not None
                 email_obj = self.fetch_email_path(location.path, location.folder)

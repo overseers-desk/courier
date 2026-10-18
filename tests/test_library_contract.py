@@ -56,6 +56,7 @@ def test_fetch_by_message_id_signature():
         ("self", POSITIONAL, REQUIRED),
         ("message_id", POSITIONAL, REQUIRED),
         ("folders", POSITIONAL, None),
+        ("no_cache", KEYWORD, False),
     ]
 
 

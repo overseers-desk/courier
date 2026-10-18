@@ -262,7 +262,7 @@ if email is not None:
     print(email.to_dict())
 ```
 
-The client connects when a call first needs the server and disconnects when the `with` block ends. `fetch_by_message_id` returns `None` only when every folder asked was searched and none holds the message; copies in several folders raise `AmbiguousMessageId`, whose `matches` lists each `(folder, uid)`, and a folder whose search failed raises `TransientError`. `to_dict()` gives the object `courier read` prints for the message; the raw header map is left out of it and stays on `email.headers`.
+The client connects when a call first needs the server and disconnects when the `with` block ends. `fetch_by_message_id` returns `None` only when every folder asked was searched and none holds the message; copies in several folders raise `AmbiguousMessageId`, whose `matches` lists each `(folder, uid)`, and a folder whose search failed raises `TransientError`. `no_cache=True` skips the local index for both the lookup and the read. `to_dict()` gives the object `courier read` prints for the message; the raw header map is left out of it and stays on `email.headers`.
 
 Sending as a configured identity, with the sent copy filed:
 
