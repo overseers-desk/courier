@@ -13,6 +13,8 @@ from urllib.parse import urlencode
 
 from flask import Flask, redirect, request, url_for
 
+from courier.oauth2 import TOKEN_REQUEST_TIMEOUT
+
 logger = logging.getLogger(__name__)
 
 # Gmail OAuth2 endpoints
@@ -61,7 +63,9 @@ def create_oauth_app() -> Flask:
                 "grant_type": "authorization_code",
             }
 
-            response = requests.post(GMAIL_TOKEN_URL, data=token_data)
+            response = requests.post(
+                GMAIL_TOKEN_URL, data=token_data, timeout=TOKEN_REQUEST_TIMEOUT
+            )
             response.raise_for_status()  # Raise exception for 4XX/5XX responses
 
             tokens = response.json()

@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 # Gmail OAuth2 endpoints
 GMAIL_TOKEN_URI = "https://oauth2.googleapis.com/token"
+TOKEN_REQUEST_TIMEOUT = 30  # seconds, for the connect and for each read
 GMAIL_AUTH_BASE_URL = "https://accounts.google.com/o/oauth2/auth"
 GMAIL_SCOPES = ["https://mail.google.com/"]
 
@@ -71,7 +72,7 @@ def get_access_token(oauth2_config: OAuth2Config) -> Tuple[str, int]:
         "grant_type": "refresh_token",
     }
 
-    response = requests.post(GMAIL_TOKEN_URI, data=data)
+    response = requests.post(GMAIL_TOKEN_URI, data=data, timeout=TOKEN_REQUEST_TIMEOUT)
     if response.status_code != 200:
         logger.error(f"Failed to refresh token: {response.text}")
         raise ValueError(
@@ -149,7 +150,7 @@ def exchange_code_for_tokens(
         "redirect_uri": "urn:ietf:wg:oauth:2.0:oob",  # Desktop app flow
     }
 
-    response = requests.post(GMAIL_TOKEN_URI, data=data)
+    response = requests.post(GMAIL_TOKEN_URI, data=data, timeout=TOKEN_REQUEST_TIMEOUT)
     if response.status_code != 200:
         raise ValueError(
             f"Failed to exchange code: {response.status_code} - {response.text}"
