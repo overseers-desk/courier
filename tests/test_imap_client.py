@@ -3150,3 +3150,108 @@ class TestFetchSummaries:
         client = self._connected(mock_imap_client)
         assert client.fetch_summaries([], folder="INBOX") == []
         mock_imap_client.fetch.assert_not_called()
+
+
+class TestReadPathErrorMapping:
+    """A socket error or timeout on the read path is the builtin
+    ConnectionError each method documents, a server NO/BAD on a FETCH is
+    PermanentError, and a reply without the body asked for is an error
+    rather than a KeyError."""
+
+    def _connected(self, mock_imap_client) -> ImapClient:
+        config = ImapBlock(
+            host="imap.example.com",
+            port=993,
+            username="test@example.com",
+            password="password",
+            use_ssl=True,
+        )
+        client = ImapClient(config)
+        with patch("imapclient.IMAPClient") as mock_client_class:
+            mock_client_class.return_value = mock_imap_client
+            client.connect()
+        return client
+
+    def test_select_folder_timeout_is_connection_error(self, mock_imap_client):
+        client = self._connected(mock_imap_client)
+        stalled = TimeoutError("The read operation timed out")
+        mock_imap_client.select_folder.side_effect = stalled
+
+        with pytest.raises(ConnectionError, match="INBOX") as info:
+            client.select_folder("INBOX")
+        assert info.value.__cause__ is stalled
+
+    def test_fetch_email_timeout_is_connection_error(self, mock_imap_client):
+        client = self._connected(mock_imap_client)
+        stalled = TimeoutError("The read operation timed out")
+        mock_imap_client.fetch.side_effect = stalled
+
+        with pytest.raises(ConnectionError, match="timed out") as info:
+            client.fetch_email(42, "INBOX")
+        assert type(info.value) is ConnectionError
+        assert info.value.__cause__ is stalled
+
+    def test_fetch_email_server_no_is_permanent(self, mock_imap_client):
+        from imapclient.exceptions import IMAPClientError
+
+        from courier.errors import PermanentError
+
+        client = self._connected(mock_imap_client)
+        mock_imap_client.fetch.side_effect = IMAPClientError("FETCH command error: BAD")
+
+        with pytest.raises(PermanentError, match="BAD"):
+            client.fetch_email(42, "INBOX")
+
+    def test_fetch_email_reply_without_body_is_permanent(self, mock_imap_client):
+        from courier.errors import PermanentError
+
+        client = self._connected(mock_imap_client)
+        mock_imap_client.fetch.return_value = {42: {b"FLAGS": (b"\\Seen",), b"SEQ": 1}}
+
+        with pytest.raises(PermanentError, match="without its body"):
+            client.fetch_email(42, "INBOX")
+
+    def test_fetch_emails_socket_error_is_connection_error(self, mock_imap_client):
+        client = self._connected(mock_imap_client)
+        closed = OSError(9, "Bad file descriptor")
+        mock_imap_client.fetch.side_effect = closed
+
+        with pytest.raises(ConnectionError) as info:
+            client.fetch_emails([42], "INBOX")
+        assert info.value.__cause__ is closed
+
+    def test_fetch_emails_reply_without_body_is_permanent(self, mock_imap_client):
+        from courier.errors import PermanentError
+
+        client = self._connected(mock_imap_client)
+        mock_imap_client.fetch.return_value = {42: {b"FLAGS": (), b"SEQ": 1}}
+
+        with pytest.raises(PermanentError, match="without its body"):
+            client.fetch_emails([42], "INBOX")
+
+    def test_fetch_raw_server_no_is_permanent(self, mock_imap_client):
+        from imapclient.exceptions import IMAPClientError
+
+        from courier.errors import PermanentError
+
+        client = self._connected(mock_imap_client)
+        mock_imap_client.fetch.side_effect = IMAPClientError("NO Some error")
+
+        with pytest.raises(PermanentError, match="Some error"):
+            client.fetch_raw(42, "INBOX")
+
+    def test_fetch_raw_reply_without_body_is_permanent(self, mock_imap_client):
+        from courier.errors import PermanentError
+
+        client = self._connected(mock_imap_client)
+        mock_imap_client.fetch.return_value = {42: {b"FLAGS": (), b"SEQ": 1}}
+
+        with pytest.raises(PermanentError, match="without its body"):
+            client.fetch_raw(42, "INBOX")
+
+    def test_fetch_summaries_timeout_is_connection_error(self, mock_imap_client):
+        client = self._connected(mock_imap_client)
+        mock_imap_client.fetch.side_effect = TimeoutError("timed out")
+
+        with pytest.raises(ConnectionError, match="timed out"):
+            client.fetch_summaries([42], folder="INBOX")

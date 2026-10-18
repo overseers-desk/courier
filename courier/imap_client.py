@@ -5,12 +5,14 @@ import glob
 import logging
 import os
 import re
+from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from types import TracebackType
 from typing import (
     TYPE_CHECKING,
     Any,
     Dict,
+    Iterator,
     List,
     NamedTuple,
     Optional,
@@ -270,6 +272,42 @@ class ImapClient:
             raise ConnectionError("Not connected to IMAP server")
         return self.client
 
+    @contextmanager
+    def _server_errors_mapped(self, what: str) -> Iterator[None]:
+        """Map the failures of one server call into the documented classes.
+
+        Args:
+            what: The call, named for the error message (``"FETCH of UID
+                42 in INBOX"``).
+
+        Raises:
+            ConnectionError: The connection dropped, stalled or timed
+                out during the call (an aborted connection, a socket
+                error, a timeout); retryable.
+            PermanentError: The server answered NO/BAD; repeating the
+                identical command is useless.
+        """
+        try:
+            yield
+        except (IMAPClientError, OSError) as e:
+            if isinstance(as_courier_error(e), TransientError):
+                raise ConnectionError(f"{what} failed: {e}") from e
+            raise PermanentError(f"{what} refused: {e}") from e
+
+    @staticmethod
+    def _body_of(reply: Dict[bytes, Any], uid: int, folder: str) -> bytes:
+        """The ``BODY[]`` bytes of one FETCH reply.
+
+        Raises:
+            PermanentError: The server answered the UID without its body.
+        """
+        body: Optional[bytes] = reply.get(b"BODY[]")
+        if body is None:
+            raise PermanentError(
+                f"the server answered UID {uid} in {folder} without its body"
+            )
+        return body
+
     def connect(self) -> None:
         """Connect to IMAP server.
 
@@ -437,10 +475,13 @@ class ImapClient:
             List of server capabilities
 
         Raises:
-            ConnectionError: If not connected and connection fails
+            ConnectionError: If the connection cannot be made, or drops,
+                stalls or times out during the call.
+            PermanentError: If the server answers NO/BAD.
         """
         self.ensure_connected()
-        raw_capabilities = self._client_or_raise().capabilities()
+        with self._server_errors_mapped("CAPABILITY"):
+            raw_capabilities = self._client_or_raise().capabilities()
 
         # Convert byte strings to regular strings and normalize case
         capabilities = []
@@ -462,7 +503,9 @@ class ImapClient:
             List of folder names
 
         Raises:
-            ConnectionError: If not connected and connection fails
+            ConnectionError: If the connection cannot be made, or drops,
+                stalls or times out during the call.
+            PermanentError: If the server answers NO/BAD.
         """
         self.ensure_connected()
 
@@ -472,7 +515,9 @@ class ImapClient:
 
         # Get folders from server
         folders = []
-        for flags, delimiter, name in self._client_or_raise().list_folders():
+        with self._server_errors_mapped("LIST"):
+            listed = self._client_or_raise().list_folders()
+        for flags, delimiter, name in listed:
             if isinstance(name, bytes):
                 # Convert bytes to string if necessary
                 name = name.decode("utf-8")
@@ -571,8 +616,9 @@ class ImapClient:
             FolderNotFound: The server answered NO/BAD to the SELECT
                 (folder missing, ACL-denied, or ``\\Noselect``);
                 repeating the identical command is useless (issue #65).
-            ConnectionError: The connection dropped mid-SELECT
-                (retryable; no judgement about the folder).
+            ConnectionError: The connection dropped, stalled or timed
+                out mid-SELECT (retryable; no judgement about the
+                folder).
         """
         # Make sure the folder is allowed
         if not self._is_folder_allowed(folder):
@@ -588,12 +634,13 @@ class ImapClient:
             self._update_activity()
             logger.debug(f"Selected folder '{folder}'")
             return result
-        except IMAPClientError as e:
+        except (IMAPClientError, OSError) as e:
             logger.error(f"Error selecting folder {folder}: {e}")
             if isinstance(as_courier_error(e), TransientError):
-                # Aborted connection mid-SELECT: connection-layer
-                # trouble, kept as the builtin ConnectionError the
-                # retry loops already treat as transient.
+                # Aborted connection, socket error or timeout
+                # mid-SELECT: connection-layer trouble, kept as the
+                # builtin ConnectionError the retry loops already
+                # treat as transient.
                 raise ConnectionError(f"Failed to select folder {folder}: {e}") from e
             # The server answered NO/BAD: the folder is missing,
             # ACL-denied, or \Noselect; permanent for this command.
@@ -621,7 +668,9 @@ class ImapClient:
             List of message UIDs
 
         Raises:
-            ConnectionError: If not connected and connection fails
+            ConnectionError: If the connection cannot be made, or drops,
+                stalls or times out during the call.
+            PermanentError: If the server answers NO/BAD.
         """
         self.ensure_connected()
         self.select_folder(folder, readonly=True)
@@ -632,7 +681,8 @@ class ImapClient:
             # server-side BEFORE prefilter; Layer 2 post-filters exactly.
             resolved_criteria = _apply_search_bound(resolved_criteria, self.world_as_of)
 
-        results = self._client_or_raise().search(resolved_criteria, charset=charset)
+        with self._server_errors_mapped(f"SEARCH in {folder}"):
+            results = self._client_or_raise().search(resolved_criteria, charset=charset)
         self._update_activity()
         logger.debug(f"Search returned {len(results)} results")
         return list(results)
@@ -658,14 +708,17 @@ class ImapClient:
             ``date``, ``flags``, and ``has_attachments``.
 
         Raises:
-            ConnectionError: If not connected and connection fails.
+            ConnectionError: If the connection cannot be made, or drops,
+                stalls or times out during the call.
+            PermanentError: If the server answers NO/BAD.
         """
         if not uids:
             return []
         self.ensure_connected()
         self.select_folder(folder, readonly=True)
         items = self._bound_fetch_items(["BODY.PEEK[HEADER]", "FLAGS", "BODYSTRUCTURE"])
-        data = self._client_or_raise().fetch(uids, items)
+        with self._server_errors_mapped(f"FETCH in {folder}"):
+            data = self._client_or_raise().fetch(uids, items)
         self._update_activity()
         summaries: List[Dict[str, Any]] = []
         for uid in sorted(data, reverse=True):
@@ -819,7 +872,10 @@ class ImapClient:
                 before the disk leg so a whitelist-restricted block
                 answers identically whether the bytes would come from
                 IMAP or the synced maildir (issue #60).
-            ConnectionError: If not connected and connection fails
+            ConnectionError: If the connection cannot be made, or drops,
+                stalls or times out during the SELECT or the FETCH.
+            PermanentError: If the server answers NO/BAD (FolderNotFound
+                for the SELECT), or answers the UID without its body.
         """
         if not self._is_folder_allowed(folder):
             raise ValueError(f"Folder '{folder}' is not allowed")
@@ -836,9 +892,10 @@ class ImapClient:
 
         # Fetch message data with BODY.PEEK[] to get all parts including headers
         # Using BODY.PEEK[] instead of RFC822 to avoid setting the \Seen flag
-        result = self._client_or_raise().fetch(
-            [uid], self._bound_fetch_items(["BODY.PEEK[]", "FLAGS"])
-        )
+        with self._server_errors_mapped(f"FETCH of UID {uid} in {folder}"):
+            result = self._client_or_raise().fetch(
+                [uid], self._bound_fetch_items(["BODY.PEEK[]", "FLAGS"])
+            )
 
         if not result or uid not in result:
             logger.warning(f"Message with UID {uid} not found in folder {folder}")
@@ -846,8 +903,8 @@ class ImapClient:
 
         # Parse message
         message_data = result[uid]
-        raw_message = message_data[b"BODY[]"]
-        flags = message_data[b"FLAGS"]
+        raw_message = self._body_of(message_data, uid, folder)
+        flags = message_data.get(b"FLAGS", ())
         internal_date = message_data.get(b"INTERNALDATE")
 
         str_flags = [f.decode("utf-8") if isinstance(f, bytes) else f for f in flags]
@@ -983,10 +1040,11 @@ class ImapClient:
         Raises:
             AmbiguousMessageId: When copies sit in several folders.
             TransientError: When the search failed in some folder, the
-                connection failed, or the message found could not then
-                be read.
+                connection failed, dropped, stalled or timed out, or the
+                message found could not then be read.
             PermanentError: When the search cannot run on this account,
-                or the server returned messages with other Message-IDs.
+                the server returned messages with other Message-IDs, or
+                the server refused the read.
             WorldBoundRefused: When the message is dated after the
                 client's bound.
             TypeError: When ``folders`` is one name rather than a list.
@@ -1001,7 +1059,7 @@ class ImapClient:
             else:
                 assert location.path is not None
                 email_obj = self.fetch_email_path(location.path, location.folder)
-        except ConnectionError as e:
+        except (OSError, IMAPClientError) as e:
             raise as_courier_error(e) from e
         if email_obj is None:
             raise TransientError(
@@ -1047,7 +1105,10 @@ class ImapClient:
                 before the disk leg so a whitelist-restricted block
                 answers identically whether the bytes would come from
                 IMAP or the synced maildir (issue #60).
-            ConnectionError: If not connected and connection fails
+            ConnectionError: If the connection cannot be made, or drops,
+                stalls or times out during the SELECT or the FETCH.
+            PermanentError: If the server answers NO/BAD (FolderNotFound
+                for the SELECT), or answers a UID without its body.
         """
         if not self._is_folder_allowed(folder):
             raise ValueError(f"Folder '{folder}' is not allowed")
@@ -1077,13 +1138,14 @@ class ImapClient:
 
         self.ensure_connected()
         self.select_folder(folder, readonly=True)
-        result = self._client_or_raise().fetch(
-            missing, self._bound_fetch_items(["BODY.PEEK[]", "FLAGS"])
-        )
+        with self._server_errors_mapped(f"FETCH in {folder}"):
+            result = self._client_or_raise().fetch(
+                missing, self._bound_fetch_items(["BODY.PEEK[]", "FLAGS"])
+            )
 
         for uid, message_data in result.items():
-            raw_message = message_data[b"BODY[]"]
-            flags = message_data[b"FLAGS"]
+            raw_message = self._body_of(message_data, uid, folder)
+            flags = message_data.get(b"FLAGS", ())
             internal_date = message_data.get(b"INTERNALDATE")
             str_flags = [
                 f.decode("utf-8") if isinstance(f, bytes) else f for f in flags
@@ -1229,9 +1291,16 @@ class ImapClient:
         return sorted_emails
 
     def has_capability(self, cap: str) -> bool:
-        """Whether the server advertises the given capability (e.g. "MOVE")."""
+        """Whether the server advertises the given capability (e.g. "MOVE").
+
+        Raises:
+            ConnectionError: If the connection cannot be made, or drops,
+                stalls or times out during the call.
+            PermanentError: If the server answers NO/BAD.
+        """
         self.ensure_connected()
-        return bool(self._client_or_raise().has_capability(cap))
+        with self._server_errors_mapped("CAPABILITY"):
+            return bool(self._client_or_raise().has_capability(cap))
 
     def _expunge_uids(self, uids: List[int]) -> None:
         """Expunge only *uids* when the server allows it, else folder-wide.
@@ -1747,21 +1816,28 @@ class ImapClient:
         Returns:
             Dict with keys 'raw' (bytes), 'flags' (tuple), 'date' (datetime),
             'subject' (str) or None if not found.
+
+        Raises:
+            ConnectionError: If the connection cannot be made, or drops,
+                stalls or times out during the SELECT or the FETCH.
+            PermanentError: If the server answers NO/BAD (FolderNotFound
+                for the SELECT), or answers the UID without its body.
         """
         self.ensure_connected()
         self.select_folder(folder, readonly=True)
 
-        result = self._client_or_raise().fetch(
-            [uid], ["BODY.PEEK[]", "FLAGS", "INTERNALDATE"]
-        )
+        with self._server_errors_mapped(f"FETCH of UID {uid} in {folder}"):
+            result = self._client_or_raise().fetch(
+                [uid], ["BODY.PEEK[]", "FLAGS", "INTERNALDATE"]
+            )
 
         if not result or uid not in result:
             logger.warning(f"Message with UID {uid} not found in folder {folder}")
             return None
 
         data = result[uid]
-        raw_message = data[b"BODY[]"]
-        flags = data[b"FLAGS"]
+        raw_message = self._body_of(data, uid, folder)
+        flags = data.get(b"FLAGS", ())
         internal_date = data.get(b"INTERNALDATE")
 
         self._refuse_read_after_bound(

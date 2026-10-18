@@ -366,3 +366,37 @@ class TestContextManager:
             leave.assert_called_once_with()
             server.return_value.logout.assert_called_once_with()
         assert not client.connected
+
+
+class TestRawErrorsFromTheServer:
+    """A socket error, a timeout or an imapclient error escaping the
+    search or the read lands in the taxonomy the docstring promises, as a
+    ConnectionError does."""
+
+    def test_a_timeout_while_reading_is_transient(self, client: ImapClient):
+        client.search_emails.return_value = _envelope([_hit("INBOX", 42)])
+        stalled = TimeoutError("The read operation timed out")
+        client.fetch_email.side_effect = stalled
+
+        with pytest.raises(TransientError) as info:
+            client.fetch_by_message_id(MID)
+        assert info.value.__cause__ is stalled
+
+    def test_a_server_refusal_while_reading_is_permanent(self, client: ImapClient):
+        from imapclient.exceptions import IMAPClientError
+
+        client.search_emails.return_value = _envelope([_hit("INBOX", 42)])
+        client.fetch_email.side_effect = IMAPClientError("FETCH failed: BAD")
+
+        with pytest.raises(PermanentError, match="BAD"):
+            client.fetch_by_message_id(MID)
+
+    def test_a_socket_error_while_searching_is_transient(self, client: ImapClient):
+        import ssl
+
+        dropped = ssl.SSLError(1, "EOF occurred in violation of protocol")
+        client.search_emails.side_effect = dropped
+
+        with pytest.raises(TransientError) as info:
+            client.fetch_by_message_id(MID)
+        assert info.value.__cause__ is dropped
