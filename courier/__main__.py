@@ -2482,15 +2482,21 @@ def attachments(
     """List attachments for an email.
 
     Exit code: 0 if at least one attachment is found, 1 if the email has
-    none. Shell idiom: ``courier attachments -f INBOX -u 1 || echo none``.
+    none, 2 if the email could not be read (UID or folder missing,
+    server refusal, dropped connection). Shell idiom:
+    ``courier attachments -f INBOX -u 1 || echo none``.
     """
     client = _make_client()
     empty = False
     try:
-        email_obj = client.fetch_email(uid, folder)
+        try:
+            email_obj = client.fetch_email(uid, folder)
+        except (CourierError, ConnectionError, ValueError) as exc:
+            typer.echo(f"Error: {exc}", err=True)
+            raise typer.Exit(2)
         if not email_obj:
             _out({"error": f"Email UID {uid} not found in {folder}"})
-            raise typer.Exit(1)
+            raise typer.Exit(2)
         result = []
         for i, att in enumerate(email_obj.attachments):
             entry = {
@@ -2968,7 +2974,7 @@ def compose(
                 _die_on_courier_error(exc)
             if draft_uid is None:
                 # Saved, but the server returned no APPENDUID (no UIDPLUS).
-                typer.echo("Failed to save draft", err=True)
+                typer.echo("Error: failed to save draft", err=True)
                 raise typer.Exit(1)
             _out(
                 {
@@ -3327,7 +3333,7 @@ def reply(
                     _die_on_courier_error(exc)
                 if draft_uid is None:
                     # Saved, but the server returned no APPENDUID (no UIDPLUS).
-                    typer.echo("Failed to save reply draft", err=True)
+                    typer.echo("Error: failed to save reply draft", err=True)
                     raise typer.Exit(1)
                 _out(
                     {
@@ -3619,7 +3625,12 @@ def accept_invite(
         help="Availability mode: random, always_available, always_busy, business_hours, weekdays.",
     ),
 ) -> None:
-    """Process a meeting invite and create a draft reply."""
+    """Process a meeting invite and create a draft reply.
+
+    Exit code: 1 when the result's ``status`` is ``error`` (the email
+    could not be read, or the draft not saved); 0 otherwise, including
+    ``not_invite``.
+    """
     from courier.workflows.meeting_reply import process_meeting_invite_workflow
 
     client = _make_client()
@@ -3628,6 +3639,8 @@ def accept_invite(
         _out(result)
     finally:
         client.disconnect()
+    if result.get("status") == "error":
+        raise typer.Exit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -3652,11 +3665,11 @@ def mcp_serve(
     if version:
         print(f"Courier MCP server version {__version__}")
         raise typer.Exit()
-    from courier.mcp_server import create_server, setup_server_logging
+    from courier.mcp_server import create_server, run_server, setup_server_logging
 
     setup_server_logging()
     server = create_server(config, debug)
-    server.run()
+    run_server(server)
 
 
 # ---------------------------------------------------------------------------
@@ -3744,9 +3757,18 @@ def main() -> None:
     _print_eager_warnings_if_relevant()
     try:
         app()
-    except WorldBoundRefused as exc:
-        # One choke point for every verb whose read path refuses under
-        # WORLD_AS_OF: a clear message and exit 1, not a traceback.
+    except CourierError as exc:
+        # One choke point for a typed failure any verb leaves uncaught
+        # (a folder missing on the block, a server NO, a WORLD_AS_OF
+        # refusal): one line and the retry-class exit, not a traceback.
+        typer.echo(f"Error: {exc}", err=True)
+        sys.exit(3 if isinstance(exc, TransientError) else 1)
+    except ConnectionError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        sys.exit(3)
+    except OSError as exc:
+        # A local file the verb reads or writes: a missing --attach
+        # path, an unwritable -o target.
         typer.echo(f"Error: {exc}", err=True)
         sys.exit(1)
 

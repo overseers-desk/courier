@@ -195,3 +195,47 @@ class TestServer:
 
                     main()
                     mock_create_server.assert_called_once_with("env_config.toml", False)
+
+
+class TestStartupConnectFailure:
+    """A block that cannot connect at startup ends the server in one line."""
+
+    @pytest.mark.asyncio
+    async def test_lifespan_names_the_block(self):
+        mock_server = mock.MagicMock()
+        mock_server._config = CourierConfig(imap_blocks={"work": _block()})
+        with mock.patch("courier.mcp_server.ImapClient") as MockImapClient:
+            MockImapClient.return_value.connect.side_effect = ConnectionError(
+                "Failed to connect to IMAP server: token revoked"
+            )
+            with pytest.raises(ConnectionError, match=r"^\[imap\.work\] Failed"):
+                async with server_lifespan(mock_server):
+                    pass
+
+    def test_wrapped_connect_failure_is_one_line(self, capsys):
+        from courier.mcp_server import run_server
+
+        server = mock.MagicMock()
+        server.run.side_effect = ExceptionGroup(
+            "unhandled errors in a TaskGroup",
+            [ConnectionError("[imap.work] Failed to connect: token revoked")],
+        )
+        with pytest.raises(SystemExit) as exc:
+            run_server(server)
+        assert exc.value.code == 1
+        assert capsys.readouterr().err == (
+            "Error: [imap.work] Failed to connect: token revoked\n"
+        )
+
+    def test_other_errors_propagate(self):
+        from courier.mcp_server import run_server
+
+        server = mock.MagicMock()
+        group = ExceptionGroup(
+            "unhandled errors in a TaskGroup",
+            [ConnectionError("down"), RuntimeError("bug")],
+        )
+        server.run.side_effect = group
+        with pytest.raises(ExceptionGroup) as exc:
+            run_server(server)
+        assert exc.value is group

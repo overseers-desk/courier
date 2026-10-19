@@ -3,8 +3,9 @@
 import argparse
 import logging
 import os
+import sys
 from contextlib import asynccontextmanager
-from typing import AsyncIterator, Dict, Optional
+from typing import AsyncIterator, Dict, Iterator, Optional
 
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
@@ -62,7 +63,10 @@ async def server_lifespan(server: FastMCP) -> AsyncIterator[Dict]:
         for name, block in config.imap_blocks.items():
             logger.info(f"Connecting to IMAP server for [imap.{name}]...")
             client = ImapClient(block, local_cache=mu_backend, world_as_of=bound)
-            client.connect()
+            try:
+                client.connect()
+            except ConnectionError as exc:
+                raise ConnectionError(f"[imap.{name}] {exc}") from exc
             clients[name] = client
 
         yield {
@@ -130,6 +134,42 @@ def create_server(config_path: Optional[str] = None, debug: bool = False) -> Fas
     return server
 
 
+def run_server(server: FastMCP) -> None:
+    """Run *server*, ending in one line when a block cannot connect.
+
+    The lifespan logs in to every [imap.NAME] block inside the server's
+    task group, so a refused login (a revoked token, a host that is
+    down) arrives wrapped in an exception group, which would otherwise
+    print as a traceback of the transport's internals.
+
+    Args:
+        server: The server :func:`create_server` built.
+
+    Raises:
+        SystemExit: 1, after naming each failed connection on stderr.
+        BaseExceptionGroup: Re-raised whole when it holds anything
+            besides connection failures.
+    """
+    try:
+        server.run()
+    except BaseExceptionGroup as group:
+        failed, rest = group.split(ConnectionError)
+        if failed is None or rest is not None:
+            raise
+        for exc in _leaves(failed):
+            print(f"Error: {exc}", file=sys.stderr)
+        raise SystemExit(1)
+
+
+def _leaves(group: BaseExceptionGroup) -> Iterator[BaseException]:
+    """Yield the non-group exceptions nested anywhere in *group*."""
+    for exc in group.exceptions:
+        if isinstance(exc, BaseExceptionGroup):
+            yield from _leaves(exc)
+        else:
+            yield exc
+
+
 def main() -> None:
     """Run the Courier MCP server."""
     load_dotenv()
@@ -175,7 +215,7 @@ def main() -> None:
     logger.info(
         "Starting server{}...".format(" in development mode" if args.dev else "")
     )
-    server.run()
+    run_server(server)
 
 
 if __name__ == "__main__":
