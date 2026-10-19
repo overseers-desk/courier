@@ -1,3 +1,23 @@
+courier (1.2.2) unstable; urgency=medium
+
+  * A crash prints no password, OAuth2 client secret or token: the
+    command's tracebacks no longer show local variables, and the
+    configuration objects leave those fields out of their repr. Under
+    Typer 0.15, which Debian ships and which shows locals by default, a
+    crash printed every configured credential.
+  * A failure a command leaves uncaught ends in one Error line and its
+    retry-class exit, not a traceback.
+  * The MCP triage tool reports every failure as an Error: string, a
+    folder missing on the block included.
+  * A To, Cc, Bcc or Reply-To field that a message carries twice
+    contributes every occurrence's addresses, on read and on send.
+  * A reply's References chain comes from the parent's parsed
+    references, whatever case its header name was written in.
+  * The folder list applies the block's redact policy, so a hidden
+    message shows no party, subject or attachment there.
+
+ -- Weiwu Zhang <a@colourful.land>  Mon, 19 Oct 2026 00:00:00 +0000
+
 courier (1.2.1) unstable; urgency=medium
 
   * A socket error, an SSL error or a read timeout during a server call

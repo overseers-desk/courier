@@ -1,5 +1,5 @@
 Name:           courier
-Version:        1.2.1
+Version:        1.2.2
 Release:        1%{?dist}
 Summary:        Email toolkit for AI assistants and command-line scripting
 License:        MIT
@@ -67,6 +67,14 @@ install -Dpm 644 debian/courier.1 %{buildroot}%{_mandir}/man1/courier.1
 %{_mandir}/man1/courier.1*
 
 %changelog
+* Mon Oct 19 2026 Weiwu Zhang <a@colourful.land> - 1.2.2-1
+- A crash prints no password, OAuth2 client secret or token: the command's tracebacks no longer show local variables, and the configuration objects leave those fields out of their repr. Under Typer 0.15, which Debian ships and which shows locals by default, a crash printed every configured credential.
+- A failure a command leaves uncaught ends in one Error line and its retry-class exit, not a traceback.
+- The MCP triage tool reports every failure as an Error: string, a folder missing on the block included.
+- A To, Cc, Bcc or Reply-To field that a message carries twice contributes every occurrence's addresses, on read and on send.
+- A reply's References chain comes from the parent's parsed references, whatever case its header name was written in.
+- The folder list applies the block's redact policy, so a hidden message shows no party, subject or attachment there.
+
 * Sun Oct 18 2026 Weiwu Zhang <a@colourful.land> - 1.2.1-1
 - A socket error, an SSL error or a read timeout during a server call raises ConnectionError, the class each method documents, and no longer escapes raw. This covers fetch_email, fetch_emails, fetch_raw, fetch_summaries, search, list_folders, get_capabilities and has_capability, and the SELECT a read starts with. A server NO or BAD on these calls raises PermanentError.
 - ImapClient.fetch_by_message_id raises only courier errors: TransientError when the connection fails, drops or times out, and PermanentError when the server refuses the read. It also takes no_cache=True, which skips the local index for both the lookup and the read.
