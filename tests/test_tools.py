@@ -406,6 +406,7 @@ class TestTools:
             "target_folder is required for move action"
         )
         result = await triage("INBOX", 123, "move", mock_context)
+        assert result.startswith("Error:")
         assert "target_folder" in result
         mock_client.process_email_action.side_effect = None
 
@@ -414,13 +415,23 @@ class TestTools:
             "Unknown action 'invalid_action'"
         )
         result = await triage("INBOX", 123, "invalid_action", mock_context)
+        assert result.startswith("Error:")
         assert "Unknown action" in result
         mock_client.process_email_action.side_effect = None
 
         # Test email not found
         mock_client.fetch_email.return_value = None
         result = await triage("INBOX", 123, "read", mock_context)
+        assert result.startswith("Error:")
         assert "not found" in result
+
+        # A folder missing on the block is an error string, not a raise
+        from courier.errors import FolderNotFound
+
+        mock_client.fetch_email.side_effect = FolderNotFound("no folder Nope")
+        result = await triage("Nope", 123, "read", mock_context)
+        assert result == "Error: no folder Nope"
+        mock_client.fetch_email.side_effect = None
 
     @pytest.mark.asyncio
     async def test_tool_error_handling(self, tools, mock_client, mock_context):

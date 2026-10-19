@@ -503,15 +503,15 @@ def register_tools(mcp: FastMCP, imap_client: ImapClient) -> None:
             Success message or error message
         """
         client = get_client_from_context(ctx, imap)
-        email_obj = client.fetch_email(uid, folder)
-        if not email_obj:
-            return f"Email with UID {uid} not found in folder {folder}"
         try:
+            email_obj = client.fetch_email(uid, folder)
+            if not email_obj:
+                return f"Error: email with UID {uid} not found in folder {folder}"
             return client.process_email_action(
                 uid, folder, action, target_folder=target_folder
             )
         except ValueError as e:
-            return str(e)
+            return f"Error: {e}"
         except Exception as e:
             logger.error(f"Error processing email: {e}")
             return f"Error: {e}"
