@@ -95,9 +95,11 @@ class OAuth2Config:
     """OAuth2 configuration for IMAP authentication."""
 
     client_id: str
-    client_secret: str
-    refresh_token: Optional[str] = None
-    access_token: Optional[str] = None
+    # Secrets stay out of repr: a traceback or log of this object reaches
+    # the transcript of whatever agent ran the command.
+    client_secret: str = field(repr=False)
+    refresh_token: Optional[str] = field(default=None, repr=False)
+    access_token: Optional[str] = field(default=None, repr=False)
     token_expiry: Optional[int] = None
 
     @classmethod
@@ -178,7 +180,7 @@ class SmtpConfig:
     host: str
     port: int = 587
     username: Optional[str] = None
-    password: Optional[str] = None
+    password: Optional[str] = field(default=None, repr=False)
     save_sent: Any = "auto"  # "auto" | True | False
     rewrite_msgid_from_response: bool = False
 
@@ -412,7 +414,7 @@ class ImapBlock:
     host: str
     port: int
     username: str
-    password: Optional[str] = None
+    password: Optional[str] = field(default=None, repr=False)
     oauth2: Optional[OAuth2Config] = None
     use_ssl: bool = True
     idle_timeout: int = 300

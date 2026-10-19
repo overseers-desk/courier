@@ -67,6 +67,9 @@ app = typer.Typer(
     # Help text names config blocks as TOML tables ([imap.NAME], [smtp.*]);
     # rich markup mode would parse those as markup tags and delete them.
     rich_markup_mode=None,
+    # A crash must not print locals: config objects among them hold
+    # passwords, and an agent's transcript keeps whatever is printed.
+    pretty_exceptions_show_locals=False,
 )
 
 # Module-level state set by the --config callback.
