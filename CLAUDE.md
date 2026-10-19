@@ -146,24 +146,9 @@ Integration tests verify that the Courier server works correctly with real email
    echo "TEST_PASSWORD=your-app-password" >> .env
    ```
 
-### Refreshing OAuth2 Credentials
+### Expired OAuth2 credentials
 
-OAuth2 tokens expire periodically. If integration tests fail with authentication errors, refresh your tokens before running tests:
-
-1. **Check if token refresh is needed**:
-   ```bash
-   uv run python -m courier.oauth2 check-token --config config.toml
-   ```
-
-2. **Refresh the token if expired**:
-   ```bash
-   uv run python -m courier.auth_setup refresh-token --config config.toml
-   ```
-
-3. **Generate a new token if refresh fails**:
-   ```bash
-   uv run python -m courier.auth_setup generate-token --config config.toml
-   ```
+If integration tests fail with authentication errors, the account's token has expired or been revoked. Ask the user to re-authorise it; the setup helpers print the client secret and tokens to stdout.
 
 ### Read-only protocol probes against configured accounts
 
