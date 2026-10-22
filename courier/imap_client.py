@@ -1303,6 +1303,95 @@ class ImapClient:
         self._update_activity()
         return sorted_emails
 
+    def find_thread(
+        self, uid: int, folder: str, no_cache: bool = False
+    ) -> List[Dict[str, Any]]:
+        """List the thread a known message belongs to, newest first.
+
+        On a server advertising ``X-GM-EXT-1`` the thread is every
+        message carrying the anchor's Gmail thread id (``X-GM-THRID``),
+        searched in the SPECIAL-USE ``\\All`` folder, or in *folder* when
+        none is advertised or allowed. Elsewhere it is every message whose
+        Message-ID, In-Reply-To or References names the anchor's
+        Message-ID or one the anchor itself refers to, searched in
+        *folder* and in the Sent folder. Both paths run over IMAP whether
+        or not the account has a local index; no subject guessing.
+
+        Args:
+            uid: UID of any message in the thread.
+            folder: Folder holding that UID.
+            no_cache: When ``True``, read message bodies from live IMAP
+                rather than the synced maildir.
+
+        Returns:
+            Search-result dicts (``uid``, ``folder``, ``from``, ``to``,
+            ``subject``, ``date``, ``flags``, ``has_attachments``,
+            ``message_id``), newest first, the anchor included. Members
+            dated after the WORLD_AS_OF bound are dropped.
+
+        Raises:
+            ValueError: If the anchor is not in *folder*, or *folder* is
+                not allowed.
+            WorldBoundRefused: If the anchor is dated after the bound.
+            ConnectionError: If the connection cannot be made, or drops,
+                stalls or times out during the call.
+            PermanentError: If the server answers NO/BAD.
+        """
+        anchor = self.fetch_email(uid, folder, no_cache=no_cache)
+        if anchor is None:
+            raise ValueError(f"Email UID {uid} not found in {folder}")
+
+        members: Dict[str, List[int]] = {}
+        if query_dispatch.gmail_capable(self.get_capabilities()):
+            self.select_folder(folder, readonly=True)
+            with self._server_errors_mapped(f"FETCH X-GM-THRID of UID {uid}"):
+                data = self._client_or_raise().fetch([uid], ["X-GM-THRID"])
+            thread_id = data[uid][b"X-GM-THRID"]
+            all_mail = self.find_special_use_folder(b"\\All")
+            target = (
+                all_mail if all_mail and self._is_folder_allowed(all_mail) else folder
+            )
+            members[target] = self.search(["X-GM-THRID", thread_id], target)
+        else:
+            ids = [anchor.message_id, *anchor.references]
+            if anchor.in_reply_to:
+                ids.append(anchor.in_reply_to)
+            criteria: List[Any] = []
+            for message_id in dict.fromkeys(i for i in ids if i):
+                for header in ("Message-ID", "References", "In-Reply-To"):
+                    if criteria:
+                        criteria.insert(0, "OR")
+                    criteria += ["HEADER", header, message_id]
+            folders = [folder]
+            sent = self.find_special_use_folder(b"\\Sent")
+            if sent and sent != folder and self._is_folder_allowed(sent):
+                folders.append(sent)
+            for current in folders:
+                members[current] = self.search(criteria, current)
+            if uid not in members[folder]:
+                members[folder].append(uid)
+
+        results: List[Dict[str, Any]] = []
+        for current, uids in members.items():
+            for email_obj in self.fetch_emails(
+                uids, current, no_cache=no_cache
+            ).values():
+                results.append(
+                    email_obj.as_search_result(
+                        folder=current,
+                        flags=email_obj.flags,
+                        date_iso=(
+                            email_obj.date.astimezone().isoformat()
+                            if email_obj.date
+                            else None
+                        ),
+                        has_attachments=len(email_obj.attachments) > 0,
+                    )
+                )
+        results.sort(key=lambda r: r.get("date") or "0", reverse=True)
+        self._update_activity()
+        return results
+
     def has_capability(self, cap: str) -> bool:
         """Whether the server advertises the given capability (e.g. "MOVE").
 

@@ -59,7 +59,8 @@ app = typer.Typer(
         "Email toolkit for AI assistants and command-line scripting.\n\n"
         "Examples:\n\n"
         "  courier -A search 'sergio' search 'panedas' read -f INBOX -u 42\n"
-        "  courier search 'from:alice@x' || courier search 'alice'\n\n"
+        "  courier search 'from:alice@x' || courier search 'alice'\n"
+        "  courier --imap NAME thread -f INBOX -u 42   # latest email in a thread\n\n"
         "Exit codes for data-returning commands (search, attachments, links): "
         "0 on success with results, 1 on success with zero results."
     ),
@@ -341,7 +342,7 @@ def _build_op_key(subcmd: str, **kwargs: Any) -> str:
             parts += ["--limit", str(limit)]
         if query:
             parts.append(query)
-    elif subcmd == "read":
+    elif subcmd in ("read", "thread"):
         folder = kwargs.get("folder", "")
         uid = kwargs.get("uid", 0)
         parts += ["-f", folder, "--uid", str(uid)]
@@ -2206,6 +2207,81 @@ def read(
         raise typer.Exit(1)
     finally:
         client.disconnect()
+
+
+@app.command("thread")
+def thread_cmd(
+    folder: Optional[str] = typer.Option(
+        None,
+        "--folder",
+        "-f",
+        help="Folder name. Required with --uid; narrows a --message-id lookup.",
+    ),
+    uid: Optional[int] = typer.Option(
+        None, "--uid", "-u", help="UID of any email in the thread."
+    ),
+    message_id: Optional[str] = typer.Option(
+        None,
+        "--message-id",
+        help=(
+            "Find the anchor by Message-ID instead of --uid. Needs "
+            "--imap NAME; refuses when that account's search cannot give "
+            "one answer."
+        ),
+    ),
+    no_cache: bool = typer.Option(
+        False,
+        "--no-cache",
+        help="Bypass the local cache and read from live IMAP.",
+    ),
+    output_format: str = typer.Option(
+        "json",
+        "--format",
+        "-F",
+        help="Output format: json (default), text, or oneline.",
+    ),
+) -> None:
+    """List the thread an email belongs to, newest first.
+
+    Given any one email of a thread, lists every email in it, its own
+    replies from the Sent folder included, in search-result shape, so the
+    first result is the latest. On Gmail the thread is Gmail's own; on
+    other servers it is the emails the reply headers (Message-ID,
+    In-Reply-To, References) link.
+    """
+    if output_format not in ("json", "text", "oneline"):
+        typer.echo(
+            f"Error: unknown --format '{output_format}'. Use json, text, or oneline.",
+            err=True,
+        )
+        raise typer.Exit(2)
+    _check_target_args(folder, uid, message_id)
+    name = _resolve_single_imap_name()
+    client = _make_client(lazy=True)
+    try:
+        folder, uid = _resolve_target(client, folder, uid, message_id)
+        results = client.find_thread(uid, folder, no_cache=no_cache or _no_cache)
+    except (ValueError, CourierError, ConnectionError) as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1)
+    finally:
+        client.disconnect()
+    op_key = _build_op_key("thread", folder=folder, uid=uid)
+    result = {
+        op_key: {
+            name: {
+                "results": results,
+                "provenance": {"source": "remote"},
+                "status": "complete",
+            }
+        }
+    }
+    if output_format == "json":
+        _out(result)
+    elif output_format == "text":
+        typer.echo(_format_chain_text(result))
+    else:
+        typer.echo(_format_chain_oneline(result))
 
 
 # ---------------------------------------------------------------------------

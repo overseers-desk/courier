@@ -832,6 +832,41 @@ def register_tools(mcp: FastMCP, imap_client: ImapClient) -> None:
             logger.error(f"Error reading email: {e}")
             return json.dumps({"error": str(e)})
 
+    @mcp.tool(name="thread")
+    async def thread(
+        folder: str,
+        uid: int,
+        ctx: Context,
+        imap: Optional[str] = None,
+        no_cache: bool = False,
+    ) -> str:
+        """List the thread an email belongs to, newest first.
+
+        Given any one email of a thread, lists every email in it, the
+        user's own replies included, so the first result is the latest.
+
+        Args:
+            folder: Folder holding the email
+            uid: UID of any email in the thread
+            ctx: MCP context
+            imap: [imap.NAME] block name (None for default)
+            no_cache: Bypass the local cache and read from live IMAP.
+
+        Returns:
+            JSON-formatted dict ``{"results": [...]}`` in search-result
+            shape, newest first, or ``{"error": ...}`` with the reason.
+        """
+        client = get_client_from_context(ctx, imap)
+        try:
+            results = await asyncio.to_thread(
+                client.find_thread, uid, folder, no_cache=no_cache
+            )
+            return json.dumps({"results": results}, indent=2, default=str)
+        except (ValueError, CourierError) as e:
+            return json.dumps({"error": str(e)})
+        except ConnectionError as e:
+            return json.dumps({"error": f"connection failed: {e}"})
+
     @mcp.tool(name="folders")
     async def folders(
         ctx: Context,
