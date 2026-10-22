@@ -39,7 +39,7 @@ from courier.errors import (
     as_courier_error,
 )
 from courier.message_lookup import bare_message_id, locate_message_id
-from courier.models import Email
+from courier.models import Email, decode_mime_header
 from courier.oauth2 import get_access_token
 from courier.query import ParseResult
 from courier.query import dispatch as query_dispatch
@@ -1859,7 +1859,12 @@ class ImapClient:
 
         # Extract subject for logging/display
         msg = email.message_from_bytes(raw_message)
-        subject = msg.get("Subject", "(no subject)")
+        subject_header = msg.get("Subject")
+        subject = (
+            "(no subject)"
+            if subject_header is None
+            else decode_mime_header(subject_header)
+        )
 
         self._update_activity()
 

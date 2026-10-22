@@ -2686,6 +2686,43 @@ class TestSearchEmailsImapResultShape:
         ):
             assert key in results[0]
 
+    def test_imap_search_subject_of_folded_header_is_one_line(self):
+        """A Subject the message folds over two lines reaches the search
+        result unfolded, through the real fetch-and-parse path."""
+        from datetime import datetime
+
+        client = self._make_client()
+        raw = (
+            b"From: alice@example.com\r\n"
+            b"To: bob@example.com\r\n"
+            b"Message-ID: <m1@example.com>\r\n"
+            b"Subject: Client Number 1234567- Example Development and\r\n"
+            b" Conservation Pty Ltd\r\n"
+            b"\r\n"
+            b"body\r\n"
+        )
+        with (
+            patch.object(client, "ensure_connected"),
+            patch.object(client, "get_capabilities", return_value=["IMAP4REV1"]),
+            patch.object(client, "find_special_use_folder", return_value=None),
+            patch.object(client, "list_folders", return_value=["INBOX"]),
+            patch.object(client, "search", return_value=[42]),
+            patch.object(client, "select_folder"),
+            patch.object(client, "_client_or_raise") as mock_clientor,
+        ):
+            mock_clientor.return_value.fetch.return_value = {
+                42: {
+                    b"INTERNALDATE": datetime(2026, 4, 1, 10, 0, 0),
+                    b"BODY[]": raw,
+                    b"FLAGS": (),
+                }
+            }
+            results = self._run_remote(client, "from:alice", folder="INBOX").results
+
+        assert [r["subject"] for r in results] == [
+            "Client Number 1234567- Example Development and Conservation Pty Ltd"
+        ]
+
     def test_imap_search_uses_special_use_all_folder(self):
         """When the server advertises a SPECIAL-USE \\All folder (Gmail's
         ``[Gmail]/All Mail``, Fastmail's ``Archive``), the search runs against
@@ -3038,6 +3075,27 @@ class TestRedactOnFetch:
         assert email_obj.from_.address == "[redacted]"
         assert email_obj.uid == 7
         mock_imap.fetch.assert_not_called()
+
+    def test_fetch_raw_subject_is_decoded_and_unfolded(self, mock_imap_client):
+        """``fetch_raw`` reports the Subject decoded and on one line."""
+        block = self._make_block_with_policy(lambda e: False)
+        client = ImapClient(block)
+        raw_bytes = (
+            b"From: alice@example.com\r\n"
+            b"Subject: =?utf-8?q?H=C3=A9llo?= quarterly\r\n report\r\n"
+            b"\r\n"
+            b"body text\r\n"
+        )
+        with patch("imapclient.IMAPClient") as mock_cls:
+            mock_cls.return_value = mock_imap_client
+            mock_imap_client.select_folder.return_value = {b"EXISTS": 10}
+            mock_imap_client.fetch.return_value = {
+                7: {b"BODY[]": raw_bytes, b"FLAGS": (), b"INTERNALDATE": None}
+            }
+            client.connect()
+            result = client.fetch_raw(7, folder="INBOX")
+        assert result is not None
+        assert result["subject"] == "Héllo quarterly report"
 
     def test_fetch_raw_returns_blank_bytes_for_redacted(self, mock_imap_client):
         """``fetch_raw`` blanks the bytes and tags the dict for redacted UIDs."""

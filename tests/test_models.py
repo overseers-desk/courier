@@ -49,6 +49,18 @@ class TestModels(unittest.TestCase):
         self.assertEqual(decode_mime_header(None), "")
         self.assertEqual(decode_mime_header(""), "")
 
+    def test_decode_mime_header_unfolds_folded_value(self):
+        """A folded header value (RFC 5322 line break before whitespace)
+        comes out on one line, plain or encoded."""
+        self.assertEqual(
+            decode_mime_header("Client Number 1234567- Example Pty\r\n Ltd ATF"),
+            "Client Number 1234567- Example Pty Ltd ATF",
+        )
+        self.assertEqual(decode_mime_header("one\n\ttwo"), "one\ttwo")
+        encoded = Header("Héllö Wörld " * 8, "utf-8").encode()
+        self.assertIn("\n", encoded)
+        self.assertEqual(decode_mime_header(encoded), "Héllö Wörld " * 8)
+
     def test_email_address_parse(self):
         """Test email address parsing."""
         # Test name + address
@@ -276,3 +288,24 @@ def test_repeated_recipient_fields_keep_every_address():
     assert [a.address for a in parsed.cc] == ["d@example.com", "e@example.com"]
     assert [a.address for a in parsed.bcc] == ["f@example.com", "g@example.com"]
     assert [a.address for a in parsed.reply_to] == ["h@example.com", "i@example.com"]
+
+
+def test_folded_headers_parse_onto_one_line():
+    """Subject, From and the headers dict of a message whose headers are
+    folded carry no line breaks."""
+    raw = (
+        b"From: 'Example Agency' via Director\r\n <director@example.com>\r\n"
+        b"To: b@example.com\r\n"
+        b"Subject: Client Number 1234567- Example Development and\r\n"
+        b" Conservation Pty Ltd\r\n"
+        b"\r\n"
+        b"body\r\n"
+    )
+    parsed = Email.from_message(email.message_from_bytes(raw))
+    assert parsed.subject == (
+        "Client Number 1234567- Example Development and Conservation Pty Ltd"
+    )
+    assert parsed.from_.address == "director@example.com"
+    assert parsed.from_.name == "'Example Agency' via Director"
+    assert "\n" not in parsed.headers["Subject"]
+    assert "\n" not in parsed.headers["From"]

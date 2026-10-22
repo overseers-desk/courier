@@ -35,20 +35,27 @@ def sanitize_and_save(content: bytes | str, save_path: str, mode: str = "wb") ->
     return sanitized
 
 
+_FOLD = re.compile(r"\r?\n(?=[ \t])")
+
+
 def decode_mime_header(header_value: Optional[str]) -> str:
-    """Decode a MIME header value.
+    """Decode a MIME header value and unfold it onto one line.
+
+    A long header arrives folded (RFC 5322 section 2.2.3): a line break
+    followed by whitespace. The parser keeps the break in the value, so
+    it is removed here, leaving the whitespace, before decoding.
 
     Args:
         header_value: MIME header value
 
     Returns:
-        Decoded header value
+        Decoded header value, unfolded
     """
     if not header_value:
         return ""
 
     decoded_parts = []
-    for part, encoding in decode_header(header_value):
+    for part, encoding in decode_header(_FOLD.sub("", header_value)):
         if isinstance(part, bytes):
             if encoding:
                 try:
