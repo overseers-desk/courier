@@ -1,10 +1,4 @@
-"""Tests for ``ImapClient.find_thread`` and the ``thread`` CLI verb.
-
-``find_thread`` lists the thread a known message belongs to, newest
-first, in the search-result shape: on Gmail through the thread id every
-message carries (X-GM-THRID), elsewhere through the Message-ID,
-In-Reply-To and References headers.
-"""
+"""Tests for ``ImapClient.find_thread`` and the ``thread`` CLI verb."""
 
 from datetime import datetime, timezone
 from typing import Dict, List, Optional

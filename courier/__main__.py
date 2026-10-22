@@ -2224,7 +2224,7 @@ def thread_cmd(
         None,
         "--message-id",
         help=(
-            "Find the anchor by Message-ID instead of --uid. Needs "
+            "Find the email by Message-ID instead of --uid. Needs "
             "--imap NAME; refuses when that account's search cannot give "
             "one answer."
         ),
