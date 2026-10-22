@@ -98,6 +98,12 @@ When a solution genuinely requires a rule (e.g. "avoid `2>&1` in examples"), the
 
 **Solution.** The first search example carries `after:2026-01-01`. The token was previously in the second example only, as one item inside a demonstration of OR-clustering an entity's surfaces, which an AI needing a date bound reaches after it has already composed a command.
 
+### B6. A sender filter's zero read as "they never wrote"
+
+**Failure case.** In a case where the user asked whether an agency had written, the AI searched `after:<date> (from:<agency> OR ...)`, got 0, and told the user nothing had arrived. The mails existed. They came through a Google Group, whose From line read `'Agency Name' via Group <group@example.org>`, so the agency's own address sat only outside `from`. `from:<agency>` matched nothing; the bare word `<agency>` found them, as did a distinctive number from their subject.
+
+**Solution.** The Searches section states, as a fact placed after the query examples, that a zero answers only the filters used, that a list or group relay puts the group in `from`, and that a bare distinctive word or number is the search to run before reporting an absence. The placeholder From line in that paragraph shows the relayed shape, so the reader recognises it when a hit carries it.
+
 ---
 
 ## C. Output handling
@@ -260,6 +266,8 @@ courier -A --format json \
   search "subject:invoice after:2026-01-01" \
   > "$RESULTS"
 ```
+
+A zero answers only the filters it was given. Mail relayed through a mailing list or a Google Group carries the group in `from` (`'Example Agency' via Team <team@example.org>`), with the sender's own address elsewhere in the headers, so `from:agency` misses it while the bare word `agency` can find it. Before telling the user something never arrived, search a distinctive bare word or number they know (a reference number, a name) without the field operator.
 
 Output shape: `{op_key: {imap_name: {results: [...], provenance: {...}, status: ...}}}`, and `folders_failed` alongside them in a block where a folder's search or fetch failed. `status` is `complete` (every folder searched; an `-n` cut leaves it complete), `partial` (some folder failed, named in `folders_failed`) or `failed`, where `error` stands in place of `results` and gives the reason, `connection failed: <reason>` when the server could not be reached. `results: []` next to a `folders_failed` entry is a folder that was never looked in, not an absence; the exit code says the same, 1 for a clean zero and 2 for a zero with failures. `courier -A` queries every IMAP block; `--imap NAME` (repeats across the chain) selects specific blocks. Slice the JSON with `jq` against a tempfile; `head`/`tail` cut mid-structure. stderr carries notes addressed to the user's terminal (a config warning), so folding it into stdout with `2>&1` puts non-JSON text in front of `jq`. `provenance.indexed_at` is the local index's mtime, carried whether the answer came from the index or from IMAP; courier serves from the index at any age and leaves the judgement to you, so compare it against what your question tolerates and pass `--no-cache` when you need live data.
 
