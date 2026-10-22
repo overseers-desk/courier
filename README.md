@@ -147,6 +147,9 @@ courier search "is:unread" --folder INBOX --limit 10
 # Read an email
 courier read -f INBOX -u 4523
 
+# The thread an email belongs to, newest first: the first result is the latest reply
+courier thread -f INBOX -u 4523
+
 # List and download attachments
 courier attachments -f INBOX -u 4523
 courier save -f INBOX -u 4523 --attachment itinerary.pdf -o /tmp/itinerary.pdf

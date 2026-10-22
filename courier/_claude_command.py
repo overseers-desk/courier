@@ -284,6 +284,8 @@ jq 'map_values(map_values({uid, folder, subject, from, date, body}))' "$RESULTS"
 
 UIDs from a prior search go into one chain over a single IMAP session; trailing `-f FOLDER` peels off as the chain default. Login dominates the per-fetch cost; Gmail caps simultaneous IMAP connections per account, so N parallel `read` processes hit that cap.
 
+For the latest email in a thread you already hold one message of, skip the search: `courier --imap <imap> thread -f <folder> -u <uid>` (or `--message-id "<id>"`) lists the whole thread newest first, the user's own replies included, so the first result is the latest.
+
 ## Attachments
 
 ```bash
@@ -307,5 +309,5 @@ courier --imap <imap> send-draft -f Drafts -u <uid>
 
 Subjects and bodies pass through as UTF-8 in whatever script the user writes; their correspondence runs in Spanish and Chinese as well as English.
 
-`-i NAME` (= `--identity NAME`) picks a configured `[identity.NAME]` block; reply inherits the parent's threading headers. Drop `--send` to save as a draft. `courier list` returns the configured identity names under its `identity` key, as JSON already and with no format flag of its own; `courier <verb> --help` carries flags for relay-style sends and other less-common paths. For a reply, if the identity the thread was previously sent from isn't among those names, ask the user which identity to use rather than picking the closest match: the nearest name is often a personal address on a thread that needs a business one.
+`-i NAME` (= `--identity NAME`) picks a configured `[identity.NAME]` block; reply inherits the parent's threading headers. Drop `--send` to save as a draft. A send prints its own receipt (`status`, `accepted_recipients`, `message_id_sent`, and the Sent copy's `fcc_folder` and `fcc_uid`), so no search is needed afterwards to confirm it went. `courier list` returns the configured identity names under its `identity` key, as JSON already and with no format flag of its own; `courier <verb> --help` carries flags for relay-style sends and other less-common paths. For a reply, if the identity the thread was previously sent from isn't among those names, ask the user which identity to use rather than picking the closest match: the nearest name is often a personal address on a thread that needs a business one.
 """
