@@ -2,10 +2,11 @@
 
 import email
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple
 from unittest.mock import MagicMock, patch
 
 import pytest
+from imapclient.imapclient import _is8bit, _normalise_search_criteria
 from typer.testing import CliRunner
 
 from courier.__main__ import app
@@ -44,6 +45,35 @@ def _client(capabilities: List[str]) -> ImapClient:
         return_value=capabilities
     )
     return client
+
+
+def _text(value: Any) -> str:
+    return value.decode("utf-8") if isinstance(value, bytes) else str(value)
+
+
+def _searched(criteria: List[Any]) -> Set[Tuple[str, str]]:
+    """Each (header, value) pair the criteria search, values as text."""
+    return {
+        (_text(criteria[i + 1]), _text(criteria[i + 2]))
+        for i in range(len(criteria))
+        if _text(criteria[i]) == "HEADER"
+    }
+
+
+def _on_the_wire(criteria: List[Any], charset: Optional[str]) -> Dict[str, str]:
+    """How imapclient sends each HEADER value: as a quoted or bare string,
+    or as a literal (``_is8bit`` is the test imapclient's command writer
+    applies to every argument)."""
+    tokens = _normalise_search_criteria(criteria, charset)
+    sent: Dict[str, str] = {}
+    for i, token in enumerate(tokens):
+        if token == b"HEADER":
+            value = tokens[i + 2]
+            raw = bytes(getattr(value, "original", value))
+            sent[raw.decode("utf-8")] = (
+                "literal" if _is8bit(value) else bytes(value).decode("ascii")
+            )
+    return sent
 
 
 class TestFindThreadGmail:
@@ -107,7 +137,7 @@ class TestFindThreadHeaders:
         )
         hits: Dict[str, List[int]] = {"INBOX": [5, 7, 9], "Sent": [3]}
         client.search = MagicMock(  # type: ignore[method-assign]
-            side_effect=lambda criteria, folder: hits[folder]
+            side_effect=lambda criteria, folder, charset=None: hits[folder]
         )
         mails = {
             "INBOX": {
@@ -127,13 +157,11 @@ class TestFindThreadHeaders:
         client.find_thread(7, "INBOX")
         calls = client.search.call_args_list  # type: ignore[attr-defined]
         assert [c.args[1] for c in calls] == ["INBOX", "Sent"]
-        criteria = calls[0].args[0]
-        for message_id in ("<a@x>", "<b@x>"):
-            for header in ("Message-ID", "References", "In-Reply-To"):
-                assert any(
-                    criteria[i : i + 3] == ["HEADER", header, message_id]
-                    for i in range(len(criteria))
-                ), (header, message_id)
+        assert _searched(calls[0].args[0]) == {
+            (header, message_id)
+            for message_id in ("<a@x>", "<b@x>")
+            for header in ("Message-ID", "References", "In-Reply-To")
+        }
 
     def test_each_id_the_anchor_names_is_searched_on_its_own(self) -> None:
         """A comment after the Message-ID and a second parent in
@@ -155,12 +183,7 @@ class TestFindThreadHeaders:
         )
         client.find_thread(7, "INBOX")
         criteria = client.search.call_args_list[0].args[0]  # type: ignore[attr-defined]
-        searched = {
-            (criteria[i + 1], criteria[i + 2])
-            for i in range(len(criteria))
-            if criteria[i] == "HEADER"
-        }
-        assert searched == {
+        assert _searched(criteria) == {
             (header, message_id)
             for message_id in ("<b@x>", "<p1@x>", "<p2@x>")
             for header in ("Message-ID", "References", "In-Reply-To")
@@ -183,6 +206,51 @@ class TestFindThreadHeaders:
         )
         with pytest.raises(ConnectionError):
             client.find_thread(7, "INBOX")
+
+    def _criteria(
+        self, message_id: str, references: List[str]
+    ) -> Tuple[List[Any], Optional[str]]:
+        """Run find_thread; return what it handed imapclient's search."""
+        client = _client(["IMAP4REV1"])
+        client.fetch_email = MagicMock(  # type: ignore[method-assign]
+            return_value=_email(7, message_id, 21, references=references)
+        )
+        client.find_special_use_folder = MagicMock(  # type: ignore[method-assign]
+            return_value=None
+        )
+        raw = MagicMock()
+        raw.search.return_value = [7]
+        client._client_or_raise = MagicMock(  # type: ignore[method-assign]
+            return_value=raw
+        )
+        client.fetch_emails = MagicMock(return_value={})  # type: ignore[method-assign]
+        client.find_thread(7, "INBOX")
+        raw.search.assert_called_once()
+        return raw.search.call_args.args[0], raw.search.call_args.kwargs["charset"]
+
+    def test_special_characters_are_quoted_or_sent_as_literals(self) -> None:
+        criteria, charset = self._criteria(
+            "<a(b@x>",
+            ["<50%@x>", "<*@x>", "<tab\there@x>", '<say"hi"@x>', "<plain@x>"],
+        )
+        assert charset is None
+        assert _on_the_wire(criteria, charset) == {
+            "<a(b@x>": "literal",
+            "<50%@x>": "literal",
+            "<*@x>": "literal",
+            "<tab\there@x>": "literal",
+            '<say"hi"@x>': '"<say\\"hi\\"@x>"',
+            "<plain@x>": "<plain@x>",
+        }
+
+    def test_non_ascii_id_is_a_literal_under_charset_utf8(self) -> None:
+        criteria, charset = self._criteria("<josé@x>", ["<plain@x>"])
+        assert charset == "UTF-8"
+        assert _on_the_wire(criteria, charset) == {
+            "<josé@x>": "literal",
+            "<plain@x>": "<plain@x>",
+        }
+        assert ("Message-ID", "<josé@x>") in _searched(criteria)
 
 
 def test_missing_anchor_raises() -> None:

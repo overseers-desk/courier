@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 from unittest.mock import MagicMock, patch
 
+from imapclient.imapclient import _literal
 from imapclient.response_types import SearchIds
 
 from courier.config import ImapBlock
@@ -479,6 +480,37 @@ class TestImapClientThreading(unittest.TestCase):
         # Check chronological order
         for i in range(25):
             assert thread_emails[i].uid == uids[i]
+
+    def test_fetch_thread_sends_ids_with_special_characters_as_literals(self):
+        """An ID holding ( or * reaches SEARCH as a literal, and a parent's
+        trailing comment stays out of the search."""
+        anchor = self.create_mock_email(
+            uid=500,
+            message_id="<a(b@example.com>",
+            subject="Specials",
+            sender="person1@example.com",
+            to="person2@example.com",
+            date=datetime.now(),
+            body_text="Initial message",
+            in_reply_to="<p*1@example.com> (parent)",
+            references=["<p*1@example.com>"],
+        )
+        self.mock_client.fetch.side_effect = [{500: anchor}, {500: anchor}]
+        self.mock_client.search.return_value = SearchIds([])
+
+        self.imap_client.fetch_thread(500)
+
+        header_searches = [
+            (criteria[1], bytes(criteria[2]), isinstance(criteria[2], _literal))
+            for (criteria,), _ in self.mock_client.search.call_args_list
+            if isinstance(criteria, list)
+        ]
+        assert header_searches == [
+            ("References", b"<a(b@example.com>", True),
+            ("In-Reply-To", b"<a(b@example.com>", True),
+            ("Message-ID", b"<p*1@example.com>", True),
+            ("Message-ID", b"<p*1@example.com>", True),
+        ]
 
     def test_fetch_thread_with_missing_message(self):
         """Test error handling if some messages in thread are inaccessible."""

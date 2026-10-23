@@ -27,6 +27,10 @@ from imapclient.exceptions import (  # type: ignore[import-untyped]
     IMAPClientError,
 )
 
+# imapclient's marker for an argument it must send as a literal; it is
+# the one way to have an ASCII search value sent as one.
+from imapclient.imapclient import _literal  # type: ignore[import-untyped]
+
 from courier import world_bound
 from courier.config import ImapBlock
 from courier.errors import (
@@ -52,6 +56,7 @@ from courier.query.ast import (
 )
 from courier.query.emit_gmail import emit as emit_gmail
 from courier.query.emit_imap import emit as emit_imap
+from courier.query.emit_imap import unprotected_by_imapclient
 
 if TYPE_CHECKING:
     from courier.local_cache import MuBackend
@@ -212,6 +217,42 @@ def _apply_search_bound(
     if isinstance(criteria, str):
         return f"{criteria} BEFORE {_imap_date(before_day)}"
     return list(criteria) + ["BEFORE", before_day]
+
+
+def _message_id_search(
+    message_ids: Sequence[str], headers: Sequence[str]
+) -> Tuple[List[Any], Optional[str]]:
+    """Build one search for messages whose *headers* name any of *message_ids*.
+
+    Each ID goes to imapclient as UTF-8 bytes, marked to go as a literal
+    when :func:`~courier.query.emit_imap.unprotected_by_imapclient` says
+    imapclient alone would corrupt it (``<a(b@x>``). The search keys are
+    joined by a flat chain of ``OR`` pairs: imapclient appends a nested
+    group's closing paren onto its last argument, which would corrupt a
+    literal.
+
+    Args:
+        message_ids: The Message-IDs, angle brackets included; empty
+            and repeated ones are skipped.
+        headers: The header fields to look for each ID in.
+
+    Returns:
+        ``(criteria, charset)`` for :meth:`ImapClient.search`; the
+        charset is ``"UTF-8"`` when some ID is non-ASCII, else ``None``
+        so no CHARSET is sent.
+    """
+    unique = list(dict.fromkeys(i for i in message_ids if i))
+    criteria: List[Any] = []
+    for message_id in unique:
+        value = message_id.encode("utf-8")
+        if unprotected_by_imapclient(message_id):
+            value = _literal(value)
+        for header in headers:
+            if criteria:
+                criteria.insert(0, "OR")
+            criteria += ["HEADER", header, value]
+    charset = None if all(i.isascii() for i in unique) else "UTF-8"
+    return criteria, charset
 
 
 class ImapClient:
@@ -1216,26 +1257,26 @@ class ImapClient:
         # Search for emails with this Message-ID in the References or In-Reply-To headers
         if message_id:
             # Look for emails that reference this message ID
-            references_query = f'HEADER References "{message_id}"'
+            criteria, charset = _message_id_search([message_id], ["References"])
             try:
-                references_results = self.search(references_query, folder)
+                references_results = self.search(criteria, folder, charset=charset)
                 thread_uids.update(references_results)
             except Exception as e:
                 logger.warning(f"Error searching for References: {e}")
 
             # Look for direct replies to this message
-            inreplyto_query = f'HEADER In-Reply-To "{message_id}"'
+            criteria, charset = _message_id_search([message_id], ["In-Reply-To"])
             try:
-                inreplyto_results = self.search(inreplyto_query, folder)
+                inreplyto_results = self.search(criteria, folder, charset=charset)
                 thread_uids.update(inreplyto_results)
             except Exception as e:
                 logger.warning(f"Error searching for In-Reply-To: {e}")
 
             # If the initial email has References or In-Reply-To, fetch those messages too
             for ref_id in initial_email.references:
-                query = f'HEADER Message-ID "{ref_id}"'
+                criteria, charset = _message_id_search([ref_id], ["Message-ID"])
                 try:
-                    results = self.search(query, folder)
+                    results = self.search(criteria, folder, charset=charset)
                     thread_uids.update(results)
                 except Exception as e:
                     logger.warning(
@@ -1244,9 +1285,9 @@ class ImapClient:
 
             # Look for the messages that this is a reply to
             for parent_id in initial_email.in_reply_to:
-                query = f'HEADER Message-ID "{parent_id}"'
+                criteria, charset = _message_id_search([parent_id], ["Message-ID"])
                 try:
-                    results = self.search(query, folder)
+                    results = self.search(criteria, folder, charset=charset)
                     thread_uids.update(results)
                 except Exception as e:
                     logger.warning(f"Error searching for In-Reply-To message: {e}")
@@ -1348,19 +1389,16 @@ class ImapClient:
             )
             members[target] = self.search(["X-GM-THRID", thread_id], target)
         else:
-            ids = [anchor.message_id, *anchor.references, *anchor.in_reply_to]
-            criteria: List[Any] = []
-            for message_id in dict.fromkeys(i for i in ids if i):
-                for header in ("Message-ID", "References", "In-Reply-To"):
-                    if criteria:
-                        criteria.insert(0, "OR")
-                    criteria += ["HEADER", header, message_id]
+            criteria, charset = _message_id_search(
+                [anchor.message_id, *anchor.references, *anchor.in_reply_to],
+                ["Message-ID", "References", "In-Reply-To"],
+            )
             folders = [folder]
             sent = self.find_special_use_folder(b"\\Sent")
             if sent and sent != folder and self._is_folder_allowed(sent):
                 folders.append(sent)
             for current in folders:
-                members[current] = self.search(criteria, current)
+                members[current] = self.search(criteria, current, charset=charset)
             if uid not in members[folder]:
                 members[folder].append(uid)
 

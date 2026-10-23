@@ -145,6 +145,41 @@ def _refuse(
     return UntranslatableForBackend("imap", operator, message, suggestion)
 
 
+def _is_control(char: str) -> bool:
+    """Report whether *char* is an ASCII control character (RFC 3501 CTL).
+
+    Args:
+        char: One character.
+
+    Returns:
+        True for U+0000 to U+001F and U+007F.
+    """
+    return ord(char) < 0x20 or ord(char) == 0x7F
+
+
+def unprotected_by_imapclient(value: str) -> bool:
+    """Report whether imapclient would send *value* as a broken bare atom.
+
+    ``imapclient.IMAPClient.search`` quotes a criteria value only when
+    it holds a space, a double quote or a backslash, and sends a
+    non-ASCII value as a literal. Any other value goes out as a bare
+    atom, which cannot carry the atom-specials ``( ) { } % *`` or a
+    control character (RFC 3501 section 9), so a value holding one of
+    those has to be protected some other way, or refused.
+
+    Args:
+        value: The value text.
+
+    Returns:
+        True when imapclient alone would corrupt the command.
+    """
+    return (
+        value.isascii()
+        and any(c in _UNPROTECTED_SPECIALS or _is_control(c) for c in value)
+        and not any(c in _QUOTE_TRIGGERS for c in value)
+    )
+
+
 def _check_value(operator: str, value: str) -> None:
     """Refuse values imapclient cannot put on the wire safely.
 
@@ -162,18 +197,14 @@ def _check_value(operator: str, value: str) -> None:
     Raises:
         UntranslatableForBackend: When the value cannot be transmitted.
     """
-    if any(ord(c) < 0x20 or ord(c) == 0x7F for c in value):
+    if any(_is_control(c) for c in value):
         raise _refuse(
             operator,
             "the value contains control characters, which cannot be "
             "carried in an IMAP search string",
             "Remove the control characters from the search text.",
         )
-    if (
-        value.isascii()
-        and any(c in _UNPROTECTED_SPECIALS for c in value)
-        and not any(c in _QUOTE_TRIGGERS for c in value)
-    ):
+    if unprotected_by_imapclient(value):
         raise _refuse(
             operator,
             "the IMAP client library would send this value unquoted, and "
