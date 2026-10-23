@@ -2926,8 +2926,6 @@ def compose(
     --send: transmits via SMTP. Requires --identity NAME, or
     --smtp NAME --from EMAIL (mode B).
     """
-    import email.utils
-
     from courier.identity import (
         IdentityNotFound,
         SendDisabled,
@@ -3010,8 +3008,6 @@ def compose(
                 attachments=attach,
                 date=message_date,
             )
-            if not mime_message.get("Message-ID"):
-                mime_message["Message-ID"] = email.utils.make_msgid()
             _out(
                 _perform_send(
                     client,
@@ -3051,8 +3047,6 @@ def compose(
             attachments=attach,
             date=message_date,
         )
-        if not mime_message.get("Message-ID"):
-            mime_message["Message-ID"] = email.utils.make_msgid()
 
         if output is not None:
             _write_raw_output(mime_message, output)
@@ -3236,8 +3230,6 @@ def reply(
     --smtp NAME --from EMAIL (mode B), or a parent recipient that
     matches a configured identity on the selected [imap.NAME] block.
     """
-    import email.utils
-
     from courier.identity import (
         IdentityNotFound,
         SendDisabled,
@@ -3399,8 +3391,6 @@ def reply(
             attachments=attach,
             date=message_date,
         )
-        if not mime_message.get("Message-ID"):
-            mime_message["Message-ID"] = email.utils.make_msgid()
 
         try:
             if send_flag:
@@ -3528,11 +3518,15 @@ def send_draft(
     sends through a named SMTP block without consulting any
     [identity.*].
 
+    A draft without a Message-ID (one composed by another program) is
+    given one before it is sent, as RFC 5322 §3.6.4 asks.
+
     On success the draft is deleted from the source folder unless
     --keep-draft is set, and the message is FCC'd to Sent unless
     --no-save-sent or the SMTP block's save_sent resolution says otherwise.
     """
     from email.parser import BytesParser
+    from email.utils import formataddr, make_msgid
 
     from courier.identity import (
         IdentityNotFound,
@@ -3570,6 +3564,8 @@ def send_draft(
             raise typer.Exit(1)
 
         msg = BytesParser().parsebytes(fetched["raw"])
+        if not msg.get("Message-ID"):
+            msg["Message-ID"] = make_msgid()
 
         if identity_name or smtp_name:
             route = _resolve_send_route(
@@ -3586,8 +3582,6 @@ def send_draft(
             # Replace the draft's From with the resolved identity's address.
             if "From" in msg:
                 del msg["From"]
-            from email.utils import formataddr
-
             msg["From"] = formataddr((identity.name, identity.address))
         else:
             from_raw = str(msg.get("From", "") or "").strip()

@@ -10,6 +10,7 @@ Mocks the IMAP client and SMTP transport so no network is required. Verifies:
 """
 
 import json
+import re
 from email.message import EmailMessage
 from unittest.mock import MagicMock, patch
 
@@ -336,3 +337,48 @@ class TestSendDraftRepeatedBcc:
             "one@y.com",
             "two@y.com",
         ]
+
+
+class TestSendDraftMessageId:
+    """A draft goes out with a Message-ID (RFC 5322 §3.6.4): its own when
+    it carries one, a new one when it does not."""
+
+    RAW_WITHOUT_ID = (
+        b"From: alice@x.com\r\n"
+        b"To: recipient@y.com\r\n"
+        b"Subject: draft\r\n"
+        b"\r\n"
+        b"body\r\n"
+    )
+
+    @staticmethod
+    def _sent_message(raw: bytes):
+        cfg = _cfg_with_identities()
+        client = _client_with_draft()
+        client.fetch_raw.return_value = {"raw": raw, "subject": "draft"}
+        captured_msg: list = []
+
+        def fake_send(msg, smtp_cfg, transport=None):
+            captured_msg.append(msg)
+            return (raw, _build_send_result())
+
+        with (
+            patch("courier.__main__.load_config", return_value=cfg),
+            patch("courier.__main__._make_client", return_value=client),
+            patch("courier.smtp_transport.send", side_effect=fake_send),
+        ):
+            result = runner.invoke(app, ["send-draft", "-f", "Drafts", "-u", "42"])
+        assert result.exit_code == 0, result.output
+        return captured_msg[0]
+
+    def test_draft_without_message_id_is_sent_with_one(self):
+        sent = self._sent_message(self.RAW_WITHOUT_ID)
+
+        ids = sent.get_all("Message-ID")
+        assert len(ids) == 1
+        assert re.fullmatch(r"<[^<>@\s]+@[^<>@\s]+>", str(ids[0]))
+
+    def test_draft_message_id_is_kept(self):
+        sent = self._sent_message(_draft_bytes())
+
+        assert sent.get_all("Message-ID") == ["<draft@local>"]

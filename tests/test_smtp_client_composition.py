@@ -2,10 +2,11 @@
 
 import email
 import email.utils
+import re
 from datetime import datetime, timedelta, timezone
 from email.message import Message
 from pathlib import Path
-from typing import Tuple
+from typing import List, Tuple
 
 import pytest
 
@@ -789,6 +790,58 @@ class TestDateHeader:
         )
 
         assert mime_message["Date"] == "Mon, 04 Mar 2019 05:06:07 +0000"
+
+
+# create_mime gives every message a Message-ID (RFC 5322 §3.6.4).
+_MSG_ID = re.compile(r"<[^<>@\s]+@[^<>@\s]+>")
+
+
+def _wire_message_ids(**kwargs) -> List[str]:
+    """Compose with *kwargs*; return the Message-ID fields on the wire."""
+    mime_message = create_mime(
+        from_addr=EmailAddress(name="Sender", address="sender@example.com"),
+        body="b",
+        **kwargs,
+    )
+    return email.message_from_bytes(mime_message.as_bytes()).get_all("Message-ID", [])
+
+
+@pytest.mark.parametrize(
+    "extra", [{}, {"html_body": "<p>h</p>"}], ids=["plain", "multipart"]
+)
+def test_new_message_carries_one_message_id(extra):
+    ids = _wire_message_ids(
+        to=[EmailAddress(name="", address="r@example.com")], subject="s", **extra
+    )
+
+    assert len(ids) == 1
+    assert _MSG_ID.fullmatch(ids[0])
+
+
+def test_reply_carries_its_own_message_id():
+    original = Email(
+        message_id="<orig@example.com>",
+        subject="s",
+        from_=EmailAddress(name="", address="r@example.com"),
+        to=[EmailAddress(name="", address="sender@example.com")],
+        date=datetime.now(),
+        content=EmailContent(text="t"),
+        headers={},
+    )
+
+    ids = _wire_message_ids(original_email=original)
+
+    assert len(ids) == 1
+    assert _MSG_ID.fullmatch(ids[0])
+    assert ids[0] != "<orig@example.com>"
+
+
+def test_each_message_gets_a_new_message_id():
+    to = [EmailAddress(name="", address="r@example.com")]
+
+    assert _wire_message_ids(to=to, subject="s") != _wire_message_ids(
+        to=to, subject="s"
+    )
 
 
 class TestParseMessageDate:

@@ -243,6 +243,9 @@ def create_mime(
 ) -> Union[EmailMessage, MIMEMultipart]:
     """Create an RFC 822 MIME message.
 
+    Every message gets a new ``Message-ID`` (RFC 5322 §3.6.4), whatever is
+    later done with it: sent, saved as a draft or written out.
+
     When *original_email* is None the function produces a fresh email with the
     given *to* / *subject* / *body*. When it is provided the function produces
     a reply: threading headers (``In-Reply-To``, ``References``) are added, the
@@ -421,6 +424,7 @@ def create_mime(
     else:
         aware = date if date.tzinfo is not None else date.astimezone()
         msg["Date"] = email.utils.format_datetime(aware)
+    msg["Message-ID"] = email.utils.make_msgid()
     return msg
 
 
