@@ -1,6 +1,7 @@
 """Data models for email handling."""
 
 import base64
+import codecs
 import email
 import email.utils
 import html
@@ -52,6 +53,54 @@ _CID_SRC = re.compile(r"""src\s*=\s*(["']?)cid:([^"'\s>]+)\1""", re.IGNORECASE)
 # enclose. Comments, obsolete phrases and folding between identifiers
 # fall outside every match.
 _MSG_ID = re.compile(r"<[^>]+>")
+
+
+def _text_codec(charset: Optional[str]) -> str:
+    """Return the codec a text part's charset label is read with.
+
+    Courier checks for UTF-8 and guesses no other encoding: a missing
+    or unknown label, and ``us-ascii``, which UTF-8 contains, read as
+    UTF-8. A label the host knows is read as itself, except
+    ``iso-8859-1`` and its aliases, which read as ``windows-1252`` as the
+    WHATWG Encoding Standard maps that label, since most such mail
+    holds windows-1252 text and bytes 0x80-0x9F are then its quotes
+    and dashes rather than control characters.
+
+    Args:
+        charset: The label from the Content-Type, or ``None``.
+
+    Returns:
+        A codec name :meth:`bytes.decode` accepts.
+    """
+    if not charset:
+        return "utf-8"
+    try:
+        name = codecs.lookup(charset).name
+    except LookupError:
+        return "utf-8"
+    if name in ("iso8859-1", "latin-1"):
+        return "windows-1252"
+    if name == "ascii":
+        return "utf-8"
+    return name
+
+
+def _decode_text(part: Message) -> Optional[str]:
+    """Return a text part's decoded content.
+
+    Bytes that do not fit the codec :func:`_text_codec` picks become
+    replacement marks, so a body is never replaced by an error.
+
+    Args:
+        part: A ``text/*`` leaf part.
+
+    Returns:
+        The text, or ``None`` when the part holds no bytes.
+    """
+    payload = part.get_payload(decode=True)
+    if not isinstance(payload, bytes):
+        return None
+    return payload.decode(_text_codec(part.get_content_charset()), errors="replace")
 
 
 def message_ids(field_value: Optional[str]) -> List[str]:
@@ -542,30 +591,12 @@ class Email:
                     elif content_type == "text/plain":
                         # Only replace existing text if it's empty
                         if not content.text:
-                            try:
-                                charset = part.get_content_charset() or "utf-8"
-                                payload = part.get_payload(decode=True)
-                                if isinstance(payload, bytes):
-                                    content.text = payload.decode(
-                                        charset, errors="replace"
-                                    )
-                            except Exception as e:
-                                content.text = (
-                                    f"[Error decoding plain text content: {e}]"
-                                )
+                            content.text = _decode_text(part)
                     # Handle HTML content
                     elif content_type == "text/html":
                         # Only replace existing HTML if it's empty
                         if not content.html:
-                            try:
-                                charset = part.get_content_charset() or "utf-8"
-                                payload = part.get_payload(decode=True)
-                                if isinstance(payload, bytes):
-                                    content.html = payload.decode(
-                                        charset, errors="replace"
-                                    )
-                            except Exception as e:
-                                content.html = f"[Error decoding HTML content: {e}]"
+                            content.html = _decode_text(part)
 
             # Start processing parts
             process_part(message, content, attachments)
@@ -574,21 +605,9 @@ class Email:
             content_type = message.get_content_type()
 
             if content_type == "text/plain":
-                try:
-                    charset = message.get_content_charset() or "utf-8"
-                    payload = message.get_payload(decode=True)
-                    if isinstance(payload, bytes):
-                        content.text = payload.decode(charset, errors="replace")
-                except Exception as e:
-                    content.text = f"[Error decoding plain text content: {e}]"
+                content.text = _decode_text(message)
             elif content_type == "text/html":
-                try:
-                    charset = message.get_content_charset() or "utf-8"
-                    payload = message.get_payload(decode=True)
-                    if isinstance(payload, bytes):
-                        content.html = payload.decode(charset, errors="replace")
-                except Exception as e:
-                    content.html = f"[Error decoding HTML content: {e}]"
+                content.html = _decode_text(message)
             else:
                 # If not plain text or HTML, treat as attachment
                 attachments.append(EmailAttachment.from_part(message))

@@ -501,3 +501,69 @@ def test_cid_references_match_case_insensitively_and_percent_decoded():
     assert "cid:image" not in rendered.lower().replace("cid:other", "")
     assert '<img src="cid:other@example.com">' in rendered
     assert "<img src=data:image/png;base64,UE5HIQ== alt=x>" in rendered
+
+
+def _text_message(content_type: bytes, body: bytes) -> bytes:
+    return _headed(
+        b"From: a@example.com",
+        b"To: b@example.com",
+        b"Subject: s",
+        b"Content-Type: " + content_type,
+        body=body,
+    )
+
+
+def test_unknown_or_missing_charset_reads_as_utf8():
+    """A text part whose charset is unknown or missing is read as UTF-8,
+    with replacement marks for bytes that do not fit, never an error
+    string; a part labelled us-ascii is read the same way."""
+    assert (
+        _parse(_text_message(b"text/plain; charset=x-foo", b"caf\xc3\xa9")).content.text
+        == "café"
+    )
+    assert _parse(_text_message(b"text/plain", b"caf\xc3\xa9")).content.text == "café"
+    assert (
+        _parse(
+            _text_message(b"text/plain; charset=us-ascii", b"caf\xc3\xa9")
+        ).content.text
+        == "café"
+    )
+    assert (
+        _parse(
+            _text_message(b"text/html; charset=x-foo", b"<p>caf\xc3\xa9</p>")
+        ).content.html
+        == "<p>café</p>"
+    )
+    assert (
+        _parse(_text_message(b"text/plain; charset=x-foo", b"caf\xe9")).content.text
+        == "caf�"
+    )
+    raw = (
+        b"From: a@example.com\r\n"
+        b"Subject: s\r\n"
+        b'Content-Type: multipart/alternative; boundary="b"\r\n'
+        b"\r\n"
+        b"--b\r\n"
+        b"Content-Type: text/plain; charset=x-foo\r\n"
+        b"\r\n"
+        b"caf\xc3\xa9\r\n"
+        b"--b\r\n"
+        b"Content-Type: text/html; charset=x-foo\r\n"
+        b"\r\n"
+        b"<p>caf\xc3\xa9</p>\r\n"
+        b"--b--\r\n"
+    )
+    parsed = _parse(raw)
+    assert (parsed.content.text, parsed.content.html) == ("café", "<p>café</p>")
+
+
+def test_iso_8859_1_reads_as_windows_1252():
+    """A part labelled iso-8859-1, or an alias of it, is read as
+    windows-1252 (the WHATWG Encoding Standard's mapping of that
+    label), so bytes 0x80-0x9F are curly quotes and dashes."""
+    body = b"\x93quoted\x94 \x96 caf\xe9"
+    for label in (b"iso-8859-1", b"ISO-8859-1", b"latin1", b"latin-1", b"l1"):
+        parsed = _parse(_text_message(b"text/plain; charset=" + label, body))
+        assert parsed.content.text == "“quoted” – café", label
+    parsed = _parse(_text_message(b"text/plain; charset=iso-8859-2", b"\xb3\xf3d\xbc"))
+    assert parsed.content.text == "łódź"
