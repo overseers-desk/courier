@@ -455,3 +455,21 @@ def test_groups_comments_and_encoded_names_parse_in_every_address_field():
     assert [(a.name, a.address) for a in parsed.cc] == [("", "c@x.com")]
     assert [(a.name, a.address) for a in parsed.bcc] == [("Doe, José", "jose@x.com")]
     assert [(a.name, a.address) for a in parsed.reply_to] == [("Café", "r@x.com")]
+
+
+def test_zone_less_and_minus_zero_dates_are_utc():
+    """A Date with -0000 or no zone names UTC (RFC 5322 sections 3.3 and
+    4.3), so it is timezone-aware and renders as that instant."""
+    for date_header in (
+        b"Date: Mon, 2 Mar 2026 10:00:00 -0000",
+        b"Date: Mon, 2 Mar 2026 10:00:00",
+    ):
+        parsed = _parse(
+            _headed(b"From: a@example.com", b"To: b@example.com", date_header)
+        )
+        assert parsed.date == datetime(2026, 3, 2, 10, 0, tzinfo=timezone.utc)
+        assert datetime.fromisoformat(parsed.to_dict()["date"]) == parsed.date
+    parsed = _parse(
+        _headed(b"From: a@example.com", b"Date: Mon, 2 Mar 2026 10:00:00 +0200")
+    )
+    assert parsed.date == datetime(2026, 3, 2, 8, 0, tzinfo=timezone.utc)

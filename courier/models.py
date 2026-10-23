@@ -8,7 +8,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from email.errors import HeaderParseError
 from email.header import Header, decode_header
 from email.headerregistry import Address, HeaderRegistry
@@ -485,13 +485,17 @@ class Email:
         bcc = _address_list(message, "Bcc")
         reply_to = _address_list(message, "Reply-To")
 
-        # Parse date
+        # Parse date. A zone of -0000 or none at all names UTC (RFC 5322
+        # sections 3.3 and 4.3); the parser returns such a time naive.
         date = None
         if date_str:
             try:
                 date = email.utils.parsedate_to_datetime(date_str)
             except (ValueError, TypeError):
                 pass
+            else:
+                if date.tzinfo is None:
+                    date = date.replace(tzinfo=timezone.utc)
 
         # Build headers dictionary
         headers = {}
