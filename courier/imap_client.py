@@ -405,6 +405,8 @@ class ImapClient:
                 if self.client.has_capability("STARTTLS"):
                     self.client.starttls(ssl_context=context or tls_context())
                 elif not block.insecure_plaintext:
+                    self.client.shutdown()
+                    self.client = None
                     raise PermanentError(
                         f"refusing to log in to {block.host}:{block.port} "
                         "without TLS: use_ssl is false and the server offers "

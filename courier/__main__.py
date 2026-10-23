@@ -1241,8 +1241,9 @@ def _perform_send(
     Exits via ``typer.Exit(1)`` with ``Error: SMTP send failed: ...`` on
     an SMTP failure. A send whose outcome is unknown (the whole message
     went, but its reply never came) exits 1 with the transport's message
-    as raised, and files no FCC copy. A courier error resolving the Sent
-    folder, before SMTP opens, exits 3 when transient and 1 otherwise.
+    as raised, and files no FCC copy. Any other courier error (the TLS
+    refusal of ``open_session``, a Sent-folder lookup failing before SMTP
+    opens) is printed as raised and exits 3 when transient, else 1.
     """
     from courier.imap_client import SENT_FOLDER_CANDIDATES
     from courier.sending import send_with_fcc
@@ -1276,9 +1277,9 @@ def _perform_send(
             )
         raise typer.Exit(1)
     except CourierError as exc:
-        # Chiefly the transport's outcome-unknown error, whose text says to
-        # check the Sent folder before re-sending, which a "send failed"
-        # prefix would contradict.
+        # These carry their own message: the outcome-unknown text tells the
+        # user to check the Sent folder before re-sending, which a "send
+        # failed" prefix would contradict.
         _die_on_courier_error(exc)
     except Exception as exc:
         typer.echo(f"Error: SMTP send failed: {exc}", err=True)

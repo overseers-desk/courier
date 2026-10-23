@@ -153,7 +153,7 @@ class LocalCacheConfig:
 
 
 def _connection_security(where: str, data: Dict[str, Any]) -> Dict[str, bool]:
-    """Read the two connection-security opt-outs of a block table.
+    """Read the connection-security opt-outs of a block table.
 
     Args:
         where: The block label for error messages (``[smtp.NAME]`` or
@@ -177,7 +177,7 @@ def _connection_security(where: str, data: Dict[str, Any]) -> Dict[str, bool]:
 
 
 def tls_context(insecure_skip_verify: bool = False) -> ssl.SSLContext:
-    """Build the SSL context every SMTP and IMAP TLS session uses.
+    """Build the SSL context for an SMTP or IMAP TLS session.
 
     Args:
         insecure_skip_verify: The block's ``insecure_skip_verify`` key.

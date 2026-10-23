@@ -206,7 +206,9 @@ class TestImapClient:
         server.starttls.assert_not_called()
         server.login.assert_not_called()
         server.oauth2_login.assert_not_called()
+        server.shutdown.assert_called_once()
         assert client.connected is False
+        assert client.client is None
 
     def test_insecure_plaintext_allows_the_login_without_tls(self):
         config = ImapBlock(

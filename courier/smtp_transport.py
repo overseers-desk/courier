@@ -168,7 +168,7 @@ def open_session(
     """Open an SMTP session: connect, EHLO, TLS, and log in.
 
     The one opener behind ``send``, the ``courier status`` probe and
-    send-draft ``--dry-run``, so all three connect under ``_SMTP_TIMEOUT``
+    send-draft ``--dry-run``, so each connects under ``_SMTP_TIMEOUT``
     and the same TLS rules. Port 465 is implicit TLS (``smtplib.SMTP_SSL``).
     Any other port connects plain and upgrades with STARTTLS whenever EHLO
     offers it, then sends EHLO again (RFC 3207 section 4.2). Every TLS
