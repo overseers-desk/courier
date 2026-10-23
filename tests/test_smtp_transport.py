@@ -467,6 +467,51 @@ class TestRecipientHeaderParsing:
         assert result["accepted_recipients"] == ["js@x.com"]
 
 
+class TestFromAddressParsing:
+    """MAIL FROM takes the From address with parseaddr, not a split on ``<``."""
+
+    @staticmethod
+    def _mail_from(msg) -> str:
+        captured: list = []
+
+        def factory(host, port, timeout=None):
+            f = _FakeSMTPBase(host, port, timeout)
+            captured.append(f)
+            return f
+
+        send(msg, SmtpConfig(host="h"), transport=factory)
+        return next(c[1] for c in captured[0].calls if c[0] == "mail")
+
+    def test_display_name_containing_angle_bracket(self):
+        msg = _build_msg()
+        del msg["From"]
+        msg["From"] = '"Acme <Billing>" <billing@acme.com>'
+        assert self._mail_from(msg) == "billing@acme.com"
+
+    def test_parsed_draft_with_angle_bracket_in_display_name(self):
+        msg = email.message_from_bytes(
+            b'From: "Acme <Billing>" <billing@acme.com>\r\n'
+            b"To: alice@x.com\r\n"
+            b"Message-ID: <draft@local>\r\n"
+            b"\r\n"
+            b"body\r\n"
+        )
+        assert self._mail_from(msg) == "billing@acme.com"
+
+    def test_bare_address(self):
+        msg = _build_msg()
+        del msg["From"]
+        msg["From"] = "sender@example.com"
+        assert self._mail_from(msg) == "sender@example.com"
+
+    def test_from_without_an_address_is_refused_by_name(self):
+        msg = _build_msg()
+        del msg["From"]
+        msg["From"] = "Billing <>"
+        with pytest.raises(ValueError, match="From header 'Billing <>' holds no"):
+            send(msg, SmtpConfig(host="h"), transport=_FakeSMTPBase)
+
+
 class TestSendValidation:
     def test_no_from_raises(self):
         msg = EmailMessage()

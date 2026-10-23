@@ -17,7 +17,7 @@ the "FCC instead of BCC-self" capability discussed in the design.
 import re
 import smtplib
 from email.parser import BytesParser
-from email.utils import getaddresses
+from email.utils import getaddresses, parseaddr
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from courier.config import SmtpConfig
@@ -64,11 +64,17 @@ def _extract_addresses(mime: Any, header: str) -> List[str]:
 
 
 def _from_address(mime: Any) -> str:
-    """Return the bare address from the From header."""
-    raw = str(mime.get("From", "") or "")
-    if "<" in raw and ">" in raw:
-        return raw.split("<", 1)[1].rsplit(">", 1)[0].strip()
-    return raw.strip()
+    """Return the bare address from the From header.
+
+    Parsed with :func:`email.utils.parseaddr` so a quoted display name
+    containing ``<`` (``'"Acme <Billing>" <billing@acme.com>'``) yields
+    the address, not a fragment of the name that would corrupt MAIL FROM.
+
+    Returns:
+        The address, or ``""`` when the header is absent or holds no
+        single parseable address.
+    """
+    return parseaddr(str(mime.get("From", "") or ""))[1]
 
 
 def _all_recipients(mime: Any) -> List[str]:
@@ -170,7 +176,8 @@ def send(
         requested it; pass to ``ImapClient.append_raw`` for the FCC step.
 
     Raises:
-        ValueError: On a malformed MIME message (no From, no recipients).
+        ValueError: On a malformed MIME message (no From address, no
+            recipients).
         smtplib.SMTPSenderRefused: The server answered MAIL FROM with a
             non-2xx reply, carried with its code and text. Raised before
             RCPT TO and DATA, so nothing was transmitted.
@@ -185,7 +192,12 @@ def send(
 
     from_addr = _from_address(mime_msg)
     if not from_addr:
-        raise ValueError("MIME message has no From header")
+        from_header = mime_msg.get("From")
+        if not from_header:
+            raise ValueError("MIME message has no From header")
+        raise ValueError(
+            f"From header {str(from_header)!r} holds no single parseable address"
+        )
     rcpts = _all_recipients(mime_msg)
     if not rcpts:
         raise ValueError("MIME message has no To/Cc/Bcc recipients")
