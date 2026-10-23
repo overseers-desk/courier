@@ -173,6 +173,9 @@ def send(
         ValueError: On a malformed MIME message (no From, no recipients).
         smtplib.SMTPRecipientsRefused: Every recipient was refused at
             RCPT TO. Raised before DATA, so nothing was transmitted.
+        smtplib.SMTPNotSupportedError: The message carries 8-bit content
+            and the server does not list 8BITMIME (RFC 6152). Raised
+            before MAIL FROM, so nothing was transmitted.
         smtplib.SMTPException: On any other SMTP-layer failure.
     """
     factory = transport or _pick_default_transport(smtp_cfg.port)
@@ -200,7 +203,15 @@ def send(
             smtp.ehlo()
         if smtp_cfg.username and smtp_cfg.password:
             smtp.login(smtp_cfg.username, smtp_cfg.password)
-        smtp.mail(from_addr)
+        mail_options: List[str] = []
+        if not on_wire.isascii():
+            if not smtp.has_extn("8bitmime"):
+                raise smtplib.SMTPNotSupportedError(
+                    f"{smtp_cfg.host} does not list 8BITMIME, and the message "
+                    "carries 8-bit content"
+                )
+            mail_options.append("BODY=8BITMIME")
+        smtp.mail(from_addr, mail_options)
         accepted: List[str] = []
         refused: List[Dict[str, Any]] = []
         for rcpt in rcpts:

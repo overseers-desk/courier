@@ -5,12 +5,16 @@ no network is required. The fake records the sequence of calls and supplies
 the post-DATA response that drives the SES Message-ID rewrite logic.
 """
 
+import email
+import re
 import smtplib
 from email.message import EmailMessage
 
 import pytest
 
 from courier.config import SmtpConfig
+from courier.models import EmailAddress
+from courier.smtp_client import create_mime
 from courier.smtp_transport import (
     parse_ses_token,
     rewrite_message_id,
@@ -26,7 +30,10 @@ class _FakeSMTPBase:
     ``refuse`` maps an RCPT TO address to the ``(code, reply)`` the fake
     answers with; addresses not listed are accepted with 250. ``body``
     keeps the exact bytes handed to ``data()`` for wire assertions.
+    ``features`` are the EHLO extensions the fake server lists.
     """
+
+    features = frozenset({"8bitmime"})
 
     def __init__(self, host: str, port: int, timeout=None):
         self.host = host
@@ -44,8 +51,11 @@ class _FakeSMTPBase:
     def login(self, username: str, password: str) -> None:
         self.calls.append(("login", username, password))
 
-    def mail(self, addr: str) -> tuple:
-        self.calls.append(("mail", addr))
+    def has_extn(self, name: str) -> bool:
+        return name.lower() in self.features
+
+    def mail(self, addr: str, options=()) -> tuple:
+        self.calls.append(("mail", addr, tuple(options)))
         return (250, b"OK")
 
     def rcpt(self, addr: str) -> tuple:
@@ -265,6 +275,88 @@ class TestRefusedRecipients:
             send(_build_msg(), SmtpConfig(host="h"), transport=factory)
         # Nothing was transmitted: the failure fired before DATA.
         assert not any(c[0] == "data" for c in captured[0].calls)
+
+
+class TestEightBitDeclaration:
+    """8-bit content is declared with BODY=8BITMIME (RFC 6152), or refused."""
+
+    @staticmethod
+    def _capture(captured: list, features=frozenset({"8bitmime"})):
+        def factory(host, port, timeout=None):
+            f = _FakeSMTPBase(host, port, timeout)
+            f.features = features
+            captured.append(f)
+            return f
+
+        return factory
+
+    @staticmethod
+    def _eight_bit_msg() -> EmailMessage:
+        msg = _build_msg()
+        msg.set_content("付款安排已确认。\n")
+        return msg
+
+    def test_eight_bit_message_declares_8bitmime(self):
+        captured: list = []
+        send(
+            self._eight_bit_msg(),
+            SmtpConfig(host="h"),
+            transport=self._capture(captured),
+        )
+        assert ("mail", "sender@example.com", ("BODY=8BITMIME",)) in captured[0].calls
+
+    def test_ascii_message_declares_nothing(self):
+        captured: list = []
+        send(_build_msg(), SmtpConfig(host="h"), transport=self._capture(captured))
+        assert ("mail", "sender@example.com", ()) in captured[0].calls
+
+    def test_eight_bit_message_refused_when_server_lacks_8bitmime(self):
+        captured: list = []
+        factory = self._capture(captured, features=frozenset())
+        with pytest.raises(smtplib.SMTPNotSupportedError, match="8BITMIME"):
+            send(self._eight_bit_msg(), SmtpConfig(host="h"), transport=factory)
+        assert not any(c[0] in ("mail", "data") for c in captured[0].calls)
+
+    def test_attached_email_reaches_the_wire_intact(self, tmp_path):
+        """The body arrives byte for byte; headers arrive equal once unfolded.
+
+        The generator refolds header lines over 78 characters at existing
+        whitespace, which RFC 5322 §2.2.3 unfolding undoes.
+        """
+        eml_bytes = (
+            b"Received: from mx.example.com by mx2.example.com\r\n"
+            b"\twith ESMTPS id abc123; Sun, 18 Oct 2026 16:54:34 -0700\r\n"
+            b"ARC-Seal: i=1; a=rsa-sha256; t=1760831674; cv=none; d=example.com; "
+            + b"b="
+            + b"A" * 120
+            + b"\r\n"
+            b"From: QRO <a@example.com>\r\n"
+            b"Subject: Payment arrangement\r\n"
+            b"Content-Type: text/plain; charset=utf-8\r\n"
+            b"Content-Transfer-Encoding: 8bit\r\n"
+            b"\r\n" + "付款安排已确认。\r\n".encode("utf-8")
+        )
+        eml = tmp_path / "forwarded.eml"
+        eml.write_bytes(eml_bytes)
+        msg = create_mime(
+            from_addr=EmailAddress(name="", address="sender@example.com"),
+            to=[EmailAddress(name="", address="alice@x.com")],
+            subject="s",
+            body="see attached",
+            attachments=[str(eml)],
+        )
+        captured: list = []
+        send(msg, SmtpConfig(host="h"), transport=self._capture(captured))
+
+        wire = captured[0].body
+        assert eml_bytes.split(b"\r\n\r\n", 1)[1] in wire
+        sent = email.message_from_bytes(wire).get_payload(1).get_payload(0)
+        original = email.message_from_bytes(eml_bytes)
+
+        def unfold(m):
+            return [(k, re.sub(r"\r?\n", "", v)) for k, v in m.items()]
+
+        assert unfold(sent) == unfold(original)
 
 
 class TestWireLineEndings:
