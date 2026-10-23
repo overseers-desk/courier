@@ -96,6 +96,14 @@ def _attach_file(container: MIMEMultipart, path: str) -> None:
     are line-safe; a UTF-8 ``text/*`` file whose only fault is line length
     goes out quoted-printable. Everything else is base64.
 
+    A ``text/*`` part that is not ASCII declares ``charset=utf-8``. A
+    ``text/*`` file that is not UTF-8 goes out as
+    ``application/octet-stream`` instead: ``text/*`` with no charset means
+    US-ASCII (RFC 2046 §4.1.2), UTF-8 can be told apart with certainty but
+    one 8-bit encoding cannot be told from another, and a wrong label
+    garbles the file. Unlabelled, the program that opens the file detects
+    its encoding.
+
     A file name of printable ASCII goes out as plain ``filename="..."``,
     which every client reads. Any other name goes out in RFC 2231 form,
     ``filename*=utf-8''...``, which also percent-encodes a control
@@ -112,17 +120,19 @@ def _attach_file(container: MIMEMultipart, path: str) -> None:
     if not os.path.isfile(path):
         raise ValueError(f"Attachment not found or not a regular file: {path}")
 
+    with open(path, "rb") as fh:
+        payload = fh.read()
+
     ctype, encoding = mimetypes.guess_type(path)
     if ctype is None or encoding is not None:
+        ctype = "application/octet-stream"
+    elif ctype.startswith("text/") and not _is_utf8(payload):
         ctype = "application/octet-stream"
     maintype, subtype = ctype.split("/", 1)
     filename = os.path.basename(path)
 
-    with open(path, "rb") as fh:
-        payload = fh.read()
-
     unsafe_line = _first_unsafe_line(payload)
-    utf8_text = maintype == "text" and _is_utf8(payload)
+    utf8_text = maintype == "text"  # a text/* file not in UTF-8 was relabelled
     part = MIMEBase(maintype, subtype)
     if maintype == "message":
         if unsafe_line:
@@ -143,6 +153,8 @@ def _attach_file(container: MIMEMultipart, path: str) -> None:
         charset.body_encoding = QP
         part.set_payload(payload.decode("utf-8"), charset)
     else:
+        if utf8_text and not payload.isascii():
+            part.set_param("charset", "utf-8")
         part.set_payload(payload)
         encoders.encode_base64(part)
     plain_name = filename.isascii() and filename.isprintable()

@@ -604,13 +604,36 @@ class TestCreateReplyMime:
         assert part.get_payload(decode=True) == text.encode("utf-8")
 
     def test_text_attachment_that_is_not_utf8_stays_base64(self, tmp_path: Path):
-        """Declaring charset=utf-8 on a GBK file would garble it."""
+        """A GBK file goes out as application/octet-stream, unlabelled.
+
+        text/* with no charset means US-ASCII (RFC 2046 §4.1.2), and
+        charset=utf-8 would garble it too; unlabelled, the program that
+        opens the file detects its encoding.
+        """
         txt = tmp_path / "gbk.txt"
         raw = "付款安排".encode("gbk")
         txt.write_bytes(raw)
 
         _, part = _wire_attachment(txt)
 
+        assert part.get_content_type() == "application/octet-stream"
+        assert part.get_param("charset") is None
+        assert part["Content-Transfer-Encoding"] == "base64"
+        assert part.get_filename() == "gbk.txt"
+        assert part.get_payload(decode=True) == raw
+
+    def test_utf8_text_attachment_sent_base64_declares_its_charset(
+        self, tmp_path: Path
+    ):
+        """A stray CR forces base64; the part still says it is UTF-8."""
+        txt = tmp_path / "mac.txt"
+        raw = "付款\r安排\n".encode("utf-8")
+        txt.write_bytes(raw)
+
+        _, part = _wire_attachment(txt)
+
+        assert part.get_content_type() == "text/plain"
+        assert part.get_content_charset() == "utf-8"
         assert part["Content-Transfer-Encoding"] == "base64"
         assert part.get_payload(decode=True) == raw
 
