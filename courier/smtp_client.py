@@ -417,6 +417,10 @@ def create_mime(
     if is_reply:
         assert original_email is not None
         references = list(original_email.references)
+        if not references and len(original_email.in_reply_to) == 1:
+            # RFC 5322 section 3.6.4: a parent with no References but a
+            # single In-Reply-To ID passes that ID on as the chain's start.
+            references = list(original_email.in_reply_to)
         if original_email.message_id:
             references.append(" ".join(original_email.message_id.split()))
         if references:

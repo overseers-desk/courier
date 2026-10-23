@@ -1059,3 +1059,33 @@ def test_reply_references_come_from_the_parsed_field():
     )
     assert reply["References"] == "<a@example.com> <b@example.com> <c@example.com>"
     assert reply["In-Reply-To"] == "<c@example.com>"
+
+
+@pytest.mark.parametrize(
+    "in_reply_to, expected",
+    [
+        (["<a@example.com>"], "<a@example.com> <c@example.com>"),
+        (["<a@example.com>", "<b@example.com>"], "<c@example.com>"),
+    ],
+    ids=["single-parent-id", "several-parent-ids"],
+)
+def test_reply_to_a_parent_without_references_carries_its_in_reply_to(
+    in_reply_to, expected
+):
+    """RFC 5322 §3.6.4: with no References on the parent, a single
+    In-Reply-To ID goes before the parent's Message-ID."""
+    parent = Email(
+        message_id="<c@example.com>",
+        subject="s",
+        from_=EmailAddress(name="", address="sender@example.com"),
+        to=[EmailAddress(name="", address="me@example.com")],
+        date=datetime.now(),
+        content=EmailContent(text="t"),
+        in_reply_to=in_reply_to,
+    )
+    reply = create_mime(
+        from_addr=EmailAddress(name="", address="me@example.com"),
+        body="r",
+        original_email=parent,
+    )
+    assert reply["References"] == expected
