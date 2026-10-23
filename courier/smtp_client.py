@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 # Text formats outside text/* whose line endings are only whitespace, so the
 # wire's CRLF conversion leaves them intact when sent unencoded.
-_LINE_SAFE_APPLICATION_TYPES = frozenset(
+_LINE_SAFE_NON_TEXT_TYPES = frozenset(
     {
         "application/postscript",
         "application/json",
@@ -146,7 +146,7 @@ def _attach_file(container: MIMEMultipart, path: str) -> None:
         # the file goes in parsed.
         part = MIMEMessage(email.message_from_bytes(payload), subtype)
         part["Content-Transfer-Encoding"] = "7bit" if payload.isascii() else "8bit"
-    elif not unsafe_line and (utf8_text or ctype in _LINE_SAFE_APPLICATION_TYPES):
+    elif not unsafe_line and (utf8_text or ctype in _LINE_SAFE_NON_TEXT_TYPES):
         _set_unencoded_payload(part, payload)
     elif utf8_text and not _first_unsafe_line(payload, max_octets=sys.maxsize):
         charset = Charset("utf-8")
