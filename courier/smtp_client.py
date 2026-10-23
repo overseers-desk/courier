@@ -4,10 +4,13 @@ import email.utils
 import logging
 import mimetypes
 import os
+import sys
 from datetime import datetime
 from email import encoders
+from email.charset import QP, Charset
 from email.message import EmailMessage
 from email.mime.base import MIMEBase
+from email.mime.message import MIMEMessage
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Any, Dict, List, Optional, Union
@@ -19,15 +22,86 @@ from courier.models import Email, EmailAddress
 logger = logging.getLogger(__name__)
 
 
+# Text formats outside text/* whose line endings are only whitespace, so the
+# wire's CRLF conversion leaves them intact when sent unencoded.
+_LINE_SAFE_APPLICATION_TYPES = frozenset(
+    {
+        "application/postscript",
+        "application/json",
+        "application/xml",
+        "application/yaml",
+        "application/toml",
+        "application/rtf",
+        "image/svg+xml",
+    }
+)
+
+# RFC 5322 §2.1.1, counted in bytes, without the CRLF.
+_MAX_LINE_OCTETS = 998
+
+
+def _first_unsafe_line(payload: bytes, max_octets: int = _MAX_LINE_OCTETS) -> int:
+    """Find the first line that bars sending *payload* as 7bit or 8bit.
+
+    A line fails on a NUL byte, on a CR outside a CRLF pair (the wire's
+    CRLF conversion would turn it into a line break), or on running past
+    *max_octets* bytes.
+
+    Args:
+        payload: Raw file content.
+        max_octets: Longest line allowed, in bytes.
+
+    Returns:
+        The 1-based number of the first failing line, or 0 when every
+        line is safe.
+    """
+    for number, line in enumerate(payload.replace(b"\r\n", b"\n").split(b"\n"), 1):
+        if b"\0" in line or b"\r" in line or len(line) > max_octets:
+            return number
+    return 0
+
+
+def _is_utf8(payload: bytes) -> bool:
+    """Return whether *payload* decodes as UTF-8."""
+    try:
+        payload.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return True
+
+
+def _set_unencoded_payload(part: MIMEBase, payload: bytes) -> None:
+    """Carry *payload* in *part* byte for byte as 7bit or 8bit.
+
+    Args:
+        part: A non-``message/*`` part with no payload yet.
+        payload: Line-safe file content; ``charset=utf-8`` is declared on
+            an 8bit ``text/*`` part.
+    """
+    cte = "7bit" if payload.isascii() else "8bit"
+    if part.get_content_maintype() == "text" and cte == "8bit":
+        part.set_param("charset", "utf-8")
+    # The generator writes a surrogate-escaped str back out as the original
+    # bytes, and the wire's CRLF pass restores the line endings.
+    part.set_payload(payload.replace(b"\r\n", b"\n").decode("ascii", "surrogateescape"))
+    part["Content-Transfer-Encoding"] = cte
+
+
 def _attach_file(container: MIMEMultipart, path: str) -> None:
     """Attach a file to a multipart/mixed container.
+
+    An attached email (``message/*``) goes out unencoded, since RFC 2046
+    §5.2.1 forbids base64 on it. Text formats go out unencoded when they
+    are line-safe; a UTF-8 ``text/*`` file whose only fault is line length
+    goes out quoted-printable. Everything else is base64.
 
     Args:
         container: Outer ``multipart/mixed`` message to attach into.
         path: Filesystem path to the file.
 
     Raises:
-        ValueError: If *path* is not a readable regular file.
+        ValueError: If *path* is not a readable regular file, or is an
+            attached email that cannot go out unencoded.
     """
     if not os.path.isfile(path):
         raise ValueError(f"Attachment not found or not a regular file: {path}")
@@ -36,17 +110,39 @@ def _attach_file(container: MIMEMultipart, path: str) -> None:
     if ctype is None or encoding is not None:
         ctype = "application/octet-stream"
     maintype, subtype = ctype.split("/", 1)
+    filename = os.path.basename(path)
 
     with open(path, "rb") as fh:
         payload = fh.read()
 
+    unsafe_line = _first_unsafe_line(payload)
+    utf8_text = maintype == "text" and _is_utf8(payload)
     part = MIMEBase(maintype, subtype)
-    part.set_payload(payload)
-    encoders.encode_base64(part)
+    if maintype == "message":
+        if unsafe_line:
+            raise ValueError(
+                f"Attachment {filename} cannot be sent as {ctype}: line "
+                f"{unsafe_line} has a NUL byte, a stray CR or more than "
+                f"{_MAX_LINE_OCTETS} bytes, and RFC 2046 forbids encoding "
+                "this type"
+            )
+        # A str payload on a message/* part is written as strict ASCII, so
+        # the file goes in parsed.
+        part = MIMEMessage(email.message_from_bytes(payload), subtype)
+        part["Content-Transfer-Encoding"] = "7bit" if payload.isascii() else "8bit"
+    elif not unsafe_line and (utf8_text or ctype in _LINE_SAFE_APPLICATION_TYPES):
+        _set_unencoded_payload(part, payload)
+    elif utf8_text and not _first_unsafe_line(payload, max_octets=sys.maxsize):
+        charset = Charset("utf-8")
+        charset.body_encoding = QP
+        part.set_payload(payload.decode("utf-8"), charset)
+    else:
+        part.set_payload(payload)
+        encoders.encode_base64(part)
     part.add_header(
         "Content-Disposition",
         "attachment",
-        filename=("utf-8", "", os.path.basename(path)),
+        filename=("utf-8", "", filename),
     )
     container.attach(part)
 

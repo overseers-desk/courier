@@ -1,13 +1,29 @@
 """Tests for SMTP client MIME composition functionality."""
 
+import email
 import email.utils
 from datetime import datetime, timedelta, timezone
+from email.message import Message
 from pathlib import Path
+from typing import Tuple
 
 import pytest
 
 from courier.models import Email, EmailAddress, EmailContent
 from courier.smtp_client import create_mime, parse_message_date
+
+
+def _wire_attachment(path: Path) -> Tuple[bytes, Message]:
+    """Compose a message attaching *path*; return its bytes and the parsed part."""
+    msg = create_mime(
+        from_addr=EmailAddress(name="", address="sender@example.com"),
+        to=[EmailAddress(name="", address="recipient@example.com")],
+        subject="s",
+        body="see attached",
+        attachments=[str(path)],
+    )
+    wire = msg.as_bytes()
+    return wire, email.message_from_bytes(wire).get_payload(1)
 
 
 class TestCreateReplyMime:
@@ -467,6 +483,132 @@ class TestCreateReplyMime:
 
         raw = mime_message.as_string()
         assert "filename*=utf-8''" in raw
+
+    def test_attached_email_goes_out_7bit_not_base64(self, tmp_path: Path):
+        """RFC 2046 §5.2.1 forbids base64 on message/rfc822; Outlook shows it raw."""
+        eml = tmp_path / "forwarded.eml"
+        eml.write_bytes(
+            b"From: a@example.com\r\nSubject: Payment arrangement\r\n\r\nBody.\r\n"
+        )
+
+        wire, part = _wire_attachment(eml)
+
+        assert part.get_content_type() == "message/rfc822"
+        assert part["Content-Transfer-Encoding"] == "7bit"
+        assert b"Subject: Payment arrangement" in wire
+        assert part.get_payload(0)["Subject"] == "Payment arrangement"
+
+    def test_attached_email_with_utf8_body_goes_out_8bit(self, tmp_path: Path):
+        """Non-ASCII bytes in an attached email are carried verbatim as 8bit."""
+        eml = tmp_path / "forwarded.eml"
+        body = "付款安排已确认。\n".encode("utf-8")
+        eml.write_bytes(
+            b"From: a@example.com\nContent-Type: text/plain; charset=utf-8\n"
+            b"Content-Transfer-Encoding: 8bit\n\n" + body
+        )
+
+        wire, part = _wire_attachment(eml)
+
+        assert part["Content-Transfer-Encoding"] == "8bit"
+        assert body in wire
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            b"From: a@example.com\n\n" + b"x" * 999 + b"\n",
+            b"From: a@example.com\n\n\x00\n",
+        ],
+        ids=["line-over-998-bytes", "nul-byte"],
+    )
+    def test_attached_email_that_is_not_line_safe_is_refused(
+        self, tmp_path: Path, content: bytes
+    ):
+        """An attached email cannot fall back to base64, so it is refused."""
+        eml = tmp_path / "broken.eml"
+        eml.write_bytes(content)
+
+        with pytest.raises(ValueError, match=r"broken\.eml.*line 3"):
+            _wire_attachment(eml)
+
+    def test_markdown_in_utf8_goes_out_8bit_with_lines_counted_in_bytes(
+        self, tmp_path: Path
+    ):
+        """A 332-character Chinese line is 996 bytes and still line-safe."""
+        md = tmp_path / "notes.md"
+        text = "# 付款\n\n" + "款" * 332 + "\n"
+        md.write_text(text, encoding="utf-8")
+
+        wire, part = _wire_attachment(md)
+
+        assert part.get_content_type() == "text/markdown"
+        assert part.get_content_charset() == "utf-8"
+        assert part["Content-Transfer-Encoding"] == "8bit"
+        assert text.encode("utf-8") in wire
+
+    def test_ascii_text_attachment_goes_out_7bit(self, tmp_path: Path):
+        """An ASCII text file is carried as it is."""
+        csv = tmp_path / "rows.csv"
+        csv.write_text("a,b\n1,2\n")
+
+        wire, part = _wire_attachment(csv)
+
+        assert part["Content-Transfer-Encoding"] == "7bit"
+        assert b"a,b\n1,2\n" in wire
+
+    def test_markdown_with_an_unwrapped_long_line_goes_out_quoted_printable(
+        self, tmp_path: Path
+    ):
+        """A line over 998 bytes is encoded, and decodes back to the file."""
+        md = tmp_path / "long.md"
+        text = "## 摘要\n\n" + "word " * 300 + "\n"
+        md.write_text(text, encoding="utf-8")
+
+        _, part = _wire_attachment(md)
+
+        assert part["Content-Transfer-Encoding"] == "quoted-printable"
+        assert part.get_content_charset() == "utf-8"
+        assert part.get_payload(decode=True) == text.encode("utf-8")
+
+    def test_text_attachment_that_is_not_utf8_stays_base64(self, tmp_path: Path):
+        """Declaring charset=utf-8 on a GBK file would garble it."""
+        txt = tmp_path / "gbk.txt"
+        raw = "付款安排".encode("gbk")
+        txt.write_bytes(raw)
+
+        _, part = _wire_attachment(txt)
+
+        assert part["Content-Transfer-Encoding"] == "base64"
+        assert part.get_payload(decode=True) == raw
+
+    def test_ascii_postscript_goes_out_7bit(self, tmp_path: Path):
+        """PostScript is text by design and needs no encoding."""
+        ps = tmp_path / "page.ps"
+        ps.write_bytes(b"%!PS-Adobe-3.0\n/Helvetica findfont\nshowpage\n")
+
+        _, part = _wire_attachment(ps)
+
+        assert part.get_content_type() == "application/postscript"
+        assert part["Content-Transfer-Encoding"] == "7bit"
+
+    def test_eps_with_binary_preview_header_stays_base64(self, tmp_path: Path):
+        """A DOS EPS file opens with a binary header and fails the line check."""
+        eps = tmp_path / "logo.eps"
+        raw = b"\xc5\xd0\xd3\xc6\x1e\x00\x00\x00" + b"%!PS-Adobe-3.0 EPSF-3.0\n"
+        eps.write_bytes(raw)
+
+        _, part = _wire_attachment(eps)
+
+        assert part["Content-Transfer-Encoding"] == "base64"
+        assert part.get_payload(decode=True) == raw
+
+    def test_pdf_stays_base64(self, tmp_path: Path):
+        """Formats outside the line-safe set are encoded as before."""
+        pdf = tmp_path / "statement.pdf"
+        pdf.write_bytes(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
+
+        _, part = _wire_attachment(pdf)
+
+        assert part["Content-Transfer-Encoding"] == "base64"
 
     def test_auto_html_when_body_contains_table(self):
         """Markdown table in body with body_html=None → multipart/alternative."""
