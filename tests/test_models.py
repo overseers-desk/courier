@@ -1,11 +1,15 @@
 """Tests for email models."""
 
+import base64
 import email
+import quopri
 import unittest
 from datetime import datetime, timezone
 from email.header import Header
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+
+import pytest
 
 from courier.models import (
     Email,
@@ -712,3 +716,37 @@ def test_forwarded_multipart_message_keeps_its_own_attachments():
     assert [a.filename for a in parsed.attachments] == ["original.eml"]
     restored = email.message_from_bytes(parsed.attachments[0].content)
     assert [p.get_filename() for p in restored.walk()][1:] == [None, "report.pdf"]
+
+
+@pytest.mark.parametrize("cte", ["base64", "quoted-printable"])
+def test_encoded_forwarded_message_is_decoded_before_saving(cte):
+    """RFC 2046 section 5.2.1 forbids encoding a message/rfc822 part, but
+    such mail exists (courier sent it before issue #102), so the .eml is
+    the decoded message, not its encoded text."""
+    inner = _headed(
+        b"From: orig@example.com",
+        b"Subject: Payment arrangement",
+        b"Message-ID: <inner@example.com>",
+        body=b"caf\xc3\xa9 = total\r\n",
+    )
+    encoded = (
+        base64.encodebytes(inner) if cte == "base64" else quopri.encodestring(inner)
+    )
+    raw = (
+        b"From: a@example.com\r\n"
+        b"Subject: Fwd\r\n"
+        b'Content-Type: multipart/mixed; boundary="outer"\r\n'
+        b"\r\n"
+        b"--outer\r\n"
+        b"Content-Type: text/plain\r\n"
+        b"\r\n"
+        b"see below\r\n"
+        b"--outer\r\n"
+        b"Content-Type: message/rfc822\r\n"
+        b"Content-Transfer-Encoding: " + cte.encode() + b"\r\n"
+        b"\r\n" + encoded + b"\r\n"
+        b"--outer--\r\n"
+    )
+    attachment = _parse(raw).attachments[0]
+    assert attachment.filename == "Payment arrangement.eml"
+    assert attachment.content == inner

@@ -7,6 +7,7 @@ import email.utils
 import html
 import logging
 import os
+import quopri
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -331,7 +332,19 @@ class EmailAttachment:
                 if isinstance(payload, list) and isinstance(payload[0], Message)
                 else None
             )
-            if inner is None:
+            cte = str(part.get("Content-Transfer-Encoding", "")).strip().lower()
+            if inner is not None and cte in ("base64", "quoted-printable"):
+                # RFC 2046 section 5.2.1 forbids encoding this type, but such
+                # mail exists; the parser read the encoded text as a message.
+                encoded = inner.as_bytes()
+                decoded = (
+                    base64.b64decode(encoded)
+                    if cte == "base64"
+                    else quopri.decodestring(encoded)
+                )
+                content = re.sub(rb"\r?\n", b"\r\n", decoded)
+                inner = email.message_from_bytes(content)
+            elif inner is None:
                 raw_payload = part.get_payload(decode=True)
                 content = raw_payload if isinstance(raw_payload, bytes) else None
             else:
