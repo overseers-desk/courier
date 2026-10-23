@@ -120,6 +120,32 @@ courier compose --send --smtp ses-syd \
 
 Drafting (no `--send`) keeps the previous convenience defaults: the first identity on the selected `[imap.*]` block is the From, and `--from EMAIL` selects a different identity by address.
 
+## Connection security: `insecure_plaintext` and `insecure_skip_verify`
+
+Every TLS session, IMAP and SMTP, verifies the server's certificate against the system trust store and checks its host name. SMTP uses implicit TLS on port 465 and, on any other port, STARTTLS whenever the server offers it. IMAP uses implicit TLS with `use_ssl = true` (the default) and, with `use_ssl = false`, connects plain and upgrades with STARTTLS whenever the server offers it.
+
+A login without TLS would put the password on the network in clear text, so a block with credentials whose session has no TLS stops with an error naming `insecure_plaintext`. An SMTP block without credentials (a template, or an open relay) still uses STARTTLS when offered and otherwise proceeds.
+
+Two per-block keys, accepted on `[smtp.NAME]` and `[imap.NAME]` and both `false` by default, relax this for a server that cannot do better:
+
+- `insecure_plaintext = true`: allow the login without TLS. STARTTLS is still used when offered.
+- `insecure_skip_verify = true`: keep TLS, but do not check the certificate or host name.
+
+```toml
+[smtp.relay]
+host = "relay.lan"
+port = 25
+insecure_plaintext = true
+
+[imap.lan]
+host = "mail.lan"
+username = "you"
+password = "..."
+insecure_skip_verify = true
+```
+
+A template `[smtp.*]` block keeps its own keys when it inherits credentials from the `[imap.*]` block in scope.
+
 ## `WORLD_AS_OF`: bounding the mailbox at an instant
 
 `WORLD_AS_OF` is an environment variable carrying an ISO-8601 timestamp with a timezone offset (e.g. `2026-07-12T17:07:00+10:00`). When set, nothing dated after that instant leaves courier, so a session replayed against the mailbox later sees the same world it saw the first time.

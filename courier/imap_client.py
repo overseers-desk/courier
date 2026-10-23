@@ -32,7 +32,7 @@ from imapclient.exceptions import (  # type: ignore[import-untyped]
 from imapclient.imapclient import _literal  # type: ignore[import-untyped]
 
 from courier import world_bound
-from courier.config import ImapBlock
+from courier.config import ImapBlock, tls_context
 from courier.errors import (
     FolderNotFound,
     MessageNotFound,
@@ -372,36 +372,66 @@ class ImapClient:
     def connect(self) -> None:
         """Connect to IMAP server.
 
+        ``use_ssl = true`` is implicit TLS. ``use_ssl = false`` connects
+        plain and upgrades with STARTTLS when the server offers it
+        (RFC 3501 section 6.2.1); without STARTTLS the login is refused
+        unless the block sets ``insecure_plaintext``. The TLS context
+        comes from :func:`courier.config.tls_context`: the server's
+        certificate and host name are checked unless the block sets
+        ``insecure_skip_verify``.
+
         Raises:
-            ConnectionError: If connection fails
+            ConnectionError: If connection fails, the login is refused
+                for want of TLS (the message names ``insecure_plaintext``),
+                or the certificate does not verify.
         """
         try:
+            block = self.block
+            # None leaves imapclient to build ssl.create_default_context()
+            # itself; only the opt-out needs a context of our own.
+            context = (
+                tls_context(insecure_skip_verify=True)
+                if block.insecure_skip_verify
+                else None
+            )
             self.client = imapclient.IMAPClient(
-                self.block.host,
-                port=self.block.port,
-                ssl=self.block.use_ssl,
+                block.host,
+                port=block.port,
+                ssl=block.use_ssl,
+                ssl_context=context,
                 timeout=10,  # 10 second connection timeout
             )
+            if not block.use_ssl:
+                if self.client.has_capability("STARTTLS"):
+                    self.client.starttls(ssl_context=context or tls_context())
+                elif not block.insecure_plaintext:
+                    raise PermanentError(
+                        f"refusing to log in to {block.host}:{block.port} "
+                        "without TLS: use_ssl is false and the server offers "
+                        "no STARTTLS, so the credentials would go out in clear "
+                        "text. Set use_ssl = true, or set insecure_plaintext = "
+                        f"true on {block.label} to allow it."
+                    )
 
             # Use OAuth2 for Gmail if configured
-            if self.block.requires_oauth2:
-                logger.info(f"Using OAuth2 authentication for {self.block.host}")
+            if block.requires_oauth2:
+                logger.info(f"Using OAuth2 authentication for {block.host}")
 
                 # Get fresh access token
-                if not self.block.oauth2:
+                if not block.oauth2:
                     raise ValueError("OAuth2 configuration is required for Gmail")
 
-                access_token, _ = get_access_token(self.block.oauth2)
+                access_token, _ = get_access_token(block.oauth2)
 
                 # Authenticate with XOAUTH2
                 # Use the oauth_login method which properly formats the XOAUTH2 string
-                self.client.oauth2_login(self.block.username, access_token)
+                self.client.oauth2_login(block.username, access_token)
             else:
                 # Standard password authentication
-                if not self.block.password:
+                if not block.password:
                     raise ValueError("Password is required for authentication")
 
-                self.client.login(self.block.username, self.block.password)
+                self.client.login(block.username, block.password)
 
             self.connected = True
             self.last_activity = datetime.now()  # Track connection time

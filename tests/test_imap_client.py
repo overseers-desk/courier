@@ -1,6 +1,7 @@
 """Tests for the IMAP client."""
 
 import json
+import ssl
 from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
@@ -8,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from courier.config import ImapBlock
+from courier.config import ImapBlock, OAuth2Config
 from courier.errors import (
     CourierError,
     FolderNotFound,
@@ -129,7 +130,7 @@ class TestImapClient:
 
             # Verify connection was established with correct parameters
             mock_client_class.assert_called_once_with(
-                "imap.example.com", port=993, ssl=True, timeout=10
+                "imap.example.com", port=993, ssl=True, ssl_context=None, timeout=10
             )
 
             # Verify login was called with correct credentials
@@ -140,6 +141,147 @@ class TestImapClient:
             # Verify client is connected
             assert client.connected is True
             assert client.client is mock_imap_client
+
+    def test_connect_without_ssl_upgrades_with_starttls(self):
+        """use_ssl = false connects plain and upgrades when STARTTLS is offered."""
+        config = ImapBlock(
+            host="imap.example.com",
+            port=143,
+            username="test@example.com",
+            password="password",
+            use_ssl=False,
+        )
+        client = ImapClient(config)
+        server = MagicMock()
+        server.has_capability.return_value = True
+
+        with patch("imapclient.IMAPClient", return_value=server) as mock_client_class:
+            client.connect()
+
+        mock_client_class.assert_called_once_with(
+            "imap.example.com", port=143, ssl=False, ssl_context=None, timeout=10
+        )
+        server.has_capability.assert_called_once_with("STARTTLS")
+        server.starttls.assert_called_once()
+        context = server.starttls.call_args.kwargs["ssl_context"]
+        assert context.check_hostname is True
+        assert context.verify_mode == ssl.CERT_REQUIRED
+        # Upgraded before the password went out.
+        names = [name for name, _args, _kwargs in server.mock_calls]
+        assert names.index("starttls") < names.index("login")
+        server.login.assert_called_once_with("test@example.com", "password")
+        assert client.connected is True
+
+    @pytest.mark.parametrize(
+        "credentials",
+        [
+            {"password": "password"},
+            {
+                "oauth2": OAuth2Config(
+                    client_id="id", client_secret="secret", refresh_token="rt"
+                )
+            },
+        ],
+    )
+    def test_connect_without_ssl_or_starttls_refuses_the_login(self, credentials):
+        """No TLS at all: the login is refused, naming the key that allows it."""
+        config = ImapBlock(
+            host="imap.gmail.com",
+            port=143,
+            username="test@example.com",
+            use_ssl=False,
+            **credentials,
+        )
+        client = ImapClient(config)
+        server = MagicMock()
+        server.has_capability.return_value = False
+
+        with (
+            patch("imapclient.IMAPClient", return_value=server),
+            patch("courier.imap_client.get_access_token", return_value=("tok", None)),
+        ):
+            with pytest.raises(ConnectionError, match="insecure_plaintext"):
+                client.connect()
+
+        server.starttls.assert_not_called()
+        server.login.assert_not_called()
+        server.oauth2_login.assert_not_called()
+        assert client.connected is False
+
+    def test_insecure_plaintext_allows_the_login_without_tls(self):
+        config = ImapBlock(
+            host="imap.example.com",
+            port=143,
+            username="test@example.com",
+            password="password",
+            use_ssl=False,
+            insecure_plaintext=True,
+        )
+        client = ImapClient(config)
+        server = MagicMock()
+        server.has_capability.return_value = False
+
+        with patch("imapclient.IMAPClient", return_value=server):
+            client.connect()
+
+        server.starttls.assert_not_called()
+        server.login.assert_called_once_with("test@example.com", "password")
+        assert client.connected is True
+
+    def test_insecure_plaintext_still_upgrades_when_offered(self):
+        config = ImapBlock(
+            host="imap.example.com",
+            port=143,
+            username="test@example.com",
+            password="password",
+            use_ssl=False,
+            insecure_plaintext=True,
+        )
+        client = ImapClient(config)
+        server = MagicMock()
+        server.has_capability.return_value = True
+
+        with patch("imapclient.IMAPClient", return_value=server):
+            client.connect()
+
+        server.starttls.assert_called_once()
+
+    def test_insecure_skip_verify_passes_an_unchecked_context(self):
+        config = ImapBlock(
+            host="imap.example.com",
+            port=993,
+            username="test@example.com",
+            password="password",
+            use_ssl=True,
+            insecure_skip_verify=True,
+        )
+        client = ImapClient(config)
+
+        with patch("imapclient.IMAPClient") as mock_client_class:
+            client.connect()
+
+        context = mock_client_class.call_args.kwargs["ssl_context"]
+        assert context.check_hostname is False
+        assert context.verify_mode == ssl.CERT_NONE
+
+    def test_insecure_skip_verify_applies_to_starttls(self):
+        config = ImapBlock(
+            host="imap.example.com",
+            port=143,
+            username="test@example.com",
+            password="password",
+            use_ssl=False,
+            insecure_skip_verify=True,
+        )
+        client = ImapClient(config)
+        server = MagicMock()
+        server.has_capability.return_value = True
+
+        with patch("imapclient.IMAPClient", return_value=server):
+            client.connect()
+
+        context = server.starttls.call_args.kwargs["ssl_context"]
+        assert context.verify_mode == ssl.CERT_NONE
 
     def test_connect_failure(self):
         """Test connection failure."""
