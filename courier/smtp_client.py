@@ -96,6 +96,11 @@ def _attach_file(container: MIMEMultipart, path: str) -> None:
     are line-safe; a UTF-8 ``text/*`` file whose only fault is line length
     goes out quoted-printable. Everything else is base64.
 
+    A file name of printable ASCII goes out as plain ``filename="..."``,
+    which every client reads. Any other name goes out in RFC 2231 form,
+    ``filename*=utf-8''...``, which also percent-encodes a control
+    character such as a line break that would otherwise end the header.
+
     Args:
         container: Outer ``multipart/mixed`` message to attach into.
         path: Filesystem path to the file.
@@ -140,10 +145,11 @@ def _attach_file(container: MIMEMultipart, path: str) -> None:
     else:
         part.set_payload(payload)
         encoders.encode_base64(part)
+    plain_name = filename.isascii() and filename.isprintable()
     part.add_header(
         "Content-Disposition",
         "attachment",
-        filename=("utf-8", "", filename),
+        filename=filename if plain_name else ("utf-8", "", filename),
     )
     container.attach(part)
 

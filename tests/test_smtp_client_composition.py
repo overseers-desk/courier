@@ -485,6 +485,39 @@ class TestCreateReplyMime:
         raw = mime_message.as_string()
         assert "filename*=utf-8''" in raw
 
+    @pytest.mark.parametrize(
+        "name, on_wire",
+        [
+            ("report.pdf", b'filename="report.pdf"'),
+            ('Q3 "final".pdf', b'filename="Q3 \\"final\\".pdf"'),
+        ],
+    )
+    def test_attachment_ascii_filename_goes_out_plain(
+        self, tmp_path: Path, name: str, on_wire: bytes
+    ):
+        """Clients without RFC 2231 support show a filename*= part unnamed."""
+        f = tmp_path / name
+        f.write_bytes(b"%PDF-1.4\n")
+
+        wire, part = _wire_attachment(f)
+
+        assert on_wire in wire
+        assert b"filename*" not in wire
+        assert part.get_filename() == name
+
+    def test_attachment_name_with_a_control_character_keeps_rfc2231_form(
+        self, tmp_path: Path
+    ):
+        """A line break in a plain filename="..." would end the header."""
+        name = "a\nBcc: x@y.org.pdf"
+        f = tmp_path / name
+        f.write_bytes(b"%PDF-1.4\n")
+
+        wire, part = _wire_attachment(f)
+
+        assert b"filename*=utf-8''a%0ABcc%3A%20x%40y.org.pdf" in wire
+        assert part.get_filename() == name
+
     def test_attached_email_goes_out_7bit_not_base64(self, tmp_path: Path):
         """RFC 2046 §5.2.1 forbids base64 on message/rfc822; Outlook shows it raw."""
         eml = tmp_path / "forwarded.eml"
