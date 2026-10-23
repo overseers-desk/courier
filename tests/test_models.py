@@ -651,9 +651,9 @@ def test_forwarded_text_message_is_an_eml_attachment(tmp_path):
 
 
 def test_forwarded_message_without_subject_or_body_is_still_listed():
-    """A forwarded message with no Subject is named forwarded.eml, and
-    one forwarded by an outer message with no text of its own leaves
-    the outer body empty rather than taking its place."""
+    """A forwarded message with no Subject is named forwarded.eml. When
+    the outer message has no text of its own, its body stays empty
+    instead of taking the forwarded message's text."""
     inner = _headed(b"From: orig@example.com", body=b"inner only\r\n")
     raw = (
         b"From: a@example.com\r\n"

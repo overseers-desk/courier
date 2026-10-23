@@ -221,7 +221,8 @@ def _address_list(message: Message, name: str) -> List["EmailAddress"]:
     display name is decoded once the list is split. A field the message
     carries twice contributes the addresses of every occurrence. A
     value that parser cannot read at all falls back to
-    :func:`email.utils.getaddresses`, which gives up on the one value.
+    :func:`email.utils.getaddresses`, which returns no address for a
+    value it cannot parse, so only that value's addresses are lost.
 
     Args:
         message: The parsed message.
@@ -611,8 +612,9 @@ class Email:
             winning, unless its disposition is ``attachment`` or it
             carries a filename; ``inline`` alone marks a part for
             display (RFC 2183 section 2.1). Every other leaf is an
-            attachment when it is marked as one, named, or neither text
-            nor multipart.
+            attachment when it is marked as one, named, neither text
+            nor multipart, or the whole single-part message, so a bare
+            ``text/calendar`` message is still listed.
             """
             content_type = part.get_content_type()
             if content_type == "message/rfc822":
@@ -693,9 +695,9 @@ class Email:
         if not self.attachments:
             return html_str
 
-        # A cid: URL is the Content-ID percent-encoded (RFC 2392), and a
-        # Content-ID, being a msg-id, compares case-insensitively, so
-        # both sides are matched decoded and in lower case.
+        # A cid: URL is the Content-ID percent-encoded (RFC 2392), and
+        # senders write the same ID in differing letter case, so both
+        # sides are matched decoded and in lower case.
         cid_map = {}
         for att in self.attachments:
             if att.content_id and att.content:
