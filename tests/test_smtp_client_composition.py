@@ -1089,3 +1089,32 @@ def test_reply_to_a_parent_without_references_carries_its_in_reply_to(
         original_email=parent,
     )
     assert reply["References"] == expected
+
+
+def test_reply_all_keeps_a_quoted_comma_name_as_one_recipient():
+    """Reply-all to a parent whose To holds a display name quoted around
+    a comma sends to that one address and the next, each quoted back
+    as RFC 5322 requires, not to the halves of the name."""
+    raw = (
+        b"From: Sender <sender@example.com>\r\n"
+        b'To: "Doe, Jane" <d@x.com>, Me <me@example.com>\r\n'
+        b'Cc: "Roe, Rick" <r@x.com>\r\n'
+        b"Subject: s\r\n"
+        b"Message-ID: <p@example.com>\r\n"
+        b"\r\n"
+        b"body\r\n"
+    )
+    parent = Email.from_message(email.message_from_bytes(raw))
+    reply = create_mime(
+        original_email=parent,
+        from_addr=EmailAddress(name="Me", address="me@example.com"),
+        body="thanks",
+        reply_all=True,
+    )
+    assert reply["To"] == 'Sender <sender@example.com>, "Doe, Jane" <d@x.com>'
+    assert reply["Cc"] == '"Roe, Rick" <r@x.com>'
+    assert [a for _, a in email.utils.getaddresses([reply["To"], reply["Cc"]])] == [
+        "sender@example.com",
+        "d@x.com",
+        "r@x.com",
+    ]

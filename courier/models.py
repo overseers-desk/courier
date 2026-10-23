@@ -11,8 +11,9 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from email.errors import HeaderParseError
 from email.header import Header, decode_header
+from email.headerregistry import Address, HeaderRegistry
 from email.message import Message
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,10 @@ def sanitize_and_save(content: bytes | str, save_path: str, mode: str = "wb") ->
 
 
 _FOLD = re.compile(r"\r?\n(?=[ \t])")
+
+# The RFC 5322 header parser; its address headers split a list into
+# mailboxes with the display names decoded.
+_HEADERS = HeaderRegistry()
 
 # One msg-id of RFC 5322 section 3.6.4: the angle brackets and what they
 # enclose. Comments, obsolete phrases and folding between identifiers
@@ -130,6 +135,47 @@ def decode_mime_header(header_value: Union[str, Header, None]) -> str:
     return "".join(decoded_parts)
 
 
+def _address_list(message: Message, name: str) -> List["EmailAddress"]:
+    """Return every address an address field of *message* names.
+
+    Each occurrence of the field is read by the RFC 5322 address-list
+    parser of :mod:`email.headerregistry`, so a quoted display name
+    keeps its commas, a group yields its members and an empty group
+    none, a comment is left out (RFC 5322 section 3.4), and an encoded
+    display name is decoded once the list is split. A field the message
+    carries twice contributes the addresses of every occurrence. A
+    value that parser cannot read at all falls back to
+    :func:`email.utils.getaddresses`, which gives up on the one value.
+
+    Args:
+        message: The parsed message.
+        name: The field name, such as ``"To"``.
+
+    Returns:
+        The addresses in field order; those with no addr-spec are left
+        out, so an empty or unparsable field contributes nothing.
+    """
+    found: List[EmailAddress] = []
+    for value in message.get_all(name, []):
+        raw = _raw_header(value)
+        try:
+            addresses: Tuple[Address, ...] = getattr(
+                _HEADERS(name, raw), "addresses", ()
+            )
+            pairs = [(a.display_name, a.addr_spec) for a in addresses]
+        except Exception:
+            pairs = [
+                (decode_mime_header(display), address)
+                for display, address in email.utils.getaddresses([raw])
+            ]
+        found.extend(
+            EmailAddress(name=display, address=address)
+            for display, address in pairs
+            if address
+        )
+    return found
+
+
 @dataclass
 class EmailAddress:
     """Email address representation."""
@@ -141,24 +187,22 @@ class EmailAddress:
     def parse(cls, address_str: str) -> "EmailAddress":
         """Parse email address string.
 
+        The string holds one address, as a command-line argument or a
+        From field does: a quoted display name keeps its commas and an
+        encoded one is decoded (RFC 5322 section 3.4). A string the
+        parser cannot read is kept whole as the address, so the caller's
+        own check can name it.
+
         Args:
             address_str: Email address string (e.g., "John Doe <john@example.com>")
 
         Returns:
             EmailAddress object
         """
-        # For the special case of just an email address without brackets
-        if "@" in address_str and "<" not in address_str:
+        name, address = email.utils.parseaddr(_FOLD.sub("", address_str))
+        if not address:
             return cls(name="", address=address_str.strip())
-
-        # Extract name and address with angle brackets
-        match = re.match(r'"?([^"<]*)"?\s*<([^>]*)>', address_str.strip())
-        if match:
-            name, address = match.groups()
-            return cls(name=name.strip(), address=address.strip())
-
-        # Fallback: treat the whole string as an address
-        return cls(name="", address=address_str.strip())
+        return cls(name=decode_mime_header(name), address=address)
 
     def __str__(self) -> str:
         """Return RFC 5322-compliant address.
@@ -422,13 +466,6 @@ class Email:
         """
         # Parse headers
         subject = decode_mime_header(message.get("Subject", ""))
-        from_str = decode_mime_header(message.get("From", ""))
-        # An address field a message carries twice contributes the
-        # addresses of every occurrence.
-        to_str, cc_str, bcc_str, reply_to_str = (
-            ", ".join(decode_mime_header(v) for v in message.get_all(name, []))
-            for name in ("To", "Cc", "Bcc", "Reply-To")
-        )
         date_str = _raw_header(message.get("Date"))
         raw_message_id = message.get("Message-ID", "")
         found_ids = message_ids(raw_message_id)
@@ -441,27 +478,12 @@ class Email:
         references = message_ids(message.get("References"))
 
         # Parse addresses
-        from_ = EmailAddress.parse(from_str)
-        to = [
-            EmailAddress.parse(addr.strip())
-            for addr in to_str.split(",")
-            if addr.strip()
-        ]
-        cc = [
-            EmailAddress.parse(addr.strip())
-            for addr in cc_str.split(",")
-            if addr.strip()
-        ]
-        bcc = [
-            EmailAddress.parse(addr.strip())
-            for addr in bcc_str.split(",")
-            if addr.strip()
-        ]
-        reply_to = [
-            EmailAddress.parse(addr.strip())
-            for addr in reply_to_str.split(",")
-            if addr.strip()
-        ]
+        senders = _address_list(message, "From")
+        from_ = senders[0] if senders else EmailAddress(name="", address="")
+        to = _address_list(message, "To")
+        cc = _address_list(message, "Cc")
+        bcc = _address_list(message, "Bcc")
+        reply_to = _address_list(message, "Reply-To")
 
         # Parse date
         date = None

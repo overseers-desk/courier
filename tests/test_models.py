@@ -412,3 +412,46 @@ def test_broken_encoded_words_do_not_raise():
     )
     assert parsed.subject == "caf�"
     assert parsed.to[0].address == "b@example.com"
+
+
+def test_quoted_comma_in_display_name_is_one_address():
+    """A display name quoted around a comma is one address, and the
+    address after it is the second (RFC 5322 section 3.4)."""
+    parsed = _parse(
+        _headed(
+            b"From: a@example.com",
+            b'To: "Doe, Jane" <d@x.com>, b@y.com',
+            b"Subject: s",
+        )
+    )
+    assert [(a.name, a.address) for a in parsed.to] == [
+        ("Doe, Jane", "d@x.com"),
+        ("", "b@y.com"),
+    ]
+
+
+def test_groups_comments_and_encoded_names_parse_in_every_address_field():
+    """Groups yield their members and an empty group none, a comment is
+    not part of the address, and an encoded display name is decoded
+    after the list is split, in To, Cc, Bcc and Reply-To alike."""
+    parsed = _parse(
+        _headed(
+            b'From: "Last, First" <f@example.com>',
+            b'To: Team: a@x.com, "B, Bea" <b@x.com>;, undisclosed-recipients:;',
+            b"Cc: c@x.com (Carol Comma, Esq.)",
+            b"Bcc: =?utf-8?q?Doe=2C_Jos=C3=A9?= <jose@x.com>",
+            b"Reply-To: Support: =?utf-8?b?Q2Fmw6k=?= <r@x.com>;",
+            b"Subject: s",
+        )
+    )
+    assert (parsed.from_.name, parsed.from_.address) == (
+        "Last, First",
+        "f@example.com",
+    )
+    assert [(a.name, a.address) for a in parsed.to] == [
+        ("", "a@x.com"),
+        ("B, Bea", "b@x.com"),
+    ]
+    assert [(a.name, a.address) for a in parsed.cc] == [("", "c@x.com")]
+    assert [(a.name, a.address) for a in parsed.bcc] == [("Doe, José", "jose@x.com")]
+    assert [(a.name, a.address) for a in parsed.reply_to] == [("Café", "r@x.com")]
