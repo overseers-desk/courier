@@ -1,6 +1,7 @@
 """SMTP client implementation for sending emails."""
 
 import email.utils
+import html
 import logging
 import mimetypes
 import os
@@ -147,6 +148,26 @@ def _attach_file(container: MIMEMultipart, path: str) -> None:
     container.attach(part)
 
 
+def _attribution(original_email: Email) -> str:
+    """Write the line that introduces the quoted original, as plain text.
+
+    The sender appears as a reader sees it: the decoded display name and
+    the address in angle brackets, or the bare address when there is no
+    name. ``str(EmailAddress)`` is the header form, which RFC 2047-encodes
+    a non-ASCII name, and encoded words do not belong in body text.
+
+    Args:
+        original_email: The email being replied to.
+
+    Returns:
+        ``On <date>, <name> <address> wrote:``.
+    """
+    sender = original_email.from_
+    who = f"{sender.name} <{sender.address}>" if sender.name else sender.address
+    when = email.utils.format_datetime(original_email.date or datetime.now())
+    return f"On {when}, {who} wrote:"
+
+
 def _quoted_reply_text(body: str, original_email: Email) -> str:
     """Append a quoted copy of the original plain-text body to *body*."""
     if not original_email.content.text:
@@ -154,19 +175,12 @@ def _quoted_reply_text(body: str, original_email: Email) -> str:
     quoted_original = "\n".join(
         f"> {line}" for line in original_email.content.text.split("\n")
     )
-    attribution = (
-        f"On {email.utils.format_datetime(original_email.date or datetime.now())}, "
-        f"{original_email.from_} wrote:"
-    )
-    return f"{body}\n\n{attribution}\n{quoted_original}"
+    return f"{body}\n\n{_attribution(original_email)}\n{quoted_original}"
 
 
 def _quoted_reply_html(html_body: str, original_email: Email) -> str:
     """Append a quoted copy of the original HTML (or escaped plain text) to *html_body*."""
-    attribution = (
-        f"On {email.utils.format_datetime(original_email.date or datetime.now())}, "
-        f"{original_email.from_} wrote:"
-    )
+    attribution = html.escape(_attribution(original_email))
     if original_email.content.html:
         quoted_block = original_email.content.html
     else:

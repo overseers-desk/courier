@@ -844,6 +844,58 @@ def test_each_message_gets_a_new_message_id():
     )
 
 
+# The reply's attribution line names the sender as a reader sees it.
+_ORIGINAL_DATE = datetime(2026, 1, 15, 10, 0, 0, tzinfo=timezone.utc)
+_ON = f"On {email.utils.format_datetime(_ORIGINAL_DATE)},"
+
+
+def _reply_bodies(sender: EmailAddress, html_body: str = "") -> Tuple[str, str]:
+    """Reply to a message from *sender*; return the plain and HTML bodies."""
+    original = Email(
+        message_id="<o@x.org>",
+        subject="s",
+        from_=sender,
+        to=[EmailAddress(name="", address="me@example.com")],
+        date=_ORIGINAL_DATE,
+        content=EmailContent(text="hi"),
+        headers={},
+    )
+    reply = create_mime(
+        original_email=original,
+        from_addr=EmailAddress(name="", address="me@example.com"),
+        body="ok",
+        html_body=html_body,
+    )
+    bodies = {"text/plain": "", "text/html": ""}
+    for part in email.message_from_bytes(reply.as_bytes()).walk():
+        if part.get_content_type() in bodies:
+            bodies[part.get_content_type()] = part.get_payload(decode=True).decode()
+    return bodies["text/plain"], bodies["text/html"]
+
+
+def test_reply_attribution_writes_a_non_ascii_name_decoded():
+    """RFC 2047 encoded words belong in headers, never in body text."""
+    plain, _ = _reply_bodies(EmailAddress(name="张三", address="z@x.org"))
+
+    assert f"{_ON} 张三 <z@x.org> wrote:" in plain
+    assert "=?" not in plain
+
+
+def test_reply_attribution_without_a_name_is_the_address():
+    plain, _ = _reply_bodies(EmailAddress(name="", address="z@x.org"))
+
+    assert f"{_ON} z@x.org wrote:" in plain
+
+
+def test_html_reply_attribution_escapes_name_and_address():
+    _, html = _reply_bodies(
+        EmailAddress(name="张三 & <Co>", address="z@x.org"), html_body="<p>ok</p>"
+    )
+
+    assert f"<p>{_ON} 张三 &amp; &lt;Co&gt; &lt;z@x.org&gt; wrote:</p>" in html
+    assert "=?" not in html
+
+
 class TestParseMessageDate:
     """Tests for ``parse_message_date``."""
 
