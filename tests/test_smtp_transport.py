@@ -9,6 +9,7 @@ itself runs through smtplib's own code over a scripted socket.
 import email
 import re
 import smtplib
+import ssl
 from email.message import EmailMessage
 from typing import Optional
 
@@ -19,6 +20,7 @@ from courier.errors import CourierError, PermanentError, TransientError
 from courier.models import EmailAddress
 from courier.smtp_client import create_mime
 from courier.smtp_transport import (
+    open_session,
     parse_ses_token,
     rewrite_message_id,
     send,
@@ -94,17 +96,20 @@ class _FakeSMTPBase(smtplib.SMTP):
     accepted with 250. ``features`` are the EHLO extensions the fake
     server lists, ``mail_reply`` is its answer to MAIL FROM, and
     ``final_reply`` is the reply line it sends after the message.
-    ``body`` is the message as the server received it.
+    ``body`` is the message as the server received it. ``context`` is
+    the SSL context handed to the constructor, which only the port 465
+    (SMTP_SSL) path passes.
     """
 
-    features = frozenset({"8bitmime"})
+    features = frozenset({"8bitmime", "starttls"})
     mail_reply: tuple = (250, b"OK")
     final_reply: Optional[bytes] = b"250 OK\r\n"
 
-    def __init__(self, host: str, port: int, timeout=None):
+    def __init__(self, host: str, port: int, timeout=None, context=None):
         super().__init__(local_hostname="fake.test", timeout=timeout)
         self.host = host
         self.port = port
+        self.context = context
         self.calls: list = []
         self.refuse: dict = {}
         self.server = _FakeSocket(timeout, self.final_reply)
@@ -115,7 +120,7 @@ class _FakeSMTPBase(smtplib.SMTP):
         return (250, b"OK")
 
     def starttls(self, *args, **kwargs) -> tuple:
-        self.calls.append(("starttls",))
+        self.calls.append(("starttls", kwargs.get("context")))
         return (220, b"OK")
 
     def login(self, user: str, password: str, **kwargs) -> tuple:
@@ -232,30 +237,137 @@ class TestSendBccHandling:
         assert b"secret@hidden.com" not in fcc_bytes
 
 
+def _factory(captured: list, features=None, final_reply=None):
+    """A transport factory that records each fake session in ``captured``."""
+
+    def factory(host, port, timeout=None, context=None):
+        f = _FakeSMTPBase(host, port, timeout, context)
+        if features is not None:
+            f.features = features
+        if final_reply is not None:
+            f.server.final_reply = final_reply
+        captured.append(f)
+        return f
+
+    return factory
+
+
+def _is_verified(context) -> bool:
+    return (
+        isinstance(context, ssl.SSLContext)
+        and context.check_hostname is True
+        and context.verify_mode == ssl.CERT_REQUIRED
+    )
+
+
 class TestSendStartTLS:
     def test_starttls_invoked_on_587(self):
         smtp = SmtpConfig(host="smtp.example.com", port=587, username="u", password="p")
         captured: list = []
-
-        def factory(host, port, timeout=None):
-            f = _FakeSMTPBase(host, port, timeout)
-            captured.append(f)
-            return f
-
-        send(_build_msg(), smtp, transport=factory)
+        send(_build_msg(), smtp, transport=_factory(captured))
         assert any(c[0] == "starttls" for c in captured[0].calls)
 
-    def test_no_starttls_on_other_ports(self):
+    def test_starttls_runs_on_any_port_when_offered(self):
+        """Port 25 with STARTTLS in EHLO: upgrade, EHLO again, then login."""
+        smtp = SmtpConfig(host="smtp.example.com", port=25, username="u", password="p")
+        captured: list = []
+        send(_build_msg(), smtp, transport=_factory(captured))
+        names = [c[0] for c in captured[0].calls]
+        assert names[:4] == ["ehlo", "starttls", "ehlo", "login"]
+
+    def test_no_starttls_when_not_offered_and_no_credentials(self):
         smtp = SmtpConfig(host="smtp.example.com", port=25)
         captured: list = []
+        send(_build_msg(), smtp, transport=_factory(captured, frozenset({"8bitmime"})))
+        names = [c[0] for c in captured[0].calls]
+        assert "starttls" not in names and "login" not in names
+        assert "mail" in names
 
-        def factory(host, port, timeout=None):
-            f = _FakeSMTPBase(host, port, timeout)
-            captured.append(f)
+
+class TestSessionSecurity:
+    """TLS verifies the server, and a password never goes out in clear text."""
+
+    def test_starttls_uses_a_verified_context(self):
+        captured: list = []
+        send(_build_msg(), SmtpConfig(host="h", port=587), transport=_factory(captured))
+        (context,) = [c[1] for c in captured[0].calls if c[0] == "starttls"]
+        assert _is_verified(context)
+
+    def test_smtps_on_465_gets_a_verified_context_and_no_starttls(self):
+        captured: list = []
+        send(_build_msg(), SmtpConfig(host="h", port=465), transport=_factory(captured))
+        assert _is_verified(captured[0].context)
+        assert not any(c[0] == "starttls" for c in captured[0].calls)
+
+    def test_login_refused_without_tls(self):
+        smtp = SmtpConfig(host="smtp.example.com", port=25, username="u", password="p")
+        captured: list = []
+        with pytest.raises(PermanentError, match="insecure_plaintext"):
+            send(_build_msg(), smtp, transport=_factory(captured, frozenset()))
+        names = [c[0] for c in captured[0].calls]
+        assert "login" not in names and "mail" not in names
+
+    def test_login_allowed_with_insecure_plaintext(self):
+        smtp = SmtpConfig(
+            host="smtp.example.com",
+            port=25,
+            username="u",
+            password="p",
+            insecure_plaintext=True,
+        )
+        captured: list = []
+        send(_build_msg(), smtp, transport=_factory(captured, frozenset()))
+        names = [c[0] for c in captured[0].calls]
+        assert "starttls" not in names
+        assert ("login", "u", "p") in captured[0].calls
+
+    def test_insecure_plaintext_still_upgrades_when_offered(self):
+        smtp = SmtpConfig(
+            host="h", port=25, username="u", password="p", insecure_plaintext=True
+        )
+        captured: list = []
+        send(_build_msg(), smtp, transport=_factory(captured))
+        assert any(c[0] == "starttls" for c in captured[0].calls)
+
+    def test_insecure_skip_verify_keeps_tls_but_drops_the_check(self):
+        smtp = SmtpConfig(host="h", port=587, insecure_skip_verify=True)
+        captured: list = []
+        send(_build_msg(), smtp, transport=_factory(captured))
+        (context,) = [c[1] for c in captured[0].calls if c[0] == "starttls"]
+        assert isinstance(context, ssl.SSLContext)
+        assert context.check_hostname is False
+        assert context.verify_mode == ssl.CERT_NONE
+
+    def test_insecure_skip_verify_applies_to_465(self):
+        smtp = SmtpConfig(host="h", port=465, insecure_skip_verify=True)
+        captured: list = []
+        send(_build_msg(), smtp, transport=_factory(captured))
+        assert captured[0].context.verify_mode == ssl.CERT_NONE
+
+    def test_open_session_returns_the_logged_in_connection(self):
+        """The one opener the probe and dry run share: EHLO, TLS, login, and
+        the connection comes back open for the caller to quit or use."""
+        smtp = SmtpConfig(host="h", port=587, username="u", password="p")
+        captured: list = []
+        conn = open_session(smtp, transport=_factory(captured))
+        assert conn is captured[0]
+        assert [c[0] for c in conn.calls] == ["ehlo", "starttls", "ehlo", "login"]
+        assert conn.timeout == 10
+
+    def test_open_session_closes_the_socket_on_refusal(self):
+        smtp = SmtpConfig(host="h", port=25, username="u", password="p")
+        captured: list = []
+        closed: list = []
+        factory = _factory(captured, frozenset())
+
+        def closing(host, port, timeout=None, context=None):
+            f = factory(host, port, timeout, context)
+            f.close = lambda: closed.append(True)  # type: ignore[method-assign]
             return f
 
-        send(_build_msg(), smtp, transport=factory)
-        assert not any(c[0] == "starttls" for c in captured[0].calls)
+        with pytest.raises(PermanentError):
+            open_session(smtp, transport=closing)
+        assert closed == [True]
 
 
 class TestSesRewriteRoundTrip:

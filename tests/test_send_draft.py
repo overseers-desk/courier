@@ -11,6 +11,7 @@ Mocks the IMAP client and SMTP transport so no network is required. Verifies:
 
 import json
 import re
+import ssl
 from email.message import EmailMessage
 from unittest.mock import MagicMock, patch
 
@@ -251,20 +252,24 @@ class TestSendDraftFromParsing:
 
 class TestSendDraftDryRun:
     def test_dry_run_does_not_invoke_transport(self):
+        """The dry run opens the session through the transport's opener,
+        with its timeout and TLS, then quits before MAIL FROM."""
         cfg = _cfg_with_identities()
         client = _client_with_draft()
-        # Fake SMTP factory used by --dry-run
         smtp_calls: list = []
 
         class _FakeSMTP:
-            def __init__(self, host, port):
-                smtp_calls.append(("init", host, port))
+            def __init__(self, host, port, timeout=None):
+                smtp_calls.append(("init", host, port, timeout))
 
             def ehlo(self):
                 smtp_calls.append(("ehlo",))
 
-            def starttls(self):
-                smtp_calls.append(("starttls",))
+            def has_extn(self, name):
+                return name == "starttls"
+
+            def starttls(self, context=None):
+                smtp_calls.append(("starttls", context))
 
             def login(self, u, p):
                 smtp_calls.append(("login", u, p))
@@ -275,10 +280,7 @@ class TestSendDraftDryRun:
         with (
             patch("courier.__main__.load_config", return_value=cfg),
             patch("courier.__main__._make_client", return_value=client),
-            patch(
-                "courier.smtp_transport._pick_default_transport",
-                return_value=_FakeSMTP,
-            ),
+            patch("smtplib.SMTP", _FakeSMTP),
             patch("courier.smtp_transport.send") as send_mock,
         ):
             result = runner.invoke(
@@ -291,9 +293,28 @@ class TestSendDraftDryRun:
         assert out["identity"] == "alice@x.com"
         send_mock.assert_not_called()  # transport.send never called
         client.delete_email.assert_not_called()
-        # Sanity: connect/ehlo/starttls/login/quit were exercised
-        assert any(c[0] == "ehlo" for c in smtp_calls)
-        assert any(c[0] == "login" for c in smtp_calls)
+        names = [c[0] for c in smtp_calls]
+        assert names == ["init", "ehlo", "starttls", "ehlo", "login", "quit"]
+        assert smtp_calls[0][3] == 10
+        assert smtp_calls[2][1].verify_mode == ssl.CERT_REQUIRED
+
+    def test_dry_run_reports_a_refused_plaintext_login(self):
+        cfg = _cfg_with_identities()
+        client = _client_with_draft()
+        conn = MagicMock()
+        conn.has_extn.return_value = False
+        with (
+            patch("courier.__main__.load_config", return_value=cfg),
+            patch("courier.__main__._make_client", return_value=client),
+            patch("smtplib.SMTP", return_value=conn),
+        ):
+            result = runner.invoke(
+                app,
+                ["send-draft", "-f", "Drafts", "-u", "42", "--dry-run"],
+            )
+        assert result.exit_code == 1
+        assert "insecure_plaintext" in result.stderr
+        conn.login.assert_not_called()
 
 
 class TestSendDraftBcc:

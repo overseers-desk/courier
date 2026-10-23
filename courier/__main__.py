@@ -1761,7 +1761,7 @@ def status() -> None:
     """Show one row per configured server with the result of a connection probe.
 
     Each [imap.NAME] block gets a full IMAP login attempt; each
-    [smtp.NAME] block gets an EHLO + STARTTLS handshake plus an
+    [smtp.NAME] block gets an EHLO + TLS handshake plus an
     authenticated login when the block carries credentials. Probes
     run sequentially in config order: a self-hosted server behind a
     fail2ban-style lockout would see N near-simultaneous auth events
@@ -1874,33 +1874,30 @@ def _probe_imap(block: ImapBlock) -> str:
 
 
 def _probe_smtp(smtp: SmtpConfig) -> str:
-    """EHLO + STARTTLS + optional login on an SMTP block.
+    """Open and quit an SMTP session on an SMTP block.
 
-    A template SMTP block (no own creds) is probed only as far as
-    EHLO+STARTTLS, since authentication only happens at send time
-    against an inheriting [imap.NAME] block. The status row notes
-    that case as ``ok (template, no auth)`` so the operator knows
-    auth was not exercised.
+    Goes through ``smtp_transport.open_session``, so the probe connects
+    under the send timeout and the send's TLS rules: EHLO, STARTTLS when
+    offered (implicit TLS on 465), and login when the block has
+    credentials. A template SMTP block (no own creds) is probed only as
+    far as EHLO+STARTTLS, since authentication only happens at send time
+    against an inheriting [imap.NAME] block. The status row notes that
+    case as ``ok (template, no auth)`` so the operator knows auth was
+    not exercised.
     """
     import smtplib
     import socket
 
-    factory = smtplib.SMTP_SSL if smtp.port == 465 else smtplib.SMTP
+    from courier.smtp_transport import open_session
+
     try:
-        conn = factory(smtp.host, smtp.port, timeout=10)
-    except (smtplib.SMTPException, socket.error, OSError) as exc:
+        conn = open_session(smtp)
+    except (CourierError, smtplib.SMTPException, socket.error, OSError) as exc:
         return f"FAIL: {exc}"
     try:
-        conn.ehlo()
-        if smtp.port in (587, 2587):
-            conn.starttls()
-            conn.ehlo()
         if smtp.username and smtp.password:
-            conn.login(smtp.username, smtp.password)
             return "ok"
         return "ok (template, no auth)"
-    except (smtplib.SMTPException, socket.error, OSError) as exc:
-        return f"FAIL: {exc}"
     finally:
         try:
             conn.quit()
@@ -3532,7 +3529,7 @@ def send_draft(
         resolve_identity_for_send,
     )
     from courier.smtp_client import make_message_id
-    from courier.smtp_transport import _pick_default_transport
+    from courier.smtp_transport import open_session
 
     cfg = _load_cfg_or_exit()
     name = _resolve_single_imap_name()
@@ -3626,16 +3623,8 @@ def send_draft(
         )
 
         if dry_run:
-            factory = _pick_default_transport(smtp_resolved.port)
             try:
-                conn = factory(smtp_resolved.host, smtp_resolved.port)
-                conn.ehlo()
-                if smtp_resolved.port in (587, 2587):
-                    conn.starttls()
-                    conn.ehlo()
-                if smtp_resolved.username and smtp_resolved.password:
-                    conn.login(smtp_resolved.username, smtp_resolved.password)
-                conn.quit()
+                open_session(smtp_resolved).quit()
             except Exception as exc:
                 typer.echo(f"Error: dry-run failed: {exc}", err=True)
                 raise typer.Exit(1)

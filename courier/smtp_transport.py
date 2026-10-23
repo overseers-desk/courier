@@ -21,8 +21,8 @@ from email.parser import BytesParser
 from email.utils import getaddresses, parseaddr
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from courier.config import SmtpConfig
-from courier.errors import CourierError
+from courier.config import SmtpConfig, tls_context
+from courier.errors import CourierError, PermanentError
 
 # Socket timeout for each read or write in the SMTP session, in seconds:
 # connecting, each command and its reply, and each chunk of the message
@@ -161,9 +161,77 @@ def rewrite_message_id(raw_bytes: bytes, new_msgid: str) -> bytes:
     return msg.as_bytes()
 
 
-def _pick_default_transport(port: int) -> Callable[..., smtplib.SMTP]:
-    """Choose smtplib.SMTP_SSL for port 465, smtplib.SMTP otherwise."""
-    return smtplib.SMTP_SSL if port == 465 else smtplib.SMTP
+def open_session(
+    smtp_cfg: SmtpConfig,
+    transport: Optional[Callable[..., smtplib.SMTP]] = None,
+) -> smtplib.SMTP:
+    """Open an SMTP session: connect, EHLO, TLS, and log in.
+
+    The one opener behind ``send``, the ``courier status`` probe and
+    send-draft ``--dry-run``, so all three connect under ``_SMTP_TIMEOUT``
+    and the same TLS rules. Port 465 is implicit TLS (``smtplib.SMTP_SSL``).
+    Any other port connects plain and upgrades with STARTTLS whenever EHLO
+    offers it, then sends EHLO again (RFC 3207 section 4.2). Every TLS
+    context comes from :func:`courier.config.tls_context`: the server's
+    certificate and host name are checked unless the block sets
+    ``insecure_skip_verify``. A block with credentials logs in only over
+    TLS, unless it sets ``insecure_plaintext``; a block without them
+    (a template, or an open relay) proceeds either way.
+
+    Args:
+        smtp_cfg: Resolved SmtpConfig with credentials filled in.
+        transport: Optional ``smtplib.SMTP``-shaped factory, called as
+            ``transport(host, port, timeout=...)`` and, on port 465, with
+            ``context=`` as well. Defaults to ``smtplib.SMTP_SSL`` on 465
+            and ``smtplib.SMTP`` otherwise. Tests inject a fake here.
+
+    Returns:
+        The open connection, past EHLO, TLS and login, ready for MAIL
+        FROM or QUIT.
+
+    Raises:
+        PermanentError: The block has credentials, the session has no
+            TLS, and ``insecure_plaintext`` is not set; the socket is
+            closed and no login was attempted.
+        smtplib.SMTPException: On any SMTP-layer failure, STARTTLS and
+            login included; the socket is closed.
+        OSError: The connection could not be made, or the TLS handshake
+            failed (``ssl.SSLCertVerificationError`` on a certificate
+            that does not verify); the socket is closed.
+    """
+    context = tls_context(smtp_cfg.insecure_skip_verify)
+    host, port = smtp_cfg.host, smtp_cfg.port
+    implicit_tls = port == 465
+    if transport is not None:
+        if implicit_tls:
+            smtp = transport(host, port, timeout=_SMTP_TIMEOUT, context=context)
+        else:
+            smtp = transport(host, port, timeout=_SMTP_TIMEOUT)
+    elif implicit_tls:
+        smtp = smtplib.SMTP_SSL(host, port, timeout=_SMTP_TIMEOUT, context=context)
+    else:
+        smtp = smtplib.SMTP(host, port, timeout=_SMTP_TIMEOUT)
+    try:
+        smtp.ehlo()
+        encrypted = implicit_tls
+        if not encrypted and smtp.has_extn("starttls"):
+            smtp.starttls(context=context)
+            smtp.ehlo()
+            encrypted = True
+        if smtp_cfg.username and smtp_cfg.password:
+            if not encrypted and not smtp_cfg.insecure_plaintext:
+                raise PermanentError(
+                    f"refusing to log in to {host}:{port} without TLS: the "
+                    "server offers no STARTTLS, so the password would go out "
+                    "in clear text. Use port 465 or a port with STARTTLS, or "
+                    "set insecure_plaintext = true on the [smtp] block to "
+                    "allow it."
+                )
+            smtp.login(smtp_cfg.username, smtp_cfg.password)
+    except BaseException:
+        smtp.close()
+        raise
+    return smtp
 
 
 def _transmit_data(
@@ -244,9 +312,8 @@ def send(
             Must already have From, at least one of To/Cc/Bcc, and Message-ID.
         smtp_cfg: Resolved SmtpConfig with credentials filled in (the caller
             is expected to use ``identity.resolve_smtp_for_identity`` first).
-        transport: Optional ``smtplib.SMTP``-shaped factory. Defaults to
-            ``smtplib.SMTP_SSL`` for port 465 and ``smtplib.SMTP``
-            otherwise. Tests inject a fake here.
+        transport: Optional ``smtplib.SMTP``-shaped factory, passed to
+            :func:`open_session`. Tests inject a fake here.
 
     Returns:
         ``(fcc_bytes, result)`` where ``result`` is a dict with the keys
@@ -259,6 +326,9 @@ def send(
     Raises:
         ValueError: On a malformed MIME message (no From address, no
             recipients).
+        PermanentError: The block has credentials but the session has no
+            TLS and ``insecure_plaintext`` is not set; see
+            :func:`open_session`. Nothing was transmitted.
         smtplib.SMTPSenderRefused: The server answered MAIL FROM with a
             non-2xx reply, carried with its code and text. Raised before
             RCPT TO and DATA, so nothing was transmitted.
@@ -278,8 +348,6 @@ def send(
             ``PermanentError`` (the send may have succeeded).
         smtplib.SMTPException: On any other SMTP-layer failure.
     """
-    factory = transport or _pick_default_transport(smtp_cfg.port)
-
     from_addr = _from_address(mime_msg)
     if not from_addr:
         from_header = mime_msg.get("From")
@@ -300,14 +368,8 @@ def send(
     )
     on_wire = _to_crlf(_strip_bcc(raw))
 
-    smtp = factory(smtp_cfg.host, smtp_cfg.port, timeout=_SMTP_TIMEOUT)
+    smtp = open_session(smtp_cfg, transport)
     try:
-        smtp.ehlo()
-        if smtp_cfg.port in (587, 2587):
-            smtp.starttls()
-            smtp.ehlo()
-        if smtp_cfg.username and smtp_cfg.password:
-            smtp.login(smtp_cfg.username, smtp_cfg.password)
         mail_options: List[str] = []
         if not on_wire.isascii():
             if not smtp.has_extn("8bitmime"):

@@ -6,6 +6,7 @@ short table. Probes are mocked here so the tests do not require live
 servers.
 """
 
+import ssl
 from unittest.mock import MagicMock, patch
 
 from courier.__main__ import (
@@ -69,7 +70,9 @@ class TestProbeSmtp:
 
     A block with credentials authenticates ('ok'); a credential-less
     template stops at EHLO+STARTTLS ('ok (template, no auth)'); a
-    block whose server is unreachable surfaces 'FAIL: ...'.
+    block whose server is unreachable surfaces 'FAIL: ...'. Every
+    probe goes through the transport's session opener, so it carries
+    the session timeout and the TLS rules of a real send.
     """
 
     def test_creds_block_authenticates(self):
@@ -77,6 +80,7 @@ class TestProbeSmtp:
             conn = MagicMock()
             mock_cls.return_value = conn
             assert _probe_smtp(_smtp_block(username="u", password="p")) == "ok"
+            mock_cls.assert_called_once_with("smtp.out.example.com", 587, timeout=10)
             conn.starttls.assert_called_once()
             conn.login.assert_called_once_with("u", "p")
             conn.quit.assert_called_once()
@@ -90,12 +94,24 @@ class TestProbeSmtp:
             conn.login.assert_not_called()
 
     def test_smtps_uses_ssl_factory(self):
-        """Port 465 picks SMTP_SSL; STARTTLS is not issued."""
+        """Port 465 picks SMTP_SSL with a verified context; no STARTTLS."""
         with patch("smtplib.SMTP_SSL") as mock_cls:
             conn = MagicMock()
             mock_cls.return_value = conn
             assert _probe_smtp(_smtp_block(port=465)) == "ok (template, no auth)"
             conn.starttls.assert_not_called()
+            kwargs = mock_cls.call_args.kwargs
+            assert kwargs["timeout"] == 10
+            assert kwargs["context"].verify_mode == ssl.CERT_REQUIRED
+
+    def test_login_without_tls_fails_by_key(self):
+        with patch("smtplib.SMTP") as mock_cls:
+            conn = MagicMock()
+            conn.has_extn.return_value = False
+            mock_cls.return_value = conn
+            verdict = _probe_smtp(_smtp_block(username="u", password="p"))
+            assert verdict.startswith("FAIL") and "insecure_plaintext" in verdict
+            conn.login.assert_not_called()
 
     def test_connect_failure_surfaces(self):
         with patch("smtplib.SMTP", side_effect=OSError("network unreachable")):
