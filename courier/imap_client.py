@@ -255,6 +255,26 @@ def _message_id_search(
     return criteria, charset
 
 
+def _has_attribute(flags: Sequence[bytes], attribute: bytes) -> bool:
+    """Report whether a LIST response's attributes include *attribute*.
+
+    Mailbox attributes such as ``\\Noselect`` and the SPECIAL-USE roles
+    are atoms, which RFC 3501 (sections 7.2.2 and 9) makes
+    case-insensitive, so a server sending ``\\NOSELECT`` or ``\\SENT``
+    means the same as one sending ``\\Noselect`` or ``\\Sent``.
+
+    Args:
+        flags: The attributes of one LIST response, as imapclient
+            returns them.
+        attribute: The attribute sought, e.g. ``b"\\\\Noselect"``.
+
+    Returns:
+        True when some attribute equals *attribute* ignoring case.
+    """
+    wanted = attribute.lower()
+    return any(flag.lower() == wanted for flag in flags)
+
+
 class ImapClient:
     """IMAP client for interacting with email servers."""
 
@@ -294,7 +314,7 @@ class ImapClient:
         )
         self.local_cache = local_cache
         self.client: Optional[imapclient.IMAPClient] = None
-        self.folder_cache: Dict[str, List[str]] = {}
+        self.folder_cache: Dict[str, Sequence[bytes]] = {}
         self.connected = False
         self.count_cache: Dict[str, Dict[str, Tuple[int, datetime]]] = (
             {}
@@ -565,7 +585,9 @@ class ImapClient:
 
             # Skip non-selectable folders (e.g. Gmail's '[Gmail]' parent has
             # \Noselect; SELECTing it returns NONEXISTENT).
-            if b"\\Noselect" in flags or b"\\NonExistent" in flags:
+            if _has_attribute(flags, b"\\Noselect") or _has_attribute(
+                flags, b"\\NonExistent"
+            ):
                 continue
 
             # Filter folders if allowed_folders is set
@@ -622,7 +644,7 @@ class ImapClient:
         if not self.folder_cache:
             self.list_folders()
         for name, flags in self.folder_cache.items():
-            if role in flags:
+            if _has_attribute(flags, role):
                 return name
         return None
 

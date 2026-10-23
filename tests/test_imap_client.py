@@ -394,6 +394,30 @@ class TestImapClient:
             # Verify only allowed folders were cached
             assert set(client.folder_cache.keys()) == {"INBOX", "Sent"}
 
+    def test_list_attributes_match_in_any_letter_case(self, mock_imap_client):
+        """\\NOSELECT and \\NonExistent in any case hide a folder, and a
+        SPECIAL-USE role in any case names its folder (RFC 3501 section 9:
+        atoms are case-insensitive)."""
+        client = ImapClient(
+            ImapBlock(host="imap.example.com", port=993, username="u", password="p")
+        )
+        mock_imap_client.list_folders.return_value = [
+            ((b"\\HasNoChildren",), b"/", "INBOX"),
+            ((b"\\HASCHILDREN", b"\\NOSELECT"), b"/", "[Gmail]"),
+            ((b"\\nonexistent",), b"/", "Gone"),
+            ((b"\\HasNoChildren", b"\\SENT"), b"/", "Sent Items"),
+            ((b"\\HasNoChildren", b"\\all"), b"/", "Archive"),
+        ]
+
+        with patch("imapclient.IMAPClient", return_value=mock_imap_client):
+            client.connect()
+            folders = client.list_folders(refresh=True)
+
+            assert folders == ["INBOX", "Sent Items", "Archive"]
+            assert client.find_special_use_folder(b"\\Sent") == "Sent Items"
+            assert client.find_special_use_folder(b"\\All") == "Archive"
+            assert client.find_special_use_folder(b"\\Trash") is None
+
     def test_select_folder(self, mock_imap_client):
         """Test selecting a folder."""
         config = ImapBlock(
