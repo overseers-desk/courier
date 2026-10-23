@@ -2,17 +2,20 @@
 
 The send() function is exercised through an injected fake SMTP class so that
 no network is required. The fake records the sequence of calls and supplies
-the post-DATA response that drives the SES Message-ID rewrite logic.
+the post-DATA response that drives the SES Message-ID rewrite logic; DATA
+itself runs through smtplib's own code over a scripted socket.
 """
 
 import email
 import re
 import smtplib
 from email.message import EmailMessage
+from typing import Optional
 
 import pytest
 
 from courier.config import SmtpConfig
+from courier.errors import CourierError, PermanentError, TransientError
 from courier.models import EmailAddress
 from courier.smtp_client import create_mime
 from courier.smtp_transport import (
@@ -24,74 +27,139 @@ from courier.smtp_transport import (
 SES_TOKEN = "010f01a8e6c8e7d2-9eaeb4d6-fcb5-4b04-bc89-3d8e36f5db7e-000000"
 
 
-class _FakeSMTPBase:
-    """Records every smtplib call. Subclasses override `data` to set the response.
+class _FakeSocket:
+    """The server end of the socket a real smtplib session runs DATA over.
 
-    ``refuse`` maps an RCPT TO address to the ``(code, reply)`` the fake
-    answers with; addresses not listed are accepted with 250. ``body``
-    keeps the exact bytes handed to ``data()`` for wire assertions.
-    ``features`` are the EHLO extensions the fake server lists, and
-    ``mail_reply`` is its answer to MAIL FROM.
+    send() drives DATA with smtplib's own ``docmd``, ``send`` and
+    ``getreply``, so this socket stands where the network would: the
+    library's reading of replies, and its handling of a read that times
+    out, run for real. It answers DATA with ``data_reply`` and the
+    end-of-data dot with ``final_reply``; a ``final_reply`` of ``None``
+    makes that read time out, and ``b""`` closes the connection instead.
+    ``upload_error``, when set, is raised by the first write of the
+    message. ``log`` records each ``sendall`` and ``readline`` with the
+    timeout in effect when it ran; ``wire`` keeps every byte sent after
+    the 354.
+    """
+
+    def __init__(self, timeout, final_reply: Optional[bytes]):
+        self.timeout = timeout
+        self.data_reply = b"354 End data with <CR><LF>.<CR><LF>\r\n"
+        self.final_reply = final_reply
+        self.upload_error: Optional[BaseException] = None
+        self.wire = b""
+        self.log: list = []
+        self._replies: list = []
+        self._in_data = False
+
+    def settimeout(self, value) -> None:
+        self.timeout = value
+
+    def sendall(self, data) -> None:
+        data = bytes(data)
+        self.log.append(("sendall", len(data), self.timeout))
+        if not self._in_data:
+            assert data == b"data\r\n", data
+            self._replies.append(self.data_reply)
+            self._in_data = self.data_reply.startswith(b"354")
+            return
+        if self.upload_error is not None:
+            raise self.upload_error
+        self.wire += data
+        if self.wire.endswith(b"\r\n.\r\n"):
+            self._in_data = False
+            self._replies.append(self.final_reply)
+
+    def makefile(self, mode: str) -> "_FakeSocket":
+        return self
+
+    def readline(self, limit: int = -1) -> bytes:
+        self.log.append(("readline", self.timeout))
+        reply = self._replies.pop(0)
+        if reply is None:
+            raise TimeoutError("timed out")
+        return reply
+
+    def close(self) -> None:
+        pass
+
+
+class _FakeSMTPBase(smtplib.SMTP):
+    """A real smtplib session over a :class:`_FakeSocket`; records every call.
+
+    EHLO, STARTTLS, login, MAIL, RCPT and QUIT are answered here without
+    touching the socket; DATA runs through smtplib's own code over
+    ``server``. ``refuse`` maps an RCPT TO address to the
+    ``(code, reply)`` the fake answers with; addresses not listed are
+    accepted with 250. ``features`` are the EHLO extensions the fake
+    server lists, ``mail_reply`` is its answer to MAIL FROM, and
+    ``final_reply`` is the reply line it sends after the message.
+    ``body`` is the message as the server received it.
     """
 
     features = frozenset({"8bitmime"})
     mail_reply: tuple = (250, b"OK")
+    final_reply: Optional[bytes] = b"250 OK\r\n"
 
     def __init__(self, host: str, port: int, timeout=None):
+        super().__init__(local_hostname="fake.test", timeout=timeout)
         self.host = host
         self.port = port
-        self.timeout = timeout
         self.calls: list = []
         self.refuse: dict = {}
+        self.server = _FakeSocket(timeout, self.final_reply)
+        self.sock = self.server  # type: ignore[assignment]
 
-    def ehlo(self) -> None:
+    def ehlo(self, name: str = "") -> tuple:
         self.calls.append(("ehlo",))
+        return (250, b"OK")
 
-    def starttls(self) -> None:
+    def starttls(self, *args, **kwargs) -> tuple:
         self.calls.append(("starttls",))
+        return (220, b"OK")
 
-    def login(self, username: str, password: str) -> None:
-        self.calls.append(("login", username, password))
+    def login(self, user: str, password: str, **kwargs) -> tuple:
+        self.calls.append(("login", user, password))
+        return (235, b"OK")
 
-    def has_extn(self, name: str) -> bool:
-        return name.lower() in self.features
+    def has_extn(self, opt: str) -> bool:
+        return opt.lower() in self.features
 
-    def mail(self, addr: str, options=()) -> tuple:
-        self.calls.append(("mail", addr, tuple(options)))
+    def mail(self, sender: str, options=()) -> tuple:
+        self.calls.append(("mail", sender, tuple(options)))
         return self.mail_reply
 
-    def rcpt(self, addr: str) -> tuple:
-        self.calls.append(("rcpt", addr))
-        if addr in self.refuse:
-            return self.refuse[addr]
+    def rcpt(self, recip: str, options=()) -> tuple:
+        self.calls.append(("rcpt", recip))
+        if recip in self.refuse:
+            return self.refuse[recip]
         return (250, b"OK")
 
-    def data(self, body: bytes) -> tuple:
-        self.body = body  # exact wire bytes, for line-ending assertions
-        self.calls.append(("data", len(body)))
-        return (250, b"OK")
+    def putcmd(self, cmd: str, args: str = "") -> None:
+        self.calls.append((cmd.lower(),))
+        super().putcmd(cmd, args)
 
-    def quit(self) -> None:
+    def quit(self) -> tuple:
         self.calls.append(("quit",))
+        return (221, b"Bye")
+
+    @property
+    def body(self) -> bytes:
+        """The message as received: end-of-data dot dropped, dot-stuffing undone."""
+        assert self.server.wire.endswith(b"\r\n.\r\n")
+        return re.sub(rb"(?m)^\.\.", b".", self.server.wire[:-3])
 
 
 class _FakeSESSMTP(_FakeSMTPBase):
     """Returns a SES-shaped post-DATA token."""
 
-    def data(self, body: bytes) -> tuple:
-        super().data(body)
-        return (250, f"Ok {SES_TOKEN}".encode())
+    final_reply = f"250 Ok {SES_TOKEN}\r\n".encode()
 
 
 class _FakeGmailSMTP(_FakeSMTPBase):
     """Returns the Gmail-shaped post-DATA reply."""
 
-    def data(self, body: bytes) -> tuple:
-        super().data(body)
-        return (
-            250,
-            b"2.0.0 OK 1234567890 ab123456abc12345abc12.100 - gsmtp",
-        )
+    final_reply = b"250 2.0.0 OK 1234567890 ab123456abc12345abc12.100 - gsmtp\r\n"
 
 
 def _build_msg() -> EmailMessage:
@@ -442,6 +510,122 @@ class TestSocketTimeout:
 
         send(_build_msg(), SmtpConfig(host="h"), transport=factory)
         assert captured[0].timeout == 10
+
+
+class TestDataReplyWait:
+    """Only the wait for the reply to the message gets RFC 5321's ten minutes.
+
+    Section 4.5.3.2.6 gives a server 10 minutes to answer the end-of-data
+    dot, which one that scans the message before replying may use; every
+    other read and write, each chunk of the upload included, keeps the
+    10-second socket timeout. A reply that never comes leaves the outcome
+    unknown, since the server may have queued the message.
+    """
+
+    @staticmethod
+    def _capture(captured: list, final_reply: Optional[bytes] = b"250 OK\r\n"):
+        def factory(host, port, timeout=None):
+            f = _FakeSMTPBase(host, port, timeout)
+            f.server.final_reply = final_reply
+            captured.append(f)
+            return f
+
+        return factory
+
+    @staticmethod
+    def _large_msg() -> EmailMessage:
+        msg = _build_msg()
+        msg.set_content(("y" * 70 + "\n") * 4000)
+        return msg
+
+    def test_only_the_reply_to_the_message_waits_600_seconds(self):
+        captured: list = []
+        send(self._large_msg(), SmtpConfig(host="h"), transport=self._capture(captured))
+
+        log = captured[0].server.log
+        reads = [entry for entry in log if entry[0] == "readline"]
+        writes = [entry for entry in log if entry[0] == "sendall"]
+        # The 354 is read under the session timeout; only the last read,
+        # the reply to the end-of-data dot, waits 600 seconds.
+        assert reads == [("readline", 10), ("readline", 600)]
+        # The DATA command plus an upload of several writes, each bounded
+        # on its own by the session timeout.
+        assert len(writes) > 2
+        assert all(timeout == 10 for _op, _size, timeout in writes)
+        # QUIT and anything after it are back under the session timeout.
+        assert captured[0].server.timeout == 10
+
+    def test_line_starting_with_a_dot_is_stuffed_on_the_wire(self):
+        msg = _build_msg()
+        msg.set_content(".hidden line\n..two dots\n")
+        captured: list = []
+        send(msg, SmtpConfig(host="h"), transport=self._capture(captured))
+
+        assert b"\r\n..hidden line\r\n...two dots\r\n" in captured[0].server.wire
+        assert b"\r\n.hidden line\r\n..two dots\r\n" in captured[0].body
+
+    def test_data_command_refused_raises_before_the_upload(self):
+        captured: list = []
+
+        def factory(host, port, timeout=None):
+            f = _FakeSMTPBase(host, port, timeout)
+            f.server.data_reply = b"554 5.5.1 no valid recipients\r\n"
+            captured.append(f)
+            return f
+
+        with pytest.raises(smtplib.SMTPDataError) as info:
+            send(_build_msg(), SmtpConfig(host="h"), transport=factory)
+        assert info.value.smtp_code == 554
+        assert captured[0].server.wire == b""
+
+    def test_message_refused_after_upload_raises_data_error(self):
+        captured: list = []
+        factory = self._capture(captured, final_reply=b"554 5.7.1 rejected\r\n")
+        with pytest.raises(smtplib.SMTPDataError) as info:
+            send(_build_msg(), SmtpConfig(host="h"), transport=factory)
+        assert info.value.smtp_code == 554
+
+    @pytest.mark.parametrize(
+        "final_reply, cause",
+        [(None, "no reply came within 600 seconds"), (b"", "connection failed")],
+        ids=["timeout", "connection-closed"],
+    )
+    def test_lost_reply_leaves_the_outcome_unknown(self, final_reply, cause):
+        captured: list = []
+        factory = self._capture(captured, final_reply=final_reply)
+        with pytest.raises(CourierError) as info:
+            send(_build_msg(), SmtpConfig(host="smtp.example.com"), transport=factory)
+
+        # Neither retryable (a retry could deliver a duplicate) nor
+        # permanent (the server may have accepted the message).
+        assert not isinstance(info.value, (TransientError, PermanentError))
+        text = str(info.value)
+        assert text.startswith("send outcome unknown: ")
+        assert "smtp.example.com" in text
+        assert cause in text
+        assert "may have accepted it" in text
+        assert "Check the Sent folder before re-sending" in text
+        assert "<original@local>" in text
+        # The whole message, end-of-data dot included, went out first.
+        assert captured[0].server.wire.endswith(b"\r\n.\r\n")
+        assert captured[0].server.log[-1] == ("readline", 600)
+
+    def test_upload_failure_is_a_plain_send_failure(self):
+        """The server never saw the end-of-data dot, so it cannot have
+        accepted the message: an ordinary failure, not an unknown outcome."""
+        captured: list = []
+
+        def factory(host, port, timeout=None):
+            f = _FakeSMTPBase(host, port, timeout)
+            f.server.upload_error = TimeoutError("timed out")
+            captured.append(f)
+            return f
+
+        with pytest.raises(smtplib.SMTPServerDisconnected):
+            send(_build_msg(), SmtpConfig(host="h"), transport=factory)
+        assert not any(
+            e[0] == "readline" and e[1] == 600 for e in captured[0].server.log
+        )
 
 
 class TestRecipientHeaderParsing:

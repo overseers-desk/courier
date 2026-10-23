@@ -2,9 +2,10 @@
 
 Why hand-driven instead of ``smtplib.SMTP.sendmail``: ``sendmail()`` discards
 the server response after DATA. Some smarthosts (notably AWS SES) carry a
-tracking token in that line (``250 Ok 0102019...``). Driving
-``mail()`` / ``rcpt()`` / ``data()`` ourselves preserves the
-``(code, response)`` tuple from ``data()``.
+tracking token in that line (``250 Ok 0102019...``). Driving MAIL, RCPT
+and DATA ourselves preserves the ``(code, response)`` reply to the
+message, and lets the wait for that reply run under its own, longer
+timeout (see ``_transmit_data``).
 
 This module also implements the SES Message-ID rewrite: SES replaces the
 client-set ``Message-ID`` header in transit with its own
@@ -21,12 +22,25 @@ from email.utils import getaddresses, parseaddr
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from courier.config import SmtpConfig
+from courier.errors import CourierError
 
-# Socket timeout for the SMTP session, in seconds. Matches the IMAP
-# side's connect timeout (imap_client passes timeout=10) so a stalled
-# server cannot hang a send forever; a stall after the server queued
-# the message would otherwise invite the caller to kill and re-send.
+# Socket timeout for each read or write in the SMTP session, in seconds:
+# connecting, each command and its reply, and each chunk of the message
+# upload. Matches the IMAP side's connect timeout (imap_client passes
+# timeout=10) so a stalled server cannot hang a send forever.
 _SMTP_TIMEOUT = 10
+
+# Wait for the reply to the end-of-data dot, in seconds. RFC 5321
+# section 4.5.3.2.6 gives the server 10 minutes here, which one that
+# scans the message before replying may use; giving up sooner reports
+# a failure for a message the server then queues, and a re-send
+# delivers a duplicate.
+_DATA_REPLY_TIMEOUT = 600
+
+# Bytes per write of the message upload. A single sendall() of the whole
+# message runs under one deadline, so a large attachment on a slow link
+# would fail at 10 seconds; in chunks, each write gets its own.
+_DATA_CHUNK = 64 * 1024
 
 # Post-DATA "Ok <token>" line from SES. Real tokens look like
 # "010f01a8e6c8e7d2-9eaeb4d6-fcb5-4b04-bc89-3d8e36f5db7e-000000": hex chunks
@@ -151,6 +165,74 @@ def _pick_default_transport(port: int) -> Callable[..., smtplib.SMTP]:
     return smtplib.SMTP_SSL if port == 465 else smtplib.SMTP
 
 
+def _transmit_data(
+    smtp: smtplib.SMTP, on_wire: bytes, host: str, msgid: str
+) -> Tuple[int, bytes]:
+    """Run the DATA exchange and return the server's reply to the message.
+
+    Driven with smtplib's ``docmd``, ``send`` and ``getreply`` rather than
+    ``data()``, which uploads the message and reads the reply in one call
+    under one timeout. Here the DATA command, its 354 reply and each
+    ``_DATA_CHUNK`` of the upload keep the session's ``_SMTP_TIMEOUT``;
+    only the wait for the reply to the end-of-data dot gets
+    ``_DATA_REPLY_TIMEOUT``.
+
+    Args:
+        smtp: Session with MAIL FROM and at least one RCPT TO accepted.
+        on_wire: The message as it goes on the wire, CRLF line endings.
+        host: The server's host name, for the outcome-unknown message.
+        msgid: The message's Message-ID, for the outcome-unknown message.
+
+    Returns:
+        ``(code, reply)``: the server's reply to the end-of-data dot.
+
+    Raises:
+        smtplib.SMTPDataError: The server answered DATA with other than
+            354. Raised before the upload, so nothing was transmitted.
+        smtplib.SMTPServerDisconnected: The connection failed before the
+            whole message was sent. The server never saw the end-of-data
+            dot, so it cannot have accepted the message.
+        CourierError: The whole message was sent but its reply never
+            came: none within ``_DATA_REPLY_TIMEOUT``, or the connection
+            failed first. The outcome is unknown, so this is neither a
+            ``TransientError``, which invites a retry and so a duplicate,
+            nor a ``PermanentError``, which claims the send failed.
+    """
+    code, reply = smtp.docmd("data")
+    if code != 354:
+        raise smtplib.SMTPDataError(code, reply)
+    # RFC 5321 section 4.5.2: a line starting with "." gets another.
+    payload = re.sub(rb"(?m)^\.", b"..", on_wire)
+    if not payload.endswith(b"\r\n"):
+        payload += b"\r\n"
+    payload += b".\r\n"
+    for start in range(0, len(payload), _DATA_CHUNK):
+        smtp.send(payload[start : start + _DATA_CHUNK])
+
+    sock = smtp.sock
+    assert sock is not None  # smtp.send() raises once the socket is gone
+    sock.settimeout(_DATA_REPLY_TIMEOUT)
+    try:
+        code, reply = smtp.getreply()
+    except OSError as exc:
+        # getreply() reports a read that timed out as SMTPServerDisconnected
+        # (an OSError), with the TimeoutError as its context.
+        if isinstance(exc, TimeoutError) or isinstance(exc.__context__, TimeoutError):
+            why = f"no reply came within {_DATA_REPLY_TIMEOUT} seconds"
+        else:
+            why = f"the connection failed before the reply came ({exc})"
+        named = f" (Message-ID {msgid})" if msgid else ""
+        raise CourierError(
+            f"send outcome unknown: the whole message was sent to {host}, but "
+            f"{why}, so the server may have accepted it. Check the Sent folder "
+            f"before re-sending{named}: courier filed no copy there, but a "
+            "server that files its own sent mail, as Gmail does, holds one if "
+            "it accepted the message."
+        ) from exc
+    sock.settimeout(_SMTP_TIMEOUT)
+    return code, reply
+
+
 def send(
     mime_msg: Any,
     smtp_cfg: SmtpConfig,
@@ -186,6 +268,16 @@ def send(
         smtplib.SMTPNotSupportedError: The message carries 8-bit content
             and the server does not list 8BITMIME (RFC 6152). Raised
             before MAIL FROM, so nothing was transmitted.
+        smtplib.SMTPDataError: The server refused DATA, or answered the
+            message with a non-2xx reply.
+        CourierError: The whole message was sent but its reply never
+            came: none within 600 seconds (RFC 5321 section 4.5.3.2.6),
+            or the connection failed first. The outcome is unknown: the
+            server may have accepted the message, so the message says to
+            check the Sent folder before re-sending. A plain
+            ``CourierError``, neither ``TransientError`` (a retry could
+            deliver a duplicate) nor ``PermanentError`` (the send may
+            have succeeded).
         smtplib.SMTPException: On any other SMTP-layer failure.
     """
     factory = transport or _pick_default_transport(smtp_cfg.port)
@@ -256,7 +348,7 @@ def send(
             raise smtplib.SMTPRecipientsRefused(
                 {r["addr"]: (r["code"], r["reply"]) for r in refused}
             )
-        code, response = smtp.data(on_wire)
+        code, response = _transmit_data(smtp, on_wire, smtp_cfg.host, msgid)
         if not (200 <= code < 300):
             raise smtplib.SMTPDataError(code, response)
     finally:
