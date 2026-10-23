@@ -473,3 +473,31 @@ def test_zone_less_and_minus_zero_dates_are_utc():
         _headed(b"From: a@example.com", b"Date: Mon, 2 Mar 2026 10:00:00 +0200")
     )
     assert parsed.date == datetime(2026, 3, 2, 8, 0, tzinfo=timezone.utc)
+
+
+def test_cid_references_match_case_insensitively_and_percent_decoded():
+    """A cid: reference matches its part's Content-ID in any letter case,
+    percent-decoded, and quoted or unquoted (RFC 2392)."""
+    att = EmailAttachment(
+        filename="a.png",
+        content_type="image/png",
+        size=4,
+        content_id="<Image One@Example.com>",
+        content=b"PNG!",
+    )
+    parsed = _email(
+        content=EmailContent(
+            html=(
+                '<img SRC="CID:image%20one@example.com">'
+                "<img src='cid:Image%20One@example.COM'>"
+                "<img src=cid:image%20one@EXAMPLE.com alt=x>"
+                '<img src="cid:other@example.com">'
+            )
+        ),
+        attachments=[att],
+    )
+    rendered = parsed.html_with_embedded_images()
+    assert rendered.count("data:image/png;base64,UE5HIQ==") == 3
+    assert "cid:image" not in rendered.lower().replace("cid:other", "")
+    assert '<img src="cid:other@example.com">' in rendered
+    assert "<img src=data:image/png;base64,UE5HIQ== alt=x>" in rendered

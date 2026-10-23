@@ -14,6 +14,7 @@ from email.header import Header, decode_header
 from email.headerregistry import Address, HeaderRegistry
 from email.message import Message
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from urllib.parse import unquote
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,10 @@ _FOLD = re.compile(r"\r?\n(?=[ \t])")
 # The RFC 5322 header parser; its address headers split a list into
 # mailboxes with the display names decoded.
 _HEADERS = HeaderRegistry()
+
+# An HTML src attribute holding a cid: URL (RFC 2392), quoted with
+# either quote or bare, the scheme in any letter case.
+_CID_SRC = re.compile(r"""src\s*=\s*(["']?)cid:([^"'\s>]+)\1""", re.IGNORECASE)
 
 # One msg-id of RFC 5322 section 3.6.4: the angle brackets and what they
 # enclose. Comments, obsolete phrases and folding between identifiers
@@ -638,18 +643,21 @@ class Email:
         if not self.attachments:
             return html_str
 
+        # A cid: URL is the Content-ID percent-encoded (RFC 2392), and a
+        # Content-ID, being a msg-id, compares case-insensitively, so
+        # both sides are matched decoded and in lower case.
         cid_map = {}
         for att in self.attachments:
             if att.content_id and att.content:
                 cid = att.content_id.strip("<>")
-                cid_map[cid] = att
+                cid_map[cid.lower()] = att
 
         if not cid_map:
             return html_str
 
         def replace_cid(match: re.Match[str]) -> str:
             quote = match.group(1)
-            cid = match.group(2)
+            cid = unquote(match.group(2)).lower()
             if cid in cid_map:
                 att = cid_map[cid]
                 assert att.content is not None  # guarded by cid_map construction
@@ -659,7 +667,7 @@ class Email:
             logger.warning(f"Inline image CID not found: {cid}")
             return str(match.group(0))
 
-        return re.sub(r'src=(["\'])cid:([^"\']+)\1', replace_cid, html_str)
+        return _CID_SRC.sub(replace_cid, html_str)
 
     def attachment_summaries(self) -> List[Dict[str, Any]]:
         """Return metadata for each attachment.
