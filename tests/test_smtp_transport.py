@@ -30,10 +30,12 @@ class _FakeSMTPBase:
     ``refuse`` maps an RCPT TO address to the ``(code, reply)`` the fake
     answers with; addresses not listed are accepted with 250. ``body``
     keeps the exact bytes handed to ``data()`` for wire assertions.
-    ``features`` are the EHLO extensions the fake server lists.
+    ``features`` are the EHLO extensions the fake server lists, and
+    ``mail_reply`` is its answer to MAIL FROM.
     """
 
     features = frozenset({"8bitmime"})
+    mail_reply: tuple = (250, b"OK")
 
     def __init__(self, host: str, port: int, timeout=None):
         self.host = host
@@ -56,7 +58,7 @@ class _FakeSMTPBase:
 
     def mail(self, addr: str, options=()) -> tuple:
         self.calls.append(("mail", addr, tuple(options)))
-        return (250, b"OK")
+        return self.mail_reply
 
     def rcpt(self, addr: str) -> tuple:
         self.calls.append(("rcpt", addr))
@@ -275,6 +277,35 @@ class TestRefusedRecipients:
             send(_build_msg(), SmtpConfig(host="h"), transport=factory)
         # Nothing was transmitted: the failure fired before DATA.
         assert not any(c[0] == "data" for c in captured[0].calls)
+
+
+class TestSenderRefused:
+    """A non-2xx reply to MAIL FROM ends the send (RFC 5321 section 4.1.1.2).
+
+    smtplib's ``mail()`` returns the reply instead of raising it, so an
+    unchecked refusal would carry on to RCPT TO, and the user would see
+    the server's ``503 need MAIL`` in place of its real reason.
+    """
+
+    @pytest.mark.parametrize(
+        "reply", [(550, b"5.7.1 sender blocked"), (451, b"4.3.0 try later")]
+    )
+    def test_refused_sender_raises_before_rcpt_and_data(self, reply):
+        captured: list = []
+
+        def factory(host, port, timeout=None):
+            f = _FakeSMTPBase(host, port, timeout)
+            f.mail_reply = reply
+            captured.append(f)
+            return f
+
+        with pytest.raises(smtplib.SMTPSenderRefused) as info:
+            send(_build_msg(), SmtpConfig(host="h"), transport=factory)
+        assert info.value.smtp_code == reply[0]
+        assert info.value.smtp_error == reply[1]
+        assert info.value.sender == "sender@example.com"
+        # Nothing was transmitted: the failure fired before RCPT TO.
+        assert not any(c[0] in ("rcpt", "data") for c in captured[0].calls)
 
 
 class TestEightBitDeclaration:

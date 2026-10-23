@@ -171,6 +171,9 @@ def send(
 
     Raises:
         ValueError: On a malformed MIME message (no From, no recipients).
+        smtplib.SMTPSenderRefused: The server answered MAIL FROM with a
+            non-2xx reply, carried with its code and text. Raised before
+            RCPT TO and DATA, so nothing was transmitted.
         smtplib.SMTPRecipientsRefused: Every recipient was refused at
             RCPT TO. Raised before DATA, so nothing was transmitted.
         smtplib.SMTPNotSupportedError: The message carries 8-bit content
@@ -211,7 +214,11 @@ def send(
                     "carries 8-bit content"
                 )
             mail_options.append("BODY=8BITMIME")
-        smtp.mail(from_addr, mail_options)
+        # mail() returns the reply rather than raising it; a refusal
+        # unchecked here would surface as RCPT's "503 need MAIL" instead.
+        code, reply = smtp.mail(from_addr, mail_options)
+        if not (200 <= code < 300):
+            raise smtplib.SMTPSenderRefused(code, reply, from_addr)
         accepted: List[str] = []
         refused: List[Dict[str, Any]] = []
         for rcpt in rcpts:
