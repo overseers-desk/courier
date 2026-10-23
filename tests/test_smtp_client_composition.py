@@ -896,6 +896,38 @@ def test_html_reply_attribution_escapes_name_and_address():
     assert "=?" not in html
 
 
+@pytest.mark.parametrize(
+    "original, expected",
+    [
+        ("Hello", "Re: Hello"),
+        ("Re: Hello", "Re: Hello"),
+        ("RE: Hello", "RE: Hello"),
+        ("re: Hello", "re: Hello"),
+        ("AW: Hello", "Re: AW: Hello"),
+        ("Re[2]: Hello", "Re: Re[2]: Hello"),
+    ],
+)
+def test_reply_subject_keeps_an_existing_re_prefix_in_any_case(original, expected):
+    """Outlook writes ``RE:``; replying to it must not give ``Re: RE:``."""
+    parent = Email(
+        message_id="<o@x.org>",
+        subject=original,
+        from_=EmailAddress(name="", address="z@x.org"),
+        to=[EmailAddress(name="", address="me@example.com")],
+        date=datetime.now(),
+        content=EmailContent(text="t"),
+        headers={},
+    )
+
+    reply = create_mime(
+        original_email=parent,
+        from_addr=EmailAddress(name="", address="me@example.com"),
+        body="ok",
+    )
+
+    assert reply["Subject"] == expected
+
+
 class TestParseMessageDate:
     """Tests for ``parse_message_date``."""
 

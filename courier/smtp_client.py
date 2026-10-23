@@ -263,7 +263,8 @@ def create_mime(
     When *original_email* is None the function produces a fresh email with the
     given *to* / *subject* / *body*. When it is provided the function produces
     a reply: threading headers (``In-Reply-To``, ``References``) are added, the
-    subject is prefixed with ``"Re: "`` if needed, and the original body is
+    subject is prefixed with ``"Re: "`` unless it already starts with ``Re:``
+    in any letter case, and the original body is
     quoted under an attribution line. The primary recipient list follows
     RFC 5322 §3.6.2: the parent's ``Reply-To`` is used when present, otherwise
     the parent's ``From``. *reply_all* extends recipients to include the
@@ -387,7 +388,8 @@ def create_mime(
     elif is_reply:
         assert original_email is not None
         original_subject = " ".join(original_email.subject.split())
-        if original_subject.startswith("Re:"):
+        # Outlook writes "RE:"; a prefix in any letter case is kept as it is.
+        if original_subject[:3].lower() == "re:":
             msg["Subject"] = original_subject
         else:
             msg["Subject"] = f"Re: {original_subject}"
