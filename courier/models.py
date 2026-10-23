@@ -560,57 +560,41 @@ class Email:
         content = EmailContent()
         attachments: List[EmailAttachment] = []
 
-        # Process the email body
-        if message.is_multipart():
-            # Create a recursive function to handle nested multipart messages
-            def process_part(
-                part: Message,
-                content: EmailContent,
-                attachments: List[EmailAttachment],
-            ) -> None:
-                if part.is_multipart():
-                    # Recursively process each subpart
-                    for subpart in part.get_payload():
-                        if isinstance(subpart, Message):
-                            process_part(subpart, content, attachments)
-                else:
-                    content_type = part.get_content_type()
-                    content_disposition = part.get("Content-Disposition", "")
+        def process_part(part: Message) -> None:
+            """Place one part as body or attachment, walking into multiparts.
 
-                    # Handle attachments (both explicit and inline)
-                    if (
-                        "attachment" in content_disposition
-                        or "inline" in content_disposition
-                        or content_type.startswith("image/")
-                        or content_type.startswith("application/")
-                        or "name=" in part.get("Content-Type", "")
-                    ):
+            A ``text/plain`` or ``text/html`` part is the body, the
+            first of each kind winning, unless its disposition is
+            ``attachment`` or it carries a filename; ``inline`` alone
+            marks a part for display (RFC 2183 section 2.1). Every other
+            leaf is an attachment when it is marked as one, named, or
+            neither text nor multipart.
+            """
+            content_type = part.get_content_type()
+            if part.is_multipart():
+                for subpart in part.get_payload():
+                    if isinstance(subpart, Message):
+                        process_part(subpart)
+                return
+            disposition = part.get_content_disposition()
+            named = part.get_filename() is not None
+            if content_type in ("text/plain", "text/html") and not (
+                disposition == "attachment" or named
+            ):
+                if content_type == "text/plain":
+                    if not content.text:
+                        content.text = _decode_text(part)
+                elif not content.html:
+                    content.html = _decode_text(part)
+            elif (
+                disposition in ("attachment", "inline")
+                or named
+                or not content_type.startswith("text/")
+                or part is message
+            ):
+                attachments.append(EmailAttachment.from_part(part))
 
-                        attachments.append(EmailAttachment.from_part(part))
-                    # Handle text content
-                    elif content_type == "text/plain":
-                        # Only replace existing text if it's empty
-                        if not content.text:
-                            content.text = _decode_text(part)
-                    # Handle HTML content
-                    elif content_type == "text/html":
-                        # Only replace existing HTML if it's empty
-                        if not content.html:
-                            content.html = _decode_text(part)
-
-            # Start processing parts
-            process_part(message, content, attachments)
-        else:
-            # Single part message
-            content_type = message.get_content_type()
-
-            if content_type == "text/plain":
-                content.text = _decode_text(message)
-            elif content_type == "text/html":
-                content.html = _decode_text(message)
-            else:
-                # If not plain text or HTML, treat as attachment
-                attachments.append(EmailAttachment.from_part(message))
+        process_part(message)
 
         return cls(
             message_id=message_id,

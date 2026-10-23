@@ -567,3 +567,41 @@ def test_iso_8859_1_reads_as_windows_1252():
         assert parsed.content.text == "“quoted” – café", label
     parsed = _parse(_text_message(b"text/plain; charset=iso-8859-2", b"\xb3\xf3d\xbc"))
     assert parsed.content.text == "łódź"
+
+
+def test_inline_text_part_without_filename_is_body():
+    """A text part whose Content-Disposition is inline and that carries
+    no filename is the body, not an attachment (RFC 2183 section 2.1);
+    one with a filename or an attachment disposition is an attachment."""
+    raw = (
+        b"From: a@example.com\r\n"
+        b"To: b@example.com\r\n"
+        b"Subject: s\r\n"
+        b'Content-Type: multipart/mixed; boundary="b"\r\n'
+        b"\r\n"
+        b"--b\r\n"
+        b"Content-Type: text/plain; charset=utf-8\r\n"
+        b"Content-Disposition: inline\r\n"
+        b"\r\n"
+        b"the body\r\n"
+        b"--b\r\n"
+        b"Content-Type: text/html; charset=utf-8\r\n"
+        b"Content-Disposition: INLINE\r\n"
+        b"\r\n"
+        b"<p>the body</p>\r\n"
+        b"--b\r\n"
+        b"Content-Type: text/plain; charset=utf-8\r\n"
+        b'Content-Disposition: inline; filename="notes.txt"\r\n'
+        b"\r\n"
+        b"notes\r\n"
+        b"--b\r\n"
+        b"Content-Type: text/plain; charset=utf-8\r\n"
+        b"Content-Disposition: attachment\r\n"
+        b"\r\n"
+        b"unnamed\r\n"
+        b"--b--\r\n"
+    )
+    parsed = _parse(raw)
+    assert parsed.content.text == "the body"
+    assert parsed.content.html == "<p>the body</p>"
+    assert [a.filename for a in parsed.attachments] == ["notes.txt", "attachment.plain"]
