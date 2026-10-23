@@ -210,7 +210,7 @@ class TestModels(unittest.TestCase):
                     filename="a.pdf", content_type="application/pdf", size=3
                 )
             ],
-            in_reply_to="<root@example.com>",
+            in_reply_to=["<root@example.com>"],
             references=["<root@example.com>", "<mid@example.com>"],
         ).to_dict()
 
@@ -226,7 +226,7 @@ class TestModels(unittest.TestCase):
                 }
             ],
         )
-        self.assertEqual(out["in_reply_to"], "<root@example.com>")
+        self.assertEqual(out["in_reply_to"], ["<root@example.com>"])
         self.assertEqual(out["references"], ["<root@example.com>", "<mid@example.com>"])
 
     def test_to_dict_unknown_uid_is_none(self):
@@ -243,7 +243,7 @@ class TestModels(unittest.TestCase):
                     filename="a.pdf", content_type="application/pdf", size=3
                 )
             ],
-            in_reply_to="<root@example.com>",
+            in_reply_to=["<root@example.com>"],
         )
 
         out = original.redact("legal").to_dict()
@@ -255,7 +255,7 @@ class TestModels(unittest.TestCase):
         self.assertEqual(out["body"], "[redacted by rule legal]")
         self.assertEqual(
             (out["uid"], out["folder"], out["message_id"], out["in_reply_to"]),
-            (42, "INBOX", "<m@example.com>", "<root@example.com>"),
+            (42, "INBOX", "<m@example.com>", ["<root@example.com>"]),
         )
         self.assertNotIn("cc", out)
         self.assertNotIn("attachments", out)
@@ -309,3 +309,59 @@ def test_folded_headers_parse_onto_one_line():
     assert parsed.from_.name == "'Example Agency' via Director"
     assert "\n" not in parsed.headers["Subject"]
     assert "\n" not in parsed.headers["From"]
+
+
+def test_threading_fields_hold_each_id_without_comments_or_folding():
+    """Message-ID, In-Reply-To and References keep each <...> identifier
+    on its own, with the comments and folding around them left out
+    (RFC 5322 section 3.6.4)."""
+    raw = (
+        b"From: a@example.com\r\n"
+        b"To: b@example.com\r\n"
+        b"Subject: s\r\n"
+        b"Message-ID: <m@example.com> (sent by Example Mail)\r\n"
+        b"In-Reply-To: <p1@example.com> (first parent)\r\n"
+        b" <p2@example.com>\r\n"
+        b"References: <r1@example.com>\r\n"
+        b"\t<r2@example.com> (old)\r\n"
+        b"\r\n"
+        b"body\r\n"
+    )
+    parsed = Email.from_message(email.message_from_bytes(raw))
+    assert parsed.message_id == "<m@example.com>"
+    assert parsed.in_reply_to == ["<p1@example.com>", "<p2@example.com>"]
+    assert parsed.references == ["<r1@example.com>", "<r2@example.com>"]
+    assert parsed.to_dict()["in_reply_to"] == ["<p1@example.com>", "<p2@example.com>"]
+
+
+def test_in_reply_to_holding_only_a_phrase_names_no_parent():
+    """The obsolete In-Reply-To form with text and no <...> identifier
+    gives no parent, rather than the text as one."""
+    raw = (
+        b"From: a@example.com\r\n"
+        b"To: b@example.com\r\n"
+        b"Subject: s\r\n"
+        b"Message-ID: <m@example.com>\r\n"
+        b"In-Reply-To: Your message of Mon, 1 Jan 2001\r\n"
+        b"\r\n"
+        b"body\r\n"
+    )
+    parsed = Email.from_message(email.message_from_bytes(raw))
+    assert parsed.in_reply_to == []
+    assert "in_reply_to" not in parsed.to_dict()
+
+
+def test_message_id_without_angle_brackets_is_kept_unfolded():
+    """A Message-ID that lacks its angle brackets is malformed but is
+    still the message's only identifier, so it is kept, unfolded."""
+    raw = (
+        b"From: a@example.com\r\n"
+        b"To: b@example.com\r\n"
+        b"Subject: s\r\n"
+        b"Message-ID:\r\n"
+        b" m@example.com\r\n"
+        b"\r\n"
+        b"body\r\n"
+    )
+    parsed = Email.from_message(email.message_from_bytes(raw))
+    assert parsed.message_id == "m@example.com"

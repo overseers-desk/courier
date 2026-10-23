@@ -79,6 +79,30 @@ class TestCreateReplyMime:
         assert "This is a reply." in payload
         assert "Original message content" in payload
 
+    def test_reply_to_a_message_id_with_a_comment_names_only_the_id(self):
+        """The parent's Message-ID and References comments stay out of
+        the reply's In-Reply-To and References."""
+        parent = Email.from_message(
+            email.message_from_bytes(
+                b"From: sender@example.com\r\n"
+                b"To: recipient@example.com\r\n"
+                b"Subject: Hello\r\n"
+                b"Message-ID: <p@example.com> (sent by Example Mail)\r\n"
+                b"References: <r@example.com> (root)\r\n"
+                b"\r\n"
+                b"body\r\n"
+            )
+        )
+
+        reply = create_mime(
+            original_email=parent,
+            from_addr=EmailAddress(name="", address="recipient@example.com"),
+            body="thanks",
+        )
+
+        assert reply["In-Reply-To"] == "<p@example.com>"
+        assert reply["References"] == "<r@example.com> <p@example.com>"
+
     def test_reply_honours_reply_to_over_from(self):
         """When Reply-To is set on the parent, the reply's To uses it.
 

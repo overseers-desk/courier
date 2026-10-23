@@ -9,6 +9,7 @@ from courier.errors import (
     PermanentError,
     TransientError,
 )
+from courier.models import message_ids
 from courier.query.ast import UntranslatableForBackend
 
 if TYPE_CHECKING:
@@ -30,8 +31,21 @@ class MessageLocation(NamedTuple):
 
 
 def bare_message_id(message_id: Any) -> str:
-    """Return a Message-ID without whitespace or angle brackets."""
-    return str(message_id).strip().strip("<>")
+    """Return a Message-ID without whitespace, angle brackets or comments.
+
+    The first ``<...>`` identifier is taken when there is one, so a
+    trailing comment (``<a@b.c> (note)``) is ignored; a value without
+    angle brackets is taken whole.
+
+    Args:
+        message_id: The Message-ID as given or as a hit carries it.
+
+    Returns:
+        The identifier without its angle brackets.
+    """
+    text = str(message_id)
+    found = message_ids(text)
+    return found[0][1:-1] if found else text.strip().strip("<>")
 
 
 def _cached_location(

@@ -37,6 +37,31 @@ def sanitize_and_save(content: bytes | str, save_path: str, mode: str = "wb") ->
 
 _FOLD = re.compile(r"\r?\n(?=[ \t])")
 
+# One msg-id of RFC 5322 section 3.6.4: the angle brackets and what they
+# enclose. Comments, obsolete phrases and folding between identifiers
+# fall outside every match.
+_MSG_ID = re.compile(r"<[^>]+>")
+
+
+def message_ids(field_value: Optional[str]) -> List[str]:
+    """Return each message identifier a Message-ID-style field holds.
+
+    Message-ID, In-Reply-To and References carry ``<...>`` identifiers
+    (RFC 5322 section 3.6.4), the last two possibly several, and any of
+    them may carry comments and be folded. Each identifier keeps its
+    angle brackets and is unfolded; everything outside the brackets is
+    dropped.
+
+    Args:
+        field_value: The header field value as parsed, or ``None``.
+
+    Returns:
+        The identifiers in field order; empty when the field holds none.
+    """
+    if not field_value:
+        return []
+    return [_FOLD.sub("", found) for found in _MSG_ID.findall(field_value)]
+
 
 def decode_mime_header(header_value: Optional[str]) -> str:
     """Decode a MIME header value and unfold it onto one line.
@@ -209,7 +234,7 @@ class Email:
     headers: Dict[str, str] = field(default_factory=dict)
     folder: Optional[str] = None
     uid: Optional[int] = None
-    in_reply_to: Optional[str] = None
+    in_reply_to: List[str] = field(default_factory=list)
     references: List[str] = field(default_factory=list)
     # When set, this Email has had its content fields replaced with
     # placeholders by a per-block redaction policy. The value is a short
@@ -254,7 +279,7 @@ class Email:
             headers={},
             folder=self.folder,
             uid=self.uid,
-            in_reply_to=self.in_reply_to,
+            in_reply_to=list(self.in_reply_to),
             references=list(self.references),
             redacted_by=rule,
         )
@@ -330,7 +355,7 @@ class Email:
             ),
         }
         if self.in_reply_to:
-            result["in_reply_to"] = self.in_reply_to
+            result["in_reply_to"] = list(self.in_reply_to)
         if self.references:
             result["references"] = list(self.references)
         if self.cc:
@@ -371,20 +396,15 @@ class Email:
             for name in ("To", "Cc", "Bcc", "Reply-To")
         )
         date_str = message.get("Date")
-        message_id = message.get("Message-ID", "")
-        if message_id:
-            message_id = message_id.strip()
-
-        # Get thread-related headers
-        in_reply_to = message.get("In-Reply-To", "")
-        if in_reply_to:
-            in_reply_to = in_reply_to.strip()
-
-        references_str = message.get("References", "")
-        references = []
-        if references_str:
-            # Extract all message IDs from References header
-            references = [ref.strip() for ref in re.findall(r"<[^>]+>", references_str)]
+        raw_message_id = message.get("Message-ID", "")
+        found_ids = message_ids(raw_message_id)
+        # A Message-ID without angle brackets is malformed but still the
+        # message's only identifier, so it is kept, unfolded.
+        message_id = (
+            found_ids[0] if found_ids else _FOLD.sub("", raw_message_id).strip()
+        )
+        in_reply_to = message_ids(message.get("In-Reply-To"))
+        references = message_ids(message.get("References"))
 
         # Parse addresses
         from_ = EmailAddress.parse(from_str)
@@ -532,7 +552,7 @@ class Email:
         thread_info = ""
         if self.in_reply_to or self.references:
             thread_info = "\nThread: " + (
-                f"Reply to {self.in_reply_to}"
+                f"Reply to {' '.join(self.in_reply_to)}"
                 if self.in_reply_to
                 else f"References {len(self.references)} previous messages"
             )

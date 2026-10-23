@@ -89,6 +89,24 @@ class TestReadByMessageId:
         )
         assert result.exit_code == 0, result.output
 
+    def test_read_from_disk_is_keyed_by_the_bare_id_without_its_comment(self, tmp_path):
+        path = tmp_path / "1700000000.M1P1.host:2,S"
+        path.write_bytes(b"")
+        client = _client(_envelope([]))
+        client.local_message_id_hits.return_value = [
+            {"folder": "INBOX", "path": str(path), "message_id": "abc@host"}
+        ]
+        client.fetch_email_path.return_value.to_dict.return_value = {
+            "uid": None,
+            "folder": "INBOX",
+        }
+        result, _ = _invoke(
+            ["--imap", "acct", "read", "--message-id", "<abc@host> (note)"], client
+        )
+        assert result.exit_code == 0, result.output
+        client.local_message_id_hits.assert_called_once_with("abc@host", None)
+        assert '"read -f INBOX --message-id abc@host"' in result.output
+
     def test_refuses_without_explicit_imap(self):
         client = _client(_envelope([_hit("INBOX", 1)]))
         result, fetch = _invoke(["read", "--message-id", "<abc@host>"], client)

@@ -1,5 +1,6 @@
 """Tests for ``ImapClient.find_thread`` and the ``thread`` CLI verb."""
 
+import email
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 from unittest.mock import MagicMock, patch
@@ -19,7 +20,7 @@ def _email(
     uid: int,
     message_id: str,
     day: int,
-    in_reply_to: Optional[str] = None,
+    in_reply_to: Optional[List[str]] = None,
     references: Optional[List[str]] = None,
 ) -> Email:
     return Email(
@@ -29,7 +30,7 @@ def _email(
         to=[EmailAddress(name="", address="bob@example.com")],
         date=datetime(2026, 10, day, 9, 0, tzinfo=timezone.utc),
         uid=uid,
-        in_reply_to=in_reply_to,
+        in_reply_to=in_reply_to or [],
         references=references or [],
     )
 
@@ -99,7 +100,7 @@ class TestFindThreadHeaders:
     def _setup(self) -> ImapClient:
         client = _client(["IMAP4REV1"])
         client.fetch_email = MagicMock(  # type: ignore[method-assign]
-            return_value=_email(7, "<b@x>", 21, "<a@x>", ["<a@x>"])
+            return_value=_email(7, "<b@x>", 21, ["<a@x>"], ["<a@x>"])
         )
         client.find_special_use_folder = MagicMock(  # type: ignore[method-assign]
             side_effect=lambda role: "Sent" if role == b"\\Sent" else None
@@ -133,6 +134,37 @@ class TestFindThreadHeaders:
                     criteria[i : i + 3] == ["HEADER", header, message_id]
                     for i in range(len(criteria))
                 ), (header, message_id)
+
+    def test_each_id_the_anchor_names_is_searched_on_its_own(self) -> None:
+        """A comment after the Message-ID and a second parent in
+        In-Reply-To each leave one clean identifier to search for."""
+        client = self._setup()
+        raw = (
+            b"From: alice@example.com\r\n"
+            b"To: bob@example.com\r\n"
+            b"Subject: Loan facility\r\n"
+            b"Message-ID: <b@x> (sent by Example Mail)\r\n"
+            b"In-Reply-To: <p1@x> (first parent)\r\n"
+            b" <p2@x>\r\n"
+            b"\r\n"
+            b"body\r\n"
+        )
+        anchor = Email.from_message(email.message_from_bytes(raw), 7, "INBOX")
+        client.fetch_email = MagicMock(  # type: ignore[method-assign]
+            return_value=anchor
+        )
+        client.find_thread(7, "INBOX")
+        criteria = client.search.call_args_list[0].args[0]  # type: ignore[attr-defined]
+        searched = {
+            (criteria[i + 1], criteria[i + 2])
+            for i in range(len(criteria))
+            if criteria[i] == "HEADER"
+        }
+        assert searched == {
+            (header, message_id)
+            for message_id in ("<b@x>", "<p1@x>", "<p2@x>")
+            for header in ("Message-ID", "References", "In-Reply-To")
+        }
 
     def test_merges_folders_newest_first(self) -> None:
         client = self._setup()

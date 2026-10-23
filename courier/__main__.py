@@ -2202,7 +2202,7 @@ def read(
                 raise typer.Exit(1)
             result = email_obj.to_dict()
             assert message_id is not None
-            op_key = f"read -f {folder} --message-id {message_id.strip('<>')}"
+            op_key = f"read -f {folder} --message-id {bare_message_id(message_id)}"
         else:
             assert folder is not None and uid is not None
             result = _fetch_email_result(

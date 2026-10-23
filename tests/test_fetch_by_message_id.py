@@ -115,6 +115,21 @@ class TestOutcomes:
         )
         client.fetch_email.assert_called_once_with(42, "INBOX", no_cache=False)
 
+    def test_comments_after_the_asked_and_the_found_id_are_ignored(
+        self, client: ImapClient
+    ):
+        client.search_emails.return_value = _envelope(
+            [_hit("INBOX", 42, f"<{MID}> (sent by Example Mail)")]
+        )
+        client.fetch_email.return_value = _email()
+
+        found = client.fetch_by_message_id(f"<{MID}> (note)")
+
+        assert found is client.fetch_email.return_value
+        client.search_emails.assert_called_once_with(
+            f"msgid:<{MID}>", folder=None, limit=20, no_cache=True
+        )
+
     def test_no_folder_holding_it_gives_none(self, client: ImapClient):
         assert client.fetch_by_message_id(MID) is None
         client.fetch_email.assert_not_called()

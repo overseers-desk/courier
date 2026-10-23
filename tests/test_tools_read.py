@@ -8,6 +8,7 @@ model; these tests pin the CLI output contract.
 
 import json
 from datetime import datetime
+from typing import List, Optional
 from unittest.mock import MagicMock, patch
 
 from typer.testing import CliRunner
@@ -31,7 +32,7 @@ def _patch_config(imap_name: str = "default"):
 
 def _make_email(
     message_id: str = "<parent@example.com>",
-    in_reply_to: str = "",
+    in_reply_to: Optional[List[str]] = None,
     references: list = None,
 ) -> Email:
     return Email(
@@ -47,7 +48,7 @@ def _make_email(
         headers={},
         folder="INBOX",
         uid=42,
-        in_reply_to=in_reply_to,
+        in_reply_to=in_reply_to or [],
         references=references or [],
     )
 
@@ -88,7 +89,7 @@ class TestReadCLIThreadingHeaders:
         client = MagicMock()
         client.fetch_email.return_value = _make_email(
             "<child@example.com>",
-            in_reply_to="<root@example.com>",
+            in_reply_to=["<root@example.com>"],
             references=["<root@example.com>", "<mid@example.com>"],
         )
 
@@ -105,14 +106,14 @@ class TestReadCLIThreadingHeaders:
         assert result.exit_code == 0
         out = self._read_inner(result.output)
         assert out["message_id"] == "<child@example.com>"
-        assert out["in_reply_to"] == "<root@example.com>"
+        assert out["in_reply_to"] == ["<root@example.com>"]
         assert out["references"] == ["<root@example.com>", "<mid@example.com>"]
 
     def test_empty_references_omitted(self):
         client = MagicMock()
         client.fetch_email.return_value = _make_email(
             "<m@example.com>",
-            in_reply_to="",
+            in_reply_to=[],
             references=[],
         )
 
@@ -134,7 +135,7 @@ class TestReadCLIThreadingHeaders:
     def test_output_is_the_emails_to_dict(self):
         email_obj = _make_email(
             "<child@example.com>",
-            in_reply_to="<root@example.com>",
+            in_reply_to=["<root@example.com>"],
             references=["<root@example.com>"],
         )
         email_obj.cc = [EmailAddress(name="", address="cc@example.com")]

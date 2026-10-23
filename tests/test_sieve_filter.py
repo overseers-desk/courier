@@ -218,7 +218,7 @@ class TestEmailRedact:
             uid=42,
             folder="INBOX",
             date=datetime(2026, 4, 1, 9, tzinfo=timezone.utc),
-            in_reply_to="<parent@x>",
+            in_reply_to=["<parent@x>"],
             references=["<root@x>", "<parent@x>"],
         )
         redacted = original.redact("rule")
@@ -226,5 +226,5 @@ class TestEmailRedact:
         assert redacted.folder == "INBOX"
         assert redacted.message_id == "<m@x>"
         assert redacted.date == original.date
-        assert redacted.in_reply_to == "<parent@x>"
+        assert redacted.in_reply_to == ["<parent@x>"]
         assert redacted.references == ["<root@x>", "<parent@x>"]

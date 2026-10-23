@@ -365,8 +365,8 @@ class TestImapClientThreading(unittest.TestCase):
         assert initial_message_id in thread_emails[2].headers.get("References", "")
 
         # Verify in_reply_to and references properties are set correctly
-        assert thread_emails[1].in_reply_to == initial_message_id
-        assert thread_emails[2].in_reply_to == reply1_message_id
+        assert thread_emails[1].in_reply_to == [initial_message_id]
+        assert thread_emails[2].in_reply_to == [reply1_message_id]
         assert initial_message_id in thread_emails[2].references
 
     def test_fetch_thread_by_subject(self):

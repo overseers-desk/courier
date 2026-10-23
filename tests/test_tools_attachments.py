@@ -42,7 +42,7 @@ def email_with_attachments():
         subject="Email with attachments",
         date=None,
         message_id="<test@example.com>",
-        in_reply_to=None,
+        in_reply_to=[],
         headers={},
         content=EmailContent(text="This email has attachments", html=None),
         attachments=[
@@ -84,7 +84,7 @@ def email_without_attachments():
         subject="Email without attachments",
         date=None,
         message_id="<test2@example.com>",
-        in_reply_to=None,
+        in_reply_to=[],
         headers={},
         content=EmailContent(text="This email has no attachments", html=None),
         attachments=[],

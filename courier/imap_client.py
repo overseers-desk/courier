@@ -1202,7 +1202,7 @@ class ImapClient:
             )
 
         # Get thread identifiers from the initial email
-        message_id = initial_email.headers.get("Message-ID", "")
+        message_id = initial_email.message_id
         subject = initial_email.subject
 
         # Strip "Re:", "Fwd:", etc. from the subject for better matching
@@ -1232,24 +1232,19 @@ class ImapClient:
                 logger.warning(f"Error searching for In-Reply-To: {e}")
 
             # If the initial email has References or In-Reply-To, fetch those messages too
-            initial_references = initial_email.headers.get("References", "")
-            initial_inreplyto = initial_email.headers.get("In-Reply-To", "")
+            for ref_id in initial_email.references:
+                query = f'HEADER Message-ID "{ref_id}"'
+                try:
+                    results = self.search(query, folder)
+                    thread_uids.update(results)
+                except Exception as e:
+                    logger.warning(
+                        f"Error searching for Referenced message {ref_id}: {e}"
+                    )
 
-            # Extract all message IDs from the References header
-            if initial_references:
-                for ref_id in re.findall(r"<[^>]+>", initial_references):
-                    query = f'HEADER Message-ID "{ref_id}"'
-                    try:
-                        results = self.search(query, folder)
-                        thread_uids.update(results)
-                    except Exception as e:
-                        logger.warning(
-                            f"Error searching for Referenced message {ref_id}: {e}"
-                        )
-
-            # Look for the message that this is a reply to
-            if initial_inreplyto:
-                query = f'HEADER Message-ID "{initial_inreplyto}"'
+            # Look for the messages that this is a reply to
+            for parent_id in initial_email.in_reply_to:
+                query = f'HEADER Message-ID "{parent_id}"'
                 try:
                     results = self.search(query, folder)
                     thread_uids.update(results)
@@ -1353,9 +1348,7 @@ class ImapClient:
             )
             members[target] = self.search(["X-GM-THRID", thread_id], target)
         else:
-            ids = [anchor.message_id, *anchor.references]
-            if anchor.in_reply_to:
-                ids.append(anchor.in_reply_to)
+            ids = [anchor.message_id, *anchor.references, *anchor.in_reply_to]
             criteria: List[Any] = []
             for message_id in dict.fromkeys(i for i in ids if i):
                 for header in ("Message-ID", "References", "In-Reply-To"):
