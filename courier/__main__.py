@@ -1278,9 +1278,7 @@ def _perform_send(
     except CourierError as exc:
         # Chiefly the transport's outcome-unknown error, whose text says to
         # check the Sent folder before re-sending, which a "send failed"
-        # prefix would contradict. An IMAP failure resolving the Sent
-        # folder, before SMTP opens, lands here too and exits by its own
-        # retry class.
+        # prefix would contradict.
         _die_on_courier_error(exc)
     except Exception as exc:
         typer.echo(f"Error: SMTP send failed: {exc}", err=True)

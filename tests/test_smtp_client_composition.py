@@ -636,7 +636,7 @@ class TestCreateReplyMime:
         assert part.get_payload(decode=True) == raw
 
     def test_pdf_stays_base64(self, tmp_path: Path):
-        """Formats outside the line-safe set are encoded as before."""
+        """A format outside the line-safe set is base64-encoded."""
         pdf = tmp_path / "statement.pdf"
         pdf.write_bytes(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
 

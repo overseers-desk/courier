@@ -394,7 +394,7 @@ def create_mime(
     elif is_reply:
         assert original_email is not None
         original_subject = " ".join(original_email.subject.split())
-        # Outlook writes "RE:"; a prefix in any letter case is kept as it is.
+        # Outlook writes "RE:".
         if original_subject[:3].lower() == "re:":
             msg["Subject"] = original_subject
         else:
