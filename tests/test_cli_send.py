@@ -11,6 +11,7 @@ Drafting (no ``--send``) keeps the previous convenience defaults.
 """
 
 import json
+import smtplib
 from unittest.mock import MagicMock, patch
 
 from typer.testing import CliRunner
@@ -22,6 +23,7 @@ from courier.config import (
     ImapBlock,
     SmtpConfig,
 )
+from courier.errors import CourierError
 from courier.imap_client import AppendResult
 
 runner = CliRunner()
@@ -1539,3 +1541,52 @@ class TestEmptyBodyGuard:
         err = result.output + (result.stderr or "")
         assert "--body is empty" in err
         assert "--allow-empty-body" in err
+
+
+class TestSendFailureReporting:
+    """How a send that did not confirm reaches the user."""
+
+    COMPOSE = [
+        "compose",
+        "--to",
+        "alice@y.com",
+        "--body",
+        "hi",
+        "--subject",
+        "T",
+        "--send",
+        "--identity",
+        "alias",
+    ]
+
+    def _invoke(self, client, error):
+        with (
+            patch("courier.__main__.load_config", return_value=_cfg()),
+            patch("courier.__main__._make_client", return_value=client),
+            patch("courier.smtp_transport.send", side_effect=error),
+        ):
+            return runner.invoke(app, self.COMPOSE)
+
+    def test_unknown_outcome_reaches_the_user_as_raised(self):
+        """Not "send failed", which would invite a re-send and a
+        duplicate; not the retry exit (3); no Sent copy filed."""
+        client = _client()
+        unknown = CourierError(
+            "send outcome unknown: the whole message was sent to "
+            "smtp.fastmail.com, but no reply came within 600 seconds, so the "
+            "server may have accepted it. Check the Sent folder before re-sending"
+        )
+        result = self._invoke(client, unknown)
+        assert result.exit_code == 1
+        assert result.stderr == f"Error: {unknown}\n"
+        assert result.stdout == ""
+        client.append_raw.assert_not_called()
+
+    def test_refused_sender_is_a_send_failure(self):
+        client = _client()
+        refused = smtplib.SMTPSenderRefused(550, b"5.7.1 sender blocked", "alias@x.com")
+        result = self._invoke(client, refused)
+        assert result.exit_code == 1
+        assert result.stderr.startswith("Error: SMTP send failed: ")
+        assert "5.7.1 sender blocked" in result.stderr
+        client.append_raw.assert_not_called()

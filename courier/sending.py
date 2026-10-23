@@ -52,6 +52,10 @@ def send_with_fcc(
     Raises:
         FccUnresolved: The FCC target cannot be resolved. Raised before
             SMTP opens, so nothing was sent.
+        CourierError: The whole message was sent but its reply never
+            came, so the outcome is unknown (see ``smtp_transport.send``).
+            Raised before the FCC step, so no copy is filed; the message
+            says to check the Sent folder before re-sending.
         Exception: Any SMTP-layer failure from the transport propagates.
     """
     fcc_target: Optional[str] = None

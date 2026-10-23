@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from courier.errors import FccUnresolved, PermanentError
+from courier.errors import CourierError, FccUnresolved, PermanentError
 from courier.imap_client import AppendResult
 from courier.sending import send_with_fcc
 
@@ -95,3 +95,16 @@ def test_transport_is_forwarded_to_smtp():
         send_with_fcc("msg", MagicMock(), fcc_client=client, transport=sentinel)
     _, kwargs = send_mock.call_args
     assert kwargs["transport"] is sentinel
+
+
+def test_unknown_outcome_propagates_and_files_no_copy():
+    """The message went but its reply never came: the transport's
+    outcome-unknown error reaches the caller as raised, and no Sent copy
+    is filed for a message the server may not have accepted."""
+    client = _fcc_client(resolved="Sent")
+    unknown = CourierError("send outcome unknown: check the Sent folder")
+    with patch("courier.smtp_transport.send", side_effect=unknown):
+        with pytest.raises(CourierError) as info:
+            send_with_fcc("msg", MagicMock(), fcc_client=client)
+    assert info.value is unknown
+    client.append_raw.assert_not_called()

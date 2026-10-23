@@ -22,6 +22,7 @@ from courier.config import (
     ImapBlock,
     SmtpConfig,
 )
+from courier.errors import CourierError
 from courier.imap_client import AppendResult
 
 runner = CliRunner()
@@ -132,6 +133,26 @@ class TestSendDraftHappyPath:
         out = json.loads(result.output)
         assert out["draft_removed"] is False
         client.delete_email.assert_not_called()
+
+
+class TestSendDraftUnknownOutcome:
+    def test_draft_kept_when_the_reply_never_came(self):
+        """The server may not have accepted the message, so the draft,
+        possibly its only copy, stays; the user sees the transport's
+        outcome-unknown message as raised."""
+        cfg = _cfg_with_identities()
+        client = _client_with_draft()
+        unknown = CourierError("send outcome unknown: check the Sent folder")
+        with (
+            patch("courier.__main__.load_config", return_value=cfg),
+            patch("courier.__main__._make_client", return_value=client),
+            patch("courier.smtp_transport.send", side_effect=unknown),
+        ):
+            result = runner.invoke(app, ["send-draft", "-f", "Drafts", "-u", "42"])
+        assert result.exit_code == 1
+        assert result.stderr == f"Error: {unknown}\n"
+        client.delete_email.assert_not_called()
+        client.append_raw.assert_not_called()
 
 
 class TestSendDraftRedacted:
