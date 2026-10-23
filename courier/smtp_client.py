@@ -458,8 +458,26 @@ def create_mime(
     else:
         aware = date if date.tzinfo is not None else date.astimezone()
         msg["Date"] = email.utils.format_datetime(aware)
-    msg["Message-ID"] = email.utils.make_msgid()
+    msg["Message-ID"] = make_message_id(from_addr.address)
     return msg
+
+
+def make_message_id(sender: str) -> str:
+    """Return a new Message-ID whose right side is *sender*'s domain.
+
+    ``email.utils.make_msgid`` otherwise takes the machine's host name,
+    which names the computer the mail was written on and is often no
+    domain at all (RFC 5322 section 3.6.4).
+
+    Args:
+        sender: The bare From address.
+
+    Returns:
+        A ``<...@domain>`` Message-ID, using the host name only when
+        *sender* has no ``@``.
+    """
+    _, at, domain = sender.rpartition("@")
+    return email.utils.make_msgid(domain=domain if at else None)
 
 
 def _find_reply_from_address(email_obj: Email, my_address: str) -> EmailAddress:

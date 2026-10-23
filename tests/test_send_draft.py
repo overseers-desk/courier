@@ -427,7 +427,7 @@ class TestSendDraftMessageId:
 
         ids = sent.get_all("Message-ID")
         assert len(ids) == 1
-        assert re.fullmatch(r"<[^<>@\s]+@[^<>@\s]+>", str(ids[0]))
+        assert re.fullmatch(r"<[^<>@\s]+@x\.com>", str(ids[0]))
 
     def test_draft_message_id_is_kept(self):
         sent = self._sent_message(_draft_bytes())

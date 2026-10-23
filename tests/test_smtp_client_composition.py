@@ -874,6 +874,15 @@ def test_new_message_carries_one_message_id(extra):
     assert _MSG_ID.fullmatch(ids[0])
 
 
+def test_message_id_names_the_sender_domain_not_the_host():
+    """The right side is the From domain, not the machine's host name."""
+    ids = _wire_message_ids(
+        to=[EmailAddress(name="", address="r@example.com")], subject="s"
+    )
+
+    assert ids[0].endswith("@example.com>")
+
+
 def test_reply_carries_its_own_message_id():
     original = Email(
         message_id="<orig@example.com>",

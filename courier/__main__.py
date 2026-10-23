@@ -3524,13 +3524,14 @@ def send_draft(
     --no-save-sent or the SMTP block's save_sent resolution says otherwise.
     """
     from email.parser import BytesParser
-    from email.utils import formataddr, make_msgid, parseaddr
+    from email.utils import formataddr, parseaddr
 
     from courier.identity import (
         IdentityNotFound,
         SendDisabled,
         resolve_identity_for_send,
     )
+    from courier.smtp_client import make_message_id
     from courier.smtp_transport import _pick_default_transport
 
     cfg = _load_cfg_or_exit()
@@ -3563,7 +3564,7 @@ def send_draft(
 
         msg = BytesParser().parsebytes(fetched["raw"])
         if not msg.get("Message-ID"):
-            msg["Message-ID"] = make_msgid()
+            msg["Message-ID"] = make_message_id(parseaddr(msg.get("From", ""))[1])
 
         if identity_name or smtp_name:
             route = _resolve_send_route(
