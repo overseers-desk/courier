@@ -198,6 +198,57 @@ class TestSendDraftUnknownFrom:
         client.delete_email.assert_not_called()
 
 
+class TestSendDraftFromParsing:
+    """The draft's From is read with parseaddr, not split on ``<``."""
+
+    @staticmethod
+    def _invoke(from_header: bytes):
+        raw = (
+            b"From: " + from_header + b"\r\n"
+            b"To: recipient@y.com\r\n"
+            b"Message-ID: <draft@local>\r\n"
+            b"\r\n"
+            b"body\r\n"
+        )
+        cfg = _cfg_with_identities()
+        client = _client_with_draft()
+        client.fetch_raw.return_value = {"raw": raw, "subject": "draft"}
+        with (
+            patch("courier.__main__.load_config", return_value=cfg),
+            patch("courier.__main__._make_client", return_value=client),
+            patch(
+                "courier.smtp_transport.send",
+                return_value=(raw, _build_send_result()),
+            ) as send_mock,
+        ):
+            result = runner.invoke(app, ["send-draft", "-f", "Drafts", "-u", "42"])
+        return result, send_mock
+
+    def test_display_name_containing_angle_bracket(self):
+        result, send_mock = self._invoke(b'"Alice <Work>" <alice@x.com>')
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.output)["identity"] == "alice@x.com"
+        send_mock.assert_called_once()
+
+    def test_from_without_an_address_is_refused_by_name(self):
+        result, send_mock = self._invoke(b"Alice <>")
+
+        assert result.exit_code == 1
+        assert result.stderr == (
+            "Error: the draft's From header 'Alice <>' holds no single "
+            "parseable address\n"
+        )
+        send_mock.assert_not_called()
+
+    def test_draft_without_from_is_refused(self):
+        result, send_mock = self._invoke(b"")
+
+        assert result.exit_code == 1
+        assert result.stderr == "Error: draft has no From header\n"
+        send_mock.assert_not_called()
+
+
 class TestSendDraftDryRun:
     def test_dry_run_does_not_invoke_transport(self):
         cfg = _cfg_with_identities()

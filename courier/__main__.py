@@ -3526,7 +3526,7 @@ def send_draft(
     --no-save-sent or the SMTP block's save_sent resolution says otherwise.
     """
     from email.parser import BytesParser
-    from email.utils import formataddr, make_msgid
+    from email.utils import formataddr, make_msgid, parseaddr
 
     from courier.identity import (
         IdentityNotFound,
@@ -3585,11 +3585,18 @@ def send_draft(
             msg["From"] = formataddr((identity.name, identity.address))
         else:
             from_raw = str(msg.get("From", "") or "").strip()
-            from_addr_only = from_raw
-            if "<" in from_raw and ">" in from_raw:
-                from_addr_only = from_raw.split("<", 1)[1].rsplit(">", 1)[0].strip()
-            if not from_addr_only:
+            if not from_raw:
                 typer.echo("Error: draft has no From header", err=True)
+                raise typer.Exit(1)
+            # parseaddr, not a split on "<": a quoted display name may
+            # itself hold "<" ('"Acme <Billing>" <billing@acme.com>').
+            from_addr_only = parseaddr(from_raw)[1]
+            if not from_addr_only:
+                typer.echo(
+                    f"Error: the draft's From header {from_raw!r} holds no single "
+                    "parseable address",
+                    err=True,
+                )
                 raise typer.Exit(1)
             try:
                 identity = resolve_identity_for_send(
