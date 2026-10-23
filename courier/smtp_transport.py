@@ -39,7 +39,8 @@ _DATA_REPLY_TIMEOUT = 600
 
 # Bytes per write of the message upload. A single sendall() of the whole
 # message runs under one deadline, so a large attachment on a slow link
-# would fail at 10 seconds; in chunks, each write gets its own.
+# would fail at 10 seconds; in chunks, each write gets its own. 64 KiB
+# per 10 seconds fails only a link slower than about 50 kbit/s.
 _DATA_CHUNK = 64 * 1024
 
 # Post-DATA "Ok <token>" line from SES. Real tokens look like
@@ -194,9 +195,7 @@ def _transmit_data(
             dot, so it cannot have accepted the message.
         CourierError: The whole message was sent but its reply never
             came: none within ``_DATA_REPLY_TIMEOUT``, or the connection
-            failed first. The outcome is unknown, so this is neither a
-            ``TransientError``, which invites a retry and so a duplicate,
-            nor a ``PermanentError``, which claims the send failed.
+            failed first. The outcome is unknown; see ``send``.
     """
     code, reply = smtp.docmd("data")
     if code != 354:
@@ -271,13 +270,12 @@ def send(
         smtplib.SMTPDataError: The server refused DATA, or answered the
             message with a non-2xx reply.
         CourierError: The whole message was sent but its reply never
-            came: none within 600 seconds (RFC 5321 section 4.5.3.2.6),
-            or the connection failed first. The outcome is unknown: the
-            server may have accepted the message, so the message says to
-            check the Sent folder before re-sending. A plain
-            ``CourierError``, neither ``TransientError`` (a retry could
-            deliver a duplicate) nor ``PermanentError`` (the send may
-            have succeeded).
+            came: none within ``_DATA_REPLY_TIMEOUT``, or the connection
+            failed first. The outcome is unknown: the server may have
+            accepted the message, so the message says to check the Sent
+            folder before re-sending. A plain ``CourierError``, neither
+            ``TransientError`` (a retry could deliver a duplicate) nor
+            ``PermanentError`` (the send may have succeeded).
         smtplib.SMTPException: On any other SMTP-layer failure.
     """
     factory = transport or _pick_default_transport(smtp_cfg.port)
