@@ -49,6 +49,28 @@ _HEADERS = HeaderRegistry()
 # either quote or bare, the scheme in any letter case.
 _CID_SRC = re.compile(r"""src\s*=\s*(["']?)cid:([^"'\s>]+)\1""", re.IGNORECASE)
 
+# Characters no filename may carry on some platform: path separators,
+# the Windows reserved set, and control characters.
+_UNSAFE_IN_FILENAME = re.compile(r'[\\/:*?"<>|\x00-\x1f\x7f]')
+
+
+def _filename_stem(text: str, limit: int = 80) -> str:
+    """Return *text* made safe as the stem of a filename.
+
+    Args:
+        text: Free text, such as a Subject.
+        limit: The longest stem returned.
+
+    Returns:
+        The text with unsafe characters replaced by ``_``, runs of
+        whitespace collapsed to one space, leading and trailing dots and
+        spaces removed, and cut to *limit*; empty when nothing is left.
+    """
+    stem = _UNSAFE_IN_FILENAME.sub("_", text)
+    stem = re.sub(r"\s+", " ", stem).strip(" .")
+    return stem[:limit].rstrip(" .")
+
+
 # One msg-id of RFC 5322 section 3.6.4: the angle brackets and what they
 # enclose. Comments, obsolete phrases and folding between identifiers
 # fall outside every match.
@@ -287,23 +309,42 @@ class EmailAttachment:
     def from_part(cls, part: Message) -> "EmailAttachment":
         """Create attachment from email part.
 
+        A ``message/rfc822`` part (a forwarded message, RFC 2046 section
+        5.2.1) holds the encapsulated message as its content and, when
+        the part names no file, is named from that message's Subject
+        plus ``.eml``, or ``forwarded.eml`` when it has none.
+
         Args:
             part: Email message part
 
         Returns:
             EmailAttachment object
         """
-        filename = part.get_filename()
-        if not filename:
-            # Generate a filename based on content type
-            ext = part.get_content_type().split("/")[-1]
-            filename = f"attachment.{ext}"
-
-        raw_payload = part.get_payload(decode=True)
-        content: Optional[bytes] = (
-            raw_payload if isinstance(raw_payload, bytes) else None
-        )
         content_type = part.get_content_type()
+        filename = part.get_filename()
+        content: Optional[bytes]
+        if content_type == "message/rfc822":
+            payload = part.get_payload()
+            inner = (
+                payload[0]
+                if isinstance(payload, list) and isinstance(payload[0], Message)
+                else None
+            )
+            if inner is None:
+                raw_payload = part.get_payload(decode=True)
+                content = raw_payload if isinstance(raw_payload, bytes) else None
+            else:
+                content = inner.as_bytes(policy=inner.policy.clone(linesep="\r\n"))
+            if not filename:
+                subject = decode_mime_header(inner.get("Subject")) if inner else ""
+                filename = f"{_filename_stem(subject) or 'forwarded'}.eml"
+        else:
+            if not filename:
+                # Generate a filename based on content type
+                ext = content_type.split("/")[-1]
+                filename = f"attachment.{ext}"
+            raw_payload = part.get_payload(decode=True)
+            content = raw_payload if isinstance(raw_payload, bytes) else None
 
         # Extract Content-ID properly, removing angle brackets if present
         content_id = part.get("Content-ID")
@@ -563,14 +604,20 @@ class Email:
         def process_part(part: Message) -> None:
             """Place one part as body or attachment, walking into multiparts.
 
-            A ``text/plain`` or ``text/html`` part is the body, the
-            first of each kind winning, unless its disposition is
-            ``attachment`` or it carries a filename; ``inline`` alone
-            marks a part for display (RFC 2183 section 2.1). Every other
-            leaf is an attachment when it is marked as one, named, or
-            neither text nor multipart.
+            A ``message/rfc822`` part is one attachment, not walked
+            into, so a forwarded message's text and files stay its own
+            (listing them is issue #109). A ``text/plain`` or
+            ``text/html`` part is the body, the first of each kind
+            winning, unless its disposition is ``attachment`` or it
+            carries a filename; ``inline`` alone marks a part for
+            display (RFC 2183 section 2.1). Every other leaf is an
+            attachment when it is marked as one, named, or neither text
+            nor multipart.
             """
             content_type = part.get_content_type()
+            if content_type == "message/rfc822":
+                attachments.append(EmailAttachment.from_part(part))
+                return
             if part.is_multipart():
                 for subpart in part.get_payload():
                     if isinstance(subpart, Message):

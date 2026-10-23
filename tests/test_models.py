@@ -605,3 +605,110 @@ def test_inline_text_part_without_filename_is_body():
     assert parsed.content.text == "the body"
     assert parsed.content.html == "<p>the body</p>"
     assert [a.filename for a in parsed.attachments] == ["notes.txt", "attachment.plain"]
+
+
+def _forwarding_message(inner: bytes, outer_text: bytes = b"see below") -> bytes:
+    return (
+        b"From: a@example.com\r\n"
+        b"To: b@example.com\r\n"
+        b"Subject: Fwd\r\n"
+        b'Content-Type: multipart/mixed; boundary="outer"\r\n'
+        b"\r\n"
+        b"--outer\r\n"
+        b"Content-Type: text/plain\r\n"
+        b"\r\n" + outer_text + b"\r\n"
+        b"--outer\r\n"
+        b"Content-Type: message/rfc822\r\n"
+        b"\r\n" + inner + b"\r\n"
+        b"--outer--\r\n"
+    )
+
+
+def test_forwarded_text_message_is_an_eml_attachment(tmp_path):
+    """A message/rfc822 part is one attachment named from its Subject
+    plus .eml, whose saved bytes parse back to the inner message, and
+    its text is not merged into the outer body."""
+    inner = _headed(
+        b"From: orig@example.com",
+        b"To: a@example.com",
+        b"Subject: Quarterly figures: Q3/2026?",
+        b"Message-ID: <inner@example.com>",
+        body=b"inner text\r\n",
+    )
+    parsed = _parse(_forwarding_message(inner))
+    assert parsed.content.text == "see below"
+    assert [a.filename for a in parsed.attachments] == [
+        "Quarterly figures_ Q3_2026_.eml"
+    ]
+    assert parsed.attachments[0].content_type == "message/rfc822"
+    assert parsed.to_dict()["attachments"][0]["content_type"] == "message/rfc822"
+    saved = parsed.save_attachment("0", str(tmp_path / "fwd.eml"))
+    restored = email.message_from_bytes((tmp_path / "fwd.eml").read_bytes())
+    assert saved["size"] == parsed.attachments[0].size > 0
+    assert restored["Message-ID"] == "<inner@example.com>"
+    assert restored["Subject"] == "Quarterly figures: Q3/2026?"
+    assert restored.get_payload() == "inner text\r\n"
+
+
+def test_forwarded_message_without_subject_or_body_is_still_listed():
+    """A forwarded message with no Subject is named forwarded.eml, and
+    one forwarded by an outer message with no text of its own leaves
+    the outer body empty rather than taking its place."""
+    inner = _headed(b"From: orig@example.com", body=b"inner only\r\n")
+    raw = (
+        b"From: a@example.com\r\n"
+        b"To: b@example.com\r\n"
+        b"Subject: Fwd\r\n"
+        b'Content-Type: multipart/mixed; boundary="outer"\r\n'
+        b"\r\n"
+        b"--outer\r\n"
+        b"Content-Type: message/rfc822\r\n"
+        b"\r\n" + inner + b"\r\n"
+        b"--outer--\r\n"
+    )
+    parsed = _parse(raw)
+    assert parsed.content.text is None
+    assert [a.filename for a in parsed.attachments] == ["forwarded.eml"]
+
+
+def test_forwarded_multipart_message_keeps_its_own_attachments():
+    """The files attached to a forwarded multipart message are inside
+    its .eml, not listed as the outer message's own, and a part named
+    by its Content-Disposition keeps that name."""
+    inner = (
+        b"From: orig@example.com\r\n"
+        b"Subject: With file\r\n"
+        b'Content-Type: multipart/mixed; boundary="inner"\r\n'
+        b"\r\n"
+        b"--inner\r\n"
+        b"Content-Type: text/plain\r\n"
+        b"\r\n"
+        b"inner text\r\n"
+        b"--inner\r\n"
+        b"Content-Type: application/pdf; name=report.pdf\r\n"
+        b'Content-Disposition: attachment; filename="report.pdf"\r\n'
+        b"\r\n"
+        b"%PDF\r\n"
+        b"--inner--\r\n"
+    )
+    raw = (
+        b"From: a@example.com\r\n"
+        b"To: b@example.com\r\n"
+        b"Subject: Fwd\r\n"
+        b'Content-Type: multipart/mixed; boundary="outer"\r\n'
+        b"\r\n"
+        b"--outer\r\n"
+        b"Content-Type: text/plain\r\n"
+        b"\r\n"
+        b"see below\r\n"
+        b"--outer\r\n"
+        b"Content-Type: message/rfc822\r\n"
+        b'Content-Disposition: attachment; filename="original.eml"\r\n'
+        b"\r\n" + inner + b"\r\n"
+        b"--outer--\r\n"
+    )
+    parsed = _parse(raw)
+    assert parsed.content.text == "see below"
+    assert [a.filename for a in parsed.attachments] == ["original.eml"]
+    restored = email.message_from_bytes(parsed.attachments[0].content)
+    assert [p.get_filename() for p in restored.walk()][1:] == [None, "report.pdf"]
