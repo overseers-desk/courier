@@ -9,9 +9,10 @@ import os
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
-from email.header import decode_header
+from email.errors import HeaderParseError
+from email.header import Header, decode_header
 from email.message import Message
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Union
 
 logger = logging.getLogger(__name__)
 
@@ -63,12 +64,43 @@ def message_ids(field_value: Optional[str]) -> List[str]:
     return [_FOLD.sub("", found) for found in _MSG_ID.findall(field_value)]
 
 
-def decode_mime_header(header_value: Optional[str]) -> str:
+def _raw_header(header_value: Union[str, Header, None]) -> str:
+    """Return a header value as the one-line text the message carries.
+
+    The parser hands a header holding bytes outside ASCII (raw UTF-8,
+    RFC 6532) over as a :class:`Header` rather than a string. Its bytes
+    are read as UTF-8, replacement marks standing for any that do not
+    fit; encoded words inside it are left for :func:`decode_mime_header`.
+    Folding is removed as it is for a string value.
+
+    Args:
+        header_value: The value as the parser returned it, or ``None``.
+
+    Returns:
+        The unfolded value with its raw bytes read as UTF-8.
+    """
+    if header_value is None:
+        return ""
+    if isinstance(header_value, Header):
+        raw = b"".join(
+            chunk if isinstance(chunk, bytes) else chunk.encode("utf-8")
+            for chunk, _ in decode_header(header_value)
+        )
+        header_value = raw.decode("utf-8", errors="replace")
+    return _FOLD.sub("", header_value)
+
+
+def decode_mime_header(header_value: Union[str, Header, None]) -> str:
     """Decode a MIME header value and unfold it onto one line.
 
     A long header arrives folded (RFC 5322 section 2.2.3): a line break
     followed by whitespace. The parser keeps the break in the value, so
-    it is removed here, leaving the whitespace, before decoding.
+    it is removed here, leaving the whitespace, before decoding. A raw
+    UTF-8 header (RFC 6532), which the parser returns as a
+    :class:`Header`, reads as its text. A broken encoded word never
+    raises: a charset the host lacks is read as UTF-8, bytes that do
+    not decode become replacement marks, and an encoded word that
+    cannot be unpacked at all is left as written.
 
     Args:
         header_value: MIME header value
@@ -76,19 +108,21 @@ def decode_mime_header(header_value: Optional[str]) -> str:
     Returns:
         Decoded header value, unfolded
     """
-    if not header_value:
+    unfolded = _raw_header(header_value)
+    if not unfolded:
         return ""
 
+    try:
+        parts = decode_header(unfolded)
+    except HeaderParseError:
+        return unfolded
+
     decoded_parts = []
-    for part, encoding in decode_header(_FOLD.sub("", header_value)):
+    for part, encoding in parts:
         if isinstance(part, bytes):
-            if encoding:
-                try:
-                    decoded_parts.append(part.decode(encoding))
-                except LookupError:
-                    # If the encoding is not recognized, try with utf-8
-                    decoded_parts.append(part.decode("utf-8", errors="replace"))
-            else:
+            try:
+                decoded_parts.append(part.decode(encoding or "utf-8"))
+            except (LookupError, UnicodeDecodeError):
                 decoded_parts.append(part.decode("utf-8", errors="replace"))
         else:
             decoded_parts.append(part)
@@ -395,7 +429,7 @@ class Email:
             ", ".join(decode_mime_header(v) for v in message.get_all(name, []))
             for name in ("To", "Cc", "Bcc", "Reply-To")
         )
-        date_str = message.get("Date")
+        date_str = _raw_header(message.get("Date"))
         raw_message_id = message.get("Message-ID", "")
         found_ids = message_ids(raw_message_id)
         # A Message-ID without angle brackets is malformed but still the

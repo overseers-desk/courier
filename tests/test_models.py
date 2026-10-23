@@ -365,3 +365,50 @@ def test_message_id_without_angle_brackets_is_kept_unfolded():
     )
     parsed = Email.from_message(email.message_from_bytes(raw))
     assert parsed.message_id == "m@example.com"
+
+
+def _parse(raw: bytes, **kwargs) -> Email:
+    return Email.from_message(email.message_from_bytes(raw), **kwargs)
+
+
+def _headed(*header_lines: bytes, body: bytes = b"body\r\n") -> bytes:
+    return b"".join(line + b"\r\n" for line in header_lines) + b"\r\n" + body
+
+
+def test_raw_utf8_headers_read_as_utf8():
+    """A header carrying raw UTF-8 (RFC 6532) reads as the text it
+    holds, in Subject, in an address display name and in the header
+    map, instead of raising."""
+    parsed = _parse(
+        _headed(
+            "From: José <j@example.com>".encode("utf-8"),
+            "To: Café Crème <c@example.com>, b@example.com".encode("utf-8"),
+            b"Subject: caf\xc3\xa9",
+        )
+    )
+    assert parsed.subject == "café"
+    assert parsed.headers["Subject"] == "café"
+    assert (parsed.from_.name, parsed.from_.address) == ("José", "j@example.com")
+    assert [(a.name, a.address) for a in parsed.to] == [
+        ("Café Crème", "c@example.com"),
+        ("", "b@example.com"),
+    ]
+
+
+def test_broken_encoded_words_do_not_raise():
+    """A truncated or invalid encoded word leaves the header readable:
+    the bytes that decode are kept and the rest is marked or left as
+    written, and no exception escapes."""
+    assert decode_mime_header("=?utf-8?q?caf=C3?=") == "caf�"
+    assert decode_mime_header("=?utf-8?b?w6?=") == "\ufffd"
+    assert decode_mime_header("=?utf-8?b?w?=") == "=?utf-8?b?w?="
+    assert decode_mime_header("=?x-nonsense?q?hi?=") == "hi"
+    parsed = _parse(
+        _headed(
+            b"From: a@example.com",
+            b"To: =?utf-8?b?w?= <b@example.com>",
+            b"Subject: =?utf-8?q?caf=C3?=",
+        )
+    )
+    assert parsed.subject == "caf�"
+    assert parsed.to[0].address == "b@example.com"
