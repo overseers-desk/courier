@@ -546,6 +546,23 @@ class TestSmtpConfig:
         assert smtp.save_sent == "auto"
         assert smtp.rewrite_msgid_from_response is False
 
+    def test_connection_security_keys_default_false(self):
+        smtp = SmtpConfig.from_dict("gmail", {"host": "smtp.gmail.com"})
+        assert smtp.insecure_plaintext is False
+        assert smtp.insecure_skip_verify is False
+
+    @pytest.mark.parametrize("key", ["insecure_plaintext", "insecure_skip_verify"])
+    def test_connection_security_keys_parse(self, key):
+        smtp = SmtpConfig.from_dict("relay", {"host": "relay.lan", key: True})
+        assert getattr(smtp, key) is True
+
+    @pytest.mark.parametrize("key", ["insecure_plaintext", "insecure_skip_verify"])
+    def test_connection_security_keys_reject_non_boolean(self, key):
+        with pytest.raises(
+            ValueError, match=f"\\[smtp.relay\\]: '{key}' must be boolean"
+        ):
+            SmtpConfig.from_dict("relay", {"host": "relay.lan", key: "yes"})
+
     def test_ses_auto_rewrite(self):
         smtp = SmtpConfig.from_dict(
             "ses",
@@ -1207,3 +1224,26 @@ class TestImapBlockFieldTypes:
                     "allowed_folders": ["INBOX", " "],
                 }
             )
+
+
+class TestImapBlockConnectionSecurity:
+    """The two opt-out keys on an [imap.NAME] block parse like the SMTP ones."""
+
+    _base = {"host": "imap.lan", "username": "u", "password": "p"}
+
+    def test_keys_default_false(self):
+        block = ImapBlock.from_dict(dict(self._base), name="lan")
+        assert block.insecure_plaintext is False
+        assert block.insecure_skip_verify is False
+
+    @pytest.mark.parametrize("key", ["insecure_plaintext", "insecure_skip_verify"])
+    def test_keys_parse(self, key):
+        block = ImapBlock.from_dict({**self._base, key: True}, name="lan")
+        assert getattr(block, key) is True
+
+    @pytest.mark.parametrize("key", ["insecure_plaintext", "insecure_skip_verify"])
+    def test_keys_reject_non_boolean(self, key):
+        with pytest.raises(
+            ValueError, match=f"\\[imap.lan\\]: '{key}' must be boolean"
+        ):
+            ImapBlock.from_dict({**self._base, key: 1}, name="lan")

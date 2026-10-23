@@ -17,6 +17,7 @@ identity.smtp -> imap_block.default_smtp -> lone [smtp.NAME].
 import logging
 import os
 import re
+import ssl
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -151,6 +152,50 @@ class LocalCacheConfig:
         )
 
 
+def _connection_security(where: str, data: Dict[str, Any]) -> Dict[str, bool]:
+    """Read the two connection-security opt-outs of a block table.
+
+    Args:
+        where: The block label for error messages (``[smtp.NAME]`` or
+            ``[imap.NAME]``).
+        data: Raw table of the block.
+
+    Returns:
+        ``insecure_plaintext`` and ``insecure_skip_verify`` as keyword
+        arguments for the block's dataclass, each false when absent.
+
+    Raises:
+        ValueError: When either key is present and not a boolean.
+    """
+    out: Dict[str, bool] = {}
+    for key in ("insecure_plaintext", "insecure_skip_verify"):
+        value = data.get(key, False)
+        if not isinstance(value, bool):
+            raise ValueError(f"{where}: '{key}' must be boolean")
+        out[key] = value
+    return out
+
+
+def tls_context(insecure_skip_verify: bool = False) -> ssl.SSLContext:
+    """Build the SSL context every SMTP and IMAP TLS session uses.
+
+    Args:
+        insecure_skip_verify: The block's ``insecure_skip_verify`` key.
+            When false, the context verifies the server's certificate
+            against the system trust store and checks its host name
+            (RFC 7817 section 3). When true, it checks neither.
+
+    Returns:
+        The context, for ``smtplib.SMTP_SSL``, ``SMTP.starttls`` and
+        imapclient's ``ssl_context``.
+    """
+    context = ssl.create_default_context()
+    if insecure_skip_verify:
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+    return context
+
+
 @dataclass
 class SmtpConfig:
     """A named SMTP endpoint, referenced by [imap.*] and [identity.*] by name.
@@ -164,7 +209,8 @@ class SmtpConfig:
 
     Attributes:
         host: SMTP server hostname.
-        port: TCP port. Default 587 (STARTTLS); 465 implies SMTPS.
+        port: TCP port. Default 587. 465 is implicit TLS; any other port
+            upgrades with STARTTLS when the server offers it.
         username: Optional. When absent, inherits from the [imap.NAME] block in scope.
         password: Optional. When absent, inherits from the [imap.NAME] block in scope.
         save_sent: ``"auto"`` (default; resolves to false on gmail.com hosts
@@ -175,6 +221,12 @@ class SmtpConfig:
             view based on the post-DATA server response (used for SES, which
             rewrites Message-ID in transit). Defaults true when host matches
             an SES SMTP endpoint (``email-smtp.<region>.amazonaws.com``).
+        insecure_plaintext: When true, the login may go out without TLS
+            (no implicit TLS and no STARTTLS offered). Default false: such a
+            login is refused.
+        insecure_skip_verify: When true, TLS runs without checking the
+            server's certificate or host name. Default false: the
+            certificate must verify against the system trust store.
     """
 
     host: str
@@ -183,6 +235,8 @@ class SmtpConfig:
     password: Optional[str] = field(default=None, repr=False)
     save_sent: Any = "auto"  # "auto" | True | False
     rewrite_msgid_from_response: bool = False
+    insecure_plaintext: bool = False
+    insecure_skip_verify: bool = False
 
     @classmethod
     def from_dict(cls, name: str, data: Dict[str, Any]) -> "SmtpConfig":
@@ -226,6 +280,7 @@ class SmtpConfig:
             # The Message-ID rewrite target is the unrelated email.amazonses.com,
             # so we match on the SMTP host shape, not the rewrite target.
             rewrite = "email-smtp." in host and host.endswith("amazonaws.com")
+        security = _connection_security(where, data)
         return cls(
             host=host,
             port=port,
@@ -233,6 +288,7 @@ class SmtpConfig:
             password=data.get("password"),
             save_sent=save_sent,
             rewrite_msgid_from_response=rewrite,
+            **security,
         )
 
     @property
@@ -391,7 +447,14 @@ class ImapBlock:
         username: IMAP login.
         password: Optional password.
         oauth2: Optional OAuth2 credentials (Gmail).
-        use_ssl: Use IMAPS (SSL) or plaintext IMAP.
+        use_ssl: Use IMAPS (implicit TLS) or connect plain and upgrade with
+            STARTTLS when the server offers it.
+        insecure_plaintext: When true, the login may go out without TLS
+            (``use_ssl = false`` and no STARTTLS offered). Default false:
+            such a login is refused.
+        insecure_skip_verify: When true, TLS runs without checking the
+            server's certificate or host name. Default false: the
+            certificate must verify against the system trust store.
         idle_timeout: Seconds to keep the IMAP connection open. 0 closes
             after each call; -1 keeps it forever; >0 closes on idle.
         verify_with_noop: Send NOOP before reusing a cached connection.
@@ -417,6 +480,8 @@ class ImapBlock:
     password: Optional[str] = field(default=None, repr=False)
     oauth2: Optional[OAuth2Config] = None
     use_ssl: bool = True
+    insecure_plaintext: bool = False
+    insecure_skip_verify: bool = False
     idle_timeout: int = 300
     verify_with_noop: bool = True
     allowed_folders: Optional[List[str]] = None
@@ -522,6 +587,7 @@ class ImapBlock:
                 raise ValueError(f"{prefix}: 'redact' invalid: {e}") from e
 
         use_ssl = data.get("use_ssl", True)
+        security = _connection_security(prefix, data)
 
         return cls(
             host=host,
@@ -530,6 +596,7 @@ class ImapBlock:
             password=password,
             oauth2=oauth2_config,
             use_ssl=use_ssl,
+            **security,
             idle_timeout=data.get("idle_timeout", defaults.get("idle_timeout", 300)),
             verify_with_noop=data.get(
                 "verify_with_noop", defaults.get("verify_with_noop", True)

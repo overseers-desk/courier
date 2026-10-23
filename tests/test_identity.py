@@ -209,6 +209,23 @@ class TestResolveSmtpForIdentity:
         smtp = resolve_smtp_for_identity(ident, block, "acct", smtps)
         assert smtp.host == "smtp.gmail.com"
 
+    def test_template_block_keeps_its_connection_security_keys(self):
+        """Inheriting credentials from the IMAP block leaves the SMTP block's
+        own insecure_plaintext and insecure_skip_verify as written."""
+        smtps = {
+            "relay": SmtpConfig(
+                host="relay.lan",
+                port=25,
+                insecure_plaintext=True,
+                insecure_skip_verify=True,
+            )
+        }
+        ident = Identity(imap="acct", address="a@x.com", smtp="relay")
+        smtp = resolve_smtp_for_identity(ident, _block(), "acct", smtps)
+        assert smtp.username == _block().username
+        assert smtp.insecure_plaintext is True
+        assert smtp.insecure_skip_verify is True
+
     def test_lone_smtp_fallback(self):
         smtps = {"gmail": SmtpConfig(host="smtp.gmail.com")}
         block = _block()
