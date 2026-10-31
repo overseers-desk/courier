@@ -235,28 +235,28 @@ class TestSplitChainArgv:
         assert "/tmp/x.toml" in global_argv
         assert verbs == [("search", ["foo"]), ("search", ["bar"])]
 
-    def test_imap_equals_form(self):
-        s = _split_chain_argv(["--imap=acct1", "search", "foo", "search", "bar"])
+    def test_account_equals_form(self):
+        s = _split_chain_argv(["--account=acct1", "search", "foo", "search", "bar"])
         assert s is not None
-        assert "--imap=acct1" in s[0]
+        assert "--account=acct1" in s[0]
 
     def test_no_cache_extracted_from_any_position(self):
         # The format-first single-verb form routes through the chain
         # executor; --no-cache must reach globals from there, post-verb too.
         s = _split_chain_argv(
-            ["--imap", "x", "--format", "text", "search", "foo", "--no-cache"]
+            ["-a", "x", "--format", "text", "search", "foo", "--no-cache"]
         )
         assert s is not None
         global_argv, verbs, _, _ = s
         assert "--no-cache" in global_argv
         assert verbs == [("search", ["foo"])]
 
-    def test_repeated_imap(self):
+    def test_repeated_account(self):
         s = _split_chain_argv(
-            ["--imap", "acct1", "--imap", "acct2", "search", "foo", "search", "bar"]
+            ["-a", "acct1", "--account", "acct2", "search", "foo", "search", "bar"]
         )
         assert s is not None
-        assert s[0].count("--imap") == 2
+        assert s[0] == ["-a", "acct1", "--account", "acct2"]
 
     def test_format_flag_extracted(self):
         s = _split_chain_argv(["search", "foo", "search", "bar", "--format", "oneline"])
@@ -851,22 +851,22 @@ class TestSingleOpUnchanged:
 
 
 class TestApplyGlobalFlags:
-    def test_imap_repeats(self):
-        _apply_global_flags(["--imap", "a", "--imap", "b"])
+    def test_account_repeats(self):
+        _apply_global_flags(["-a", "a", "--account", "b"])
         from courier.__main__ import _imap_names
 
         assert _imap_names == ["a", "b"]
         # reset for other tests
         _apply_global_flags([])
 
-    def test_imap_equals_form(self):
-        _apply_global_flags(["--imap=a", "--imap=b"])
+    def test_account_equals_form(self):
+        _apply_global_flags(["--account=a", "--account=b"])
         from courier.__main__ import _imap_names
 
         assert _imap_names == ["a", "b"]
         _apply_global_flags([])
 
-    def test_all_imap_flag(self):
+    def test_all_accounts_flag(self):
         _apply_global_flags(["-A"])
         from courier.__main__ import _all_imap
 
@@ -892,14 +892,14 @@ class TestApplyGlobalFlags:
 
 
 class TestRewriteArgv:
-    def test_compose_dash_i_not_hoisted_as_imap(self):
+    def test_compose_dash_i_not_hoisted(self):
         # Regression: issue #36 (updated for v1.1.9 flag layout).
         # `-i` after a subcommand is the subcommand's `--identity`,
-        # never the global `--imap`; the hoist preprocessor must
+        # never a tool-wide option; the hoist preprocessor must
         # leave it alone.
         out = _rewrite_argv(
             [
-                "--imap",
+                "-a",
                 "acct",
                 "compose",
                 "--to",
@@ -925,13 +925,6 @@ class TestRewriteArgv:
             "partnerships",
             "--send",
         ]
-
-    def test_long_imap_after_subcommand_still_hoisted(self):
-        # `--imap` after the subcommand is hoisted to before it so the
-        # group callback sees it (the original purpose of the preprocessor).
-        out = _rewrite_argv(["search", "foo", "--imap", "acct"])
-        assert out.index("--imap") < out.index("search")
-        assert out.index("acct") == out.index("--imap") + 1
 
 
 class TestExitCodeTrichotomy:

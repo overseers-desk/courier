@@ -97,7 +97,7 @@ def _read_by_message_id(client: ImapClient) -> Any:
         patch("courier.__main__._make_client", return_value=client),
     ):
         return CliRunner().invoke(
-            app, ["--imap", "acct", "read", "--message-id", f"<{MID}>"]
+            app, ["-a", "acct", "read", "--message-id", f"<{MID}>"]
         )
 
 

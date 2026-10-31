@@ -278,7 +278,7 @@ class TestThreadCli:
     def test_prints_thread_under_op_key_and_block(self) -> None:
         client = MagicMock()
         client.find_thread.return_value = [{"uid": 9, "folder": "INBOX"}]
-        result = _invoke(["--imap", "acct", "thread", "-f", "INBOX", "-u", "7"], client)
+        result = _invoke(["-a", "acct", "thread", "-f", "INBOX", "-u", "7"], client)
         assert result.exit_code == 0, result.output
         client.find_thread.assert_called_once_with(7, "INBOX", no_cache=False)
         assert '"thread -f INBOX --uid 7"' in result.output
@@ -290,15 +290,13 @@ class TestThreadCli:
         with patch(
             "courier.__main__._resolve_message_id", return_value=("INBOX", 7, None)
         ):
-            result = _invoke(
-                ["--imap", "acct", "thread", "--message-id", "<b@x>"], client
-            )
+            result = _invoke(["-a", "acct", "thread", "--message-id", "<b@x>"], client)
         assert result.exit_code == 0, result.output
         client.find_thread.assert_called_once_with(7, "INBOX", no_cache=False)
 
     def test_failure_is_one_error_line(self) -> None:
         client = MagicMock()
         client.find_thread.side_effect = ConnectionError("dropped")
-        result = _invoke(["--imap", "acct", "thread", "-f", "INBOX", "-u", "7"], client)
+        result = _invoke(["-a", "acct", "thread", "-f", "INBOX", "-u", "7"], client)
         assert result.exit_code == 1
         assert "Error:" in (result.stderr or result.output)

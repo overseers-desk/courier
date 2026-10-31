@@ -174,3 +174,19 @@ class TestReadCLIThreadingHeaders:
 
         assert result.exit_code == 0
         client.fetch_email.assert_called_once_with(42, "INBOX", no_cache=True)
+
+    def test_format_text_renders_text(self):
+        client = MagicMock()
+        client.fetch_email.return_value = _make_email("<solo@example.com>")
+
+        runner = CliRunner()
+        with (
+            patch("courier.__main__._make_client", return_value=client),
+            _patch_config(),
+        ):
+            result = runner.invoke(
+                app, ["read", "-f", "INBOX", "-u", "42", "-F", "text"]
+            )
+
+        assert result.exit_code == 0
+        assert result.output.startswith("=== read -f INBOX --uid 42 ===")

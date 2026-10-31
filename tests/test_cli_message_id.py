@@ -1,7 +1,7 @@
 """Tests for ``read``/``reply --message-id``: resolving a Message-ID to a UID.
 
 The lookup runs a live ``msgid:`` search on the account named by
-``--imap`` and refuses, rather than guesses, whenever that search cannot
+``-a`` and refuses, rather than guesses, whenever that search cannot
 give one trustworthy answer.
 """
 
@@ -68,7 +68,7 @@ class TestReadByMessageId:
     def test_resolves_single_hit_and_reads_it(self):
         client = _client(_envelope([_hit("INBOX", 15591)]))
         result, fetch = _invoke(
-            ["--imap", "acct", "read", "--message-id", "<abc@host>"], client
+            ["-a", "acct", "read", "--message-id", "<abc@host>"], client
         )
         assert result.exit_code == 0, result.output
         fetch.assert_called_once()
@@ -76,7 +76,7 @@ class TestReadByMessageId:
 
     def test_search_is_live_and_uses_msgid_operator(self):
         client = _client(_envelope([_hit("INBOX", 1)]))
-        _invoke(["--imap", "acct", "read", "--message-id", "abc@host"], client)
+        _invoke(["-a", "acct", "read", "--message-id", "abc@host"], client)
         kwargs = client.search_emails.call_args.kwargs
         query = client.search_emails.call_args.args[0]
         assert query == "msgid:<abc@host>"
@@ -85,7 +85,7 @@ class TestReadByMessageId:
     def test_bare_and_bracketed_ids_match_each_other(self):
         client = _client(_envelope([_hit("INBOX", 3, message_id="abc@host")]))
         result, _ = _invoke(
-            ["--imap", "acct", "read", "--message-id", "<abc@host>"], client
+            ["-a", "acct", "read", "--message-id", "<abc@host>"], client
         )
         assert result.exit_code == 0, result.output
 
@@ -101,17 +101,17 @@ class TestReadByMessageId:
             "folder": "INBOX",
         }
         result, _ = _invoke(
-            ["--imap", "acct", "read", "--message-id", "<abc@host> (note)"], client
+            ["-a", "acct", "read", "--message-id", "<abc@host> (note)"], client
         )
         assert result.exit_code == 0, result.output
         client.local_message_id_hits.assert_called_once_with("abc@host", None)
         assert '"read -f INBOX --message-id abc@host"' in result.output
 
-    def test_refuses_without_explicit_imap(self):
+    def test_refuses_without_explicit_account(self):
         client = _client(_envelope([_hit("INBOX", 1)]))
         result, fetch = _invoke(["read", "--message-id", "<abc@host>"], client)
         assert result.exit_code == 2
-        assert "--imap" in _err(result)
+        assert "-a name" in _err(result)
         client.search_emails.assert_not_called()
         fetch.assert_not_called()
 
@@ -119,7 +119,7 @@ class TestReadByMessageId:
         client = _client(_envelope([]))
         client.search_emails.side_effect = PermanentError("SEARCH BAD")
         result, fetch = _invoke(
-            ["--imap", "acct", "read", "--message-id", "<abc@host>"], client
+            ["-a", "acct", "read", "--message-id", "<abc@host>"], client
         )
         assert result.exit_code == 1
         assert "cannot look up" in _err(result)
@@ -133,7 +133,7 @@ class TestReadByMessageId:
             _envelope([_hit("INBOX", 1), _hit("INBOX", 2, message_id="<other@x>")])
         )
         result, fetch = _invoke(
-            ["--imap", "acct", "read", "--message-id", "<abc@host>"], client
+            ["-a", "acct", "read", "--message-id", "<abc@host>"], client
         )
         assert result.exit_code == 1
         assert "cannot look up" in _err(result)
@@ -144,7 +144,7 @@ class TestReadByMessageId:
             _envelope([], folders_failed=[{"folder": "Archive", "error": "NO"}])
         )
         result, fetch = _invoke(
-            ["--imap", "acct", "read", "--message-id", "<abc@host>"], client
+            ["-a", "acct", "read", "--message-id", "<abc@host>"], client
         )
         assert result.exit_code == 1
         assert "cannot look up" in _err(result)
@@ -154,7 +154,7 @@ class TestReadByMessageId:
     def test_not_found(self):
         client = _client(_envelope([]))
         result, fetch = _invoke(
-            ["--imap", "acct", "read", "--message-id", "<abc@host>"], client
+            ["-a", "acct", "read", "--message-id", "<abc@host>"], client
         )
         assert result.exit_code == 1
         assert "not found" in _err(result)
@@ -163,7 +163,7 @@ class TestReadByMessageId:
     def test_copies_in_several_folders_ask_for_folder(self):
         client = _client(_envelope([_hit("INBOX", 1), _hit("Sent", 9)]))
         result, fetch = _invoke(
-            ["--imap", "acct", "read", "--message-id", "<abc@host>"], client
+            ["-a", "acct", "read", "--message-id", "<abc@host>"], client
         )
         assert result.exit_code == 1
         assert "inbox" in _err(result) and "sent" in _err(result)
@@ -173,7 +173,7 @@ class TestReadByMessageId:
     def test_folder_narrows_the_search(self):
         client = _client(_envelope([_hit("Sent", 9)]))
         result, fetch = _invoke(
-            ["--imap", "acct", "read", "-f", "Sent", "--message-id", "<abc@host>"],
+            ["-a", "acct", "read", "-f", "Sent", "--message-id", "<abc@host>"],
             client,
         )
         assert result.exit_code == 0, result.output
@@ -184,7 +184,7 @@ class TestReadByMessageId:
         client = _client(_envelope([]))
         result, _ = _invoke(
             [
-                "--imap",
+                "-a",
                 "acct",
                 "read",
                 "-f",
@@ -219,7 +219,7 @@ class TestReplyByMessageId:
             runner.invoke(
                 app,
                 [
-                    "--imap",
+                    "-a",
                     "acct",
                     "reply",
                     "--message-id",

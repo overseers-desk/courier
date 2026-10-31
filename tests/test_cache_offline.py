@@ -99,7 +99,7 @@ class World:
             patch("courier.local_cache.subprocess.run", side_effect=fake_mu),
             patch("courier.imap_client.imapclient.IMAPClient", side_effect=refuse),
         ):
-            return runner.invoke(app, ["--imap", "acct", *args])
+            return runner.invoke(app, ["-a", "acct", *args])
 
 
 @pytest.fixture

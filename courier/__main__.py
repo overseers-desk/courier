@@ -13,8 +13,10 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, NoReturn, Optional, Tuple, Union
 
+import click
 import typer
 from dotenv import load_dotenv
+from typer.core import TyperCommand, TyperGroup
 
 from courier import __version__
 from courier.config import (
@@ -53,14 +55,65 @@ def _version_callback(value: bool) -> None:
         raise typer.Exit()
 
 
+# Tool-wide options, declared on _global_options and accepted on either side of
+# the verb. A former spelling in _HIDDEN_SPELLINGS still works and shows nowhere.
+_TOOL_WIDE_VALUE = frozenset({"-c", "--config", "-a", "--account"})
+_TOOL_WIDE_BOOL = frozenset({"-A", "--all-accounts", "-v", "--verbose", "--no-cache"})
+_HIDDEN_SPELLINGS = {
+    "--imap": "--account",
+    "--all-imap": "--all-accounts",
+    "--from-imap": "--from-account",
+}
+
+
+class _CourierGroup(TyperGroup):
+    """The courier group, which reads tool-wide options on either side of the verb."""
+
+    def parse_args(self, ctx: click.Context, args: List[str]) -> List[str]:
+        """Parse ``args`` once ``_rewrite_argv`` has put them in front of the verb.
+
+        Args:
+            ctx: The group's Click context.
+            args: The command line after the program name.
+
+        Returns:
+            The arguments left for the verb.
+        """
+        return super().parse_args(ctx, _rewrite_argv(args))
+
+
+class _ToolWideHelpCommand(TyperCommand):
+    """A verb whose help also lists the tool-wide options it accepts."""
+
+    def format_options(
+        self, ctx: click.Context, formatter: click.HelpFormatter
+    ) -> None:
+        """Write the verb's own options, then the tool-wide ones.
+
+        Args:
+            ctx: The verb's Click context, whose root is the group's.
+            formatter: The help formatter being written to.
+        """
+        super().format_options(ctx, formatter)
+        root = ctx.find_root()
+        rows = [
+            p.get_help_record(root)
+            for p in root.command.params
+            if set(p.opts + p.secondary_opts) & (_TOOL_WIDE_VALUE | _TOOL_WIDE_BOOL)
+        ]
+        with formatter.section("Tool-wide options"):
+            formatter.write_dl([row for row in rows if row is not None])
+
+
 app = typer.Typer(
     name="courier",
+    cls=_CourierGroup,
     help=(
         "Email toolkit for AI assistants and command-line scripting.\n\n"
         "Examples:\n\n"
         "  courier -A search 'sergio' search 'panedas' read -f INBOX -u 42\n"
         "  courier search 'from:alice@x' || courier search 'alice'\n"
-        "  courier --imap NAME thread -f INBOX -u 42   # latest email in a thread\n\n"
+        "  courier -a NAME thread -f INBOX -u 42   # latest email in a thread\n\n"
         "Exit codes for data-returning commands (search, attachments, links): "
         "0 on success with results, 1 on success with zero results."
     ),
@@ -119,17 +172,18 @@ def _global_options(
     ),
     imap_names: List[str] = typer.Option(
         [],
-        "--imap",
+        "--account",
+        "-a",
         help=(
-            "[imap.NAME] block to use. Uses default_imap if omitted. "
-            "Repeat for several blocks."
+            "Account to use, by its [imap.NAME] name; default_imap if "
+            "omitted. Repeatable."
         ),
     ),
     all_imap: bool = typer.Option(
         False,
-        "--all-imap",
+        "--all-accounts",
         "-A",
-        help="Use every configured [imap.NAME] block.",
+        help="Use every configured account.",
     ),
     verbose: bool = typer.Option(
         False, "--verbose", "-v", help="Enable verbose logging."
@@ -168,9 +222,9 @@ def _resolve_imap_names() -> List[str]:
     """Resolve module-level [imap.*] flags to a deduplicated list of names.
 
     Returns the [imap.NAME] block names to search, validated against the
-    config. Errors hard if a name is unknown or if ``--all-imap`` is set
+    config. Errors hard if a name is unknown or if ``--all-accounts`` is set
     with no [imap.*] blocks configured. Emits a stderr note when
-    ``--all-imap`` overrides explicit ``-i`` flags.
+    ``--all-accounts`` overrides explicit ``--account`` flags.
     """
     try:
         cfg = load_config(_config_path)
@@ -182,7 +236,7 @@ def _resolve_imap_names() -> List[str]:
             typer.echo("Error: no [imap.*] blocks configured", err=True)
             raise typer.Exit(1)
         if _imap_names:
-            typer.echo("note: --all-imap overrides --imap values", err=True)
+            typer.echo("note: --all-accounts overrides --account values", err=True)
         return list(cfg.imap_blocks.keys())
     if not _imap_names:
         return [cfg.default_imap]
@@ -214,7 +268,7 @@ def _make_client(imap_override: Optional[str] = None, lazy: bool = False) -> Ima
 
     Args:
         imap_override: If given, use this [imap.NAME] block instead of
-            the global ``--imap`` flag.
+            the global ``--account`` flag.
         lazy: When ``True``, skip the eager connect.
 
     Raises:
@@ -229,8 +283,8 @@ def _make_client(imap_override: Optional[str] = None, lazy: bool = False) -> Ima
     if imap_override is None:
         if _all_imap or len(_imap_names) > 1:
             typer.echo(
-                "Error: this command does not support multi-block flags "
-                "(--all-imap or repeated --imap)",
+                "Error: this command does not support multi-account flags "
+                "(--all-accounts or repeated --account)",
                 err=True,
             )
             raise typer.Exit(1)
@@ -302,8 +356,8 @@ def _resolve_single_imap_name() -> str:
         raise typer.Exit(1)
     if _all_imap or len(_imap_names) > 1:
         typer.echo(
-            "Error: this command does not support multi-block flags "
-            "(--all-imap or repeated --imap)",
+            "Error: this command does not support multi-account flags "
+            "(--all-accounts or repeated --account)",
             err=True,
         )
         raise typer.Exit(1)
@@ -373,7 +427,7 @@ def _resolve_message_id(
     holding that Message-ID into the command's refusal.
 
     Args:
-        client: Client for the ``--imap`` block.
+        client: Client for the ``--account`` block.
         folder: ``-f`` value; narrows the lookup.
         message_id: ``--message-id`` value, with or without ``<>``.
         need_uid: When ``True`` the caller cannot use a bare file path.
@@ -425,7 +479,7 @@ def _resolve_target(
     :func:`_resolve_message_id`.
 
     Args:
-        client: Client for the ``--imap`` block.
+        client: Client for the ``--account`` block.
         folder: ``-f`` value; with ``--message-id`` it narrows the search.
         uid: ``--uid`` value, or ``None``.
         message_id: ``--message-id`` value, with or without ``<>``.
@@ -458,7 +512,7 @@ def _check_target_args(
     Raises:
         typer.Exit: 2 when both or neither of ``--uid`` and
             ``--message-id`` are given, when ``--uid`` lacks ``-f``, or
-            when ``--message-id`` lacks an explicit ``--imap NAME``.
+            when ``--message-id`` lacks an explicit ``-a NAME``.
     """
     if (uid is None) == (message_id is None):
         typer.echo("Error: give exactly one of --uid or --message-id", err=True)
@@ -468,7 +522,7 @@ def _check_target_args(
         raise typer.Exit(2)
     if message_id is not None and len(_imap_names) != 1:
         typer.echo(
-            "Error: --message-id needs --imap NAME: the lookup searches one "
+            "Error: --message-id needs -a NAME: the lookup searches one "
             "named account, never the default",
             err=True,
         )
@@ -674,9 +728,6 @@ def _parse_read_args(
 
 _CHAINABLE_VERBS = {"search", "read"}
 
-_GLOBAL_FLAGS_VALUE = {"-c", "--config", "--imap"}
-_GLOBAL_FLAGS_BOOL = {"-A", "--all-imap", "-v", "--verbose", "--version", "--no-cache"}
-
 _VERB_FLAGS_VALUE: Dict[str, set] = {
     "search": {"-f", "--folder", "-n", "--limit", "-q", "--query"},
     "read": {"-f", "--folder", "-u", "--uid"},
@@ -737,10 +788,8 @@ def _split_chain_argv(
     chain_defaults)`` when two or more chainable verbs are found at command
     position, or when a single chainable verb carries a ``--format/-F`` at
     any argv position; ``None`` otherwise so the caller can fall back to
-    typer dispatch. ``--format`` is a chain-level option: typer's top-level
-    callback has no ``--format`` and ``read`` has no per-command one, so a
-    lone verb carrying the flag runs through the chain executor, which
-    renders every format for every verb.
+    typer dispatch. Typer's top-level callback has no ``--format``, so a
+    lone verb carrying one runs through the chain executor.
 
     Walks argv left to right in two passes. The first pass strips global
     flags and the chain-level ``--format/-F`` option. Trailing chain-level
@@ -761,23 +810,19 @@ def _split_chain_argv(
         if tok == "--":
             rest.extend(argv[i + 1 :])
             break
-        if tok in _GLOBAL_FLAGS_VALUE and i + 1 < len(argv):
+        if tok in _TOOL_WIDE_VALUE and i + 1 < len(argv):
             globals_.extend([tok, argv[i + 1]])
             i += 2
             continue
         if (
             tok.startswith("--")
             and "=" in tok
-            and tok.split("=", 1)[0] in _GLOBAL_FLAGS_VALUE
+            and tok.split("=", 1)[0] in _TOOL_WIDE_VALUE
         ):
             globals_.append(tok)
             i += 1
             continue
-        if tok.startswith("--imap="):
-            globals_.append(tok)
-            i += 1
-            continue
-        if tok in _GLOBAL_FLAGS_BOOL:
+        if tok in _TOOL_WIDE_BOOL or tok == "--version":
             globals_.append(tok)
             i += 1
             continue
@@ -809,16 +854,6 @@ def _split_chain_argv(
         if skip_next:
             cur_args.append(tok)
             skip_next = False
-            j += 1
-            continue
-        if tok in ("--format", "-F") and j + 1 < len(rest):
-            out_format = rest[j + 1]
-            format_seen = True
-            j += 2
-            continue
-        if tok.startswith("--format=") or tok.startswith("-F="):
-            out_format = tok.split("=", 1)[1]
-            format_seen = True
             j += 1
             continue
         if cur_verb is not None and tok in _VERB_FLAGS_VALUE.get(cur_verb, set()):
@@ -860,23 +895,18 @@ def _apply_global_flags(global_argv: List[str]) -> None:
     i = 0
     while i < len(global_argv):
         tok = global_argv[i]
-        if tok in ("-c", "--config") and i + 1 < len(global_argv):
-            cfg_path = global_argv[i + 1]
-            i += 2
-            continue
-        if tok.startswith("--config=") or tok.startswith("-c="):
-            cfg_path = tok.split("=", 1)[1]
+        name, eq, value = tok.partition("=")
+        if name in _TOOL_WIDE_VALUE:
+            if not eq:
+                i += 1
+                value = global_argv[i]
+            if name in ("-c", "--config"):
+                cfg_path = value
+            else:
+                imap_names.append(value)
             i += 1
             continue
-        if tok == "--imap" and i + 1 < len(global_argv):
-            imap_names.append(global_argv[i + 1])
-            i += 2
-            continue
-        if tok.startswith("--imap="):
-            imap_names.append(tok.split("=", 1)[1])
-            i += 1
-            continue
-        if tok in ("-A", "--all-imap"):
+        if tok in ("-A", "--all-accounts"):
             all_imap = True
         elif tok in ("-v", "--verbose"):
             verbose = True
@@ -949,17 +979,7 @@ def _run_chain(
     except ValueError as exc:
         typer.echo(str(exc), err=True)
         return 2
-    if output_format == "json":
-        _out(result)
-    elif output_format == "text":
-        typer.echo(_format_chain_text(result))
-    elif output_format == "oneline":
-        typer.echo(_format_chain_oneline(result))
-    else:
-        typer.echo(
-            f"Error: unknown --format '{output_format}'. Use json, text, or oneline.",
-            err=True,
-        )
+    if not _echo_chain_result(result, output_format):
         return 2
     return _chain_exit_code(result)
 
@@ -1479,8 +1499,8 @@ def _no_route_error(cfg: CourierConfig) -> None:
 def _print_eager_warnings_if_relevant() -> None:
     """Print config warnings to stderr when user is 'checking in' on courier.
 
-    Detects no-args, ``--help``, or ``-h`` in argv (after stripping known
-    global options like ``--config``/``--imap``). Surfaces warnings before
+    Detects no-args, ``--help``, or ``-h`` in argv (after skipping the
+    tool-wide options). Surfaces warnings before
     typer takes over so the user sees them above the help text.
 
     Safe-fails: any error in load (missing config, bad TOML) is swallowed
@@ -1488,8 +1508,6 @@ def _print_eager_warnings_if_relevant() -> None:
     they then run a real command.
     """
     args = sys.argv[1:]
-    globals_with_value = {"--config", "-c", "--imap"}
-
     config_path: Optional[str] = None
     first_real: Optional[str] = None
     i = 0
@@ -1497,12 +1515,12 @@ def _print_eager_warnings_if_relevant() -> None:
         tok = args[i]
         if tok == "--":
             break
-        if tok in globals_with_value and i + 1 < len(args):
+        if tok in _TOOL_WIDE_VALUE and i + 1 < len(args):
             if tok in ("--config", "-c"):
                 config_path = args[i + 1]
             i += 2
             continue
-        if "=" in tok and tok.split("=", 1)[0] in globals_with_value:
+        if tok in _TOOL_WIDE_BOOL or tok.split("=", 1)[0] in _TOOL_WIDE_VALUE:
             if tok.startswith("--config="):
                 config_path = tok.split("=", 1)[1]
             i += 1
@@ -1647,6 +1665,31 @@ def config_check() -> None:
     print(f"config-check: OK ({path})")
     if warnings:
         print(f"  ({len(warnings)} warning(s) above)")
+
+
+def _echo_chain_result(result: Dict[str, Dict[str, Any]], output_format: str) -> bool:
+    """Print a chain-shaped result in the requested output format.
+
+    Args:
+        result: ``{op_key: {block_name: value}}``, as ``_execute_chain`` builds it.
+        output_format: ``json``, ``text`` or ``oneline``.
+
+    Returns:
+        False, after printing an error, when ``output_format`` is none of those.
+    """
+    if output_format == "json":
+        _out(result)
+    elif output_format == "text":
+        typer.echo(_format_chain_text(result))
+    elif output_format == "oneline":
+        typer.echo(_format_chain_oneline(result))
+    else:
+        typer.echo(
+            f"Error: unknown --format '{output_format}'. Use json, text, or oneline.",
+            err=True,
+        )
+        return False
+    return True
 
 
 def _build_inventory(cfg: CourierConfig) -> Dict[str, Any]:
@@ -2082,11 +2125,6 @@ def search(
         None, "--folder", "-f", help="Folder to search (default: all)."
     ),
     limit: int = typer.Option(50, "--limit", "-n", help="Maximum number of results."),
-    no_cache: bool = typer.Option(
-        False,
-        "--no-cache",
-        help="Bypass the local cache and query live IMAP.",
-    ),
     output_format: str = typer.Option(
         "json",
         "--format",
@@ -2113,7 +2151,6 @@ def search(
                         "query": effective,
                         "folder": folder,
                         "limit": limit,
-                        "no_cache": no_cache,
                     },
                 )
             ],
@@ -2122,17 +2159,7 @@ def search(
     except ValueError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(2)
-    if output_format == "json":
-        _out(result)
-    elif output_format == "text":
-        typer.echo(_format_chain_text(result))
-    elif output_format == "oneline":
-        typer.echo(_format_chain_oneline(result))
-    else:
-        typer.echo(
-            f"Error: unknown --format '{output_format}'. Use json, text, or oneline.",
-            err=True,
-        )
+    if not _echo_chain_result(result, output_format):
         raise typer.Exit(2)
     code = _chain_exit_code(result)
     if code != 0:
@@ -2158,14 +2185,15 @@ def read(
         "--message-id",
         help=(
             "Find the message by Message-ID instead of --uid. Needs "
-            "--imap NAME; refuses when that account's search cannot give "
+            "-a NAME; refuses when that account's search cannot give "
             "one answer."
         ),
     ),
-    no_cache: bool = typer.Option(
-        False,
-        "--no-cache",
-        help="Bypass the local cache and read from live IMAP.",
+    output_format: str = typer.Option(
+        "json",
+        "--format",
+        "-F",
+        help="Output format: json (default), text, or oneline.",
     ),
 ) -> None:
     """Read an email's content.
@@ -2184,7 +2212,7 @@ def read(
                 folder,
                 message_id,
                 need_uid=False,
-                use_cache=not (no_cache or _no_cache),
+                use_cache=not _no_cache,
             )
         else:
             folder, uid = _resolve_target(client, folder, uid, message_id)
@@ -2203,14 +2231,13 @@ def read(
             op_key = f"read -f {folder} --message-id {bare_message_id(message_id)}"
         else:
             assert folder is not None and uid is not None
-            result = _fetch_email_result(
-                client, folder, uid, no_cache=no_cache or _no_cache
-            )
+            result = _fetch_email_result(client, folder, uid, no_cache=_no_cache)
             op_key = _build_op_key("read", folder=folder, uid=uid)
         if "error" in result:
             typer.echo(result["error"], err=True)
             raise typer.Exit(1)
-        _out({op_key: {name: result}})
+        if not _echo_chain_result({op_key: {name: result}}, output_format):
+            raise typer.Exit(2)
     except ConnectionError as exc:
         typer.echo(f"Error: failed to connect to IMAP server: {exc}", err=True)
         raise typer.Exit(1)
@@ -2234,14 +2261,9 @@ def thread_cmd(
         "--message-id",
         help=(
             "Find the email by Message-ID instead of --uid. Needs "
-            "--imap NAME; refuses when that account's search cannot give "
+            "-a NAME; refuses when that account's search cannot give "
             "one answer."
         ),
-    ),
-    no_cache: bool = typer.Option(
-        False,
-        "--no-cache",
-        help="Bypass the local cache and read from live IMAP.",
     ),
     output_format: str = typer.Option(
         "json",
@@ -2258,18 +2280,12 @@ def thread_cmd(
     other servers it is the emails the reply headers (Message-ID,
     In-Reply-To, References) link.
     """
-    if output_format not in ("json", "text", "oneline"):
-        typer.echo(
-            f"Error: unknown --format '{output_format}'. Use json, text, or oneline.",
-            err=True,
-        )
-        raise typer.Exit(2)
     _check_target_args(folder, uid, message_id)
     name = _resolve_single_imap_name()
     client = _make_client(lazy=True)
     try:
         folder, uid = _resolve_target(client, folder, uid, message_id)
-        results = client.find_thread(uid, folder, no_cache=no_cache or _no_cache)
+        results = client.find_thread(uid, folder, no_cache=_no_cache)
     except (ValueError, CourierError, ConnectionError) as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(1)
@@ -2285,12 +2301,8 @@ def thread_cmd(
             }
         }
     }
-    if output_format == "json":
-        _out(result)
-    elif output_format == "text":
-        typer.echo(_format_chain_text(result))
-    else:
-        typer.echo(_format_chain_oneline(result))
+    if not _echo_chain_result(result, output_format):
+        raise typer.Exit(2)
 
 
 # ---------------------------------------------------------------------------
@@ -2328,7 +2340,7 @@ def move(
 
 @app.command("copy")
 def copy_cmd(
-    from_imap: str = typer.Option(..., "--from-imap", help="Source [imap.NAME] block."),
+    from_account: str = typer.Option(..., "--from-account", help="Source account."),
     from_folder: str = typer.Option(..., "--from-folder", help="Source folder."),
     uid: int = typer.Option(..., "--uid", "-u", help="Email UID in the source folder."),
     to_folder: str = typer.Option(
@@ -2343,13 +2355,13 @@ def copy_cmd(
 ) -> None:
     """Copy an email from one [imap.NAME] block into another.
 
-    The global --imap selects the destination block.
+    The global -a selects the destination account.
     Fetches the raw RFC 822 message from the source and APPENDs it to the
     destination, preserving the message byte-for-byte and its original date.
     """
     from courier.imap_client import copy_email_between_imap_blocks
 
-    source = _make_client(imap_override=from_imap)
+    source = _make_client(imap_override=from_account)
     dest = _make_client()
     try:
         result = copy_email_between_imap_blocks(
@@ -2368,7 +2380,7 @@ def copy_cmd(
             {
                 "success": True,
                 "subject": result["subject"],
-                "source": f"{from_imap}/{from_folder}/{uid}",
+                "source": f"{from_account}/{from_folder}/{uid}",
                 "destination": to_folder,
                 "new_uid": result["new_uid"],
                 "moved": result["moved"],
@@ -2851,7 +2863,7 @@ def compose(
             "Send as the named [identity.NAME] block (resolves From, "
             "display name, IMAP block, SMTP, fcc). Required on "
             "--send unless --smtp/--from is given. (Note: --identity "
-            "selects an [identity.NAME] block; --imap selects an "
+            "selects an [identity.NAME] block; -a selects an "
             "[imap.NAME] block, which is a different thing.)"
         ),
     ),
@@ -2951,7 +2963,7 @@ def compose(
     if not send_flag and (identity_name or smtp_name or display_name or fcc):
         typer.echo(
             "Error: --identity / --smtp / --name / --fcc are only valid "
-            "with --send. Drafting picks the identity from --imap "
+            "with --send. Drafting picks the identity from -a "
             "(--from selects by address).",
             err=True,
         )
@@ -3095,7 +3107,7 @@ def reply(
         "--message-id",
         help=(
             "Reply to the message with this Message-ID instead of --uid. "
-            "Needs --imap NAME; refuses when that account's search cannot "
+            "Needs -a NAME; refuses when that account's search cannot "
             "give one answer."
         ),
     ),
@@ -3280,7 +3292,7 @@ def reply(
             )
             if route is None:
                 # No mode A/B given: try recipient match. The matched
-                # identity is by definition on the global -i block, so
+                # identity is by definition on the global -a account, so
                 # the fetch client doubles as the FCC client.
                 idents = identities_for_imap(cfg, name)
                 if not idents:
@@ -3729,13 +3741,6 @@ def accept_invite(
 
 @app.command("mcp")
 def mcp_serve(
-    config: Optional[str] = typer.Option(
-        None,
-        "--config",
-        "-c",
-        help="Path to TOML configuration file.",
-        envvar="COURIER_CONFIG",
-    ),
     debug: bool = typer.Option(False, "--debug", help="Enable debug logging."),
     dev: bool = typer.Option(False, "--dev", help="Enable development mode."),
     version: bool = typer.Option(False, "--version", help="Show version and exit."),
@@ -3747,7 +3752,7 @@ def mcp_serve(
     from courier.mcp_server import create_server, run_server, setup_server_logging
 
     setup_server_logging()
-    server = create_server(config, debug)
+    server = create_server(_config_path, debug)
     run_server(server)
 
 
@@ -3756,40 +3761,39 @@ def mcp_serve(
 # ---------------------------------------------------------------------------
 
 
+for _command_info in app.registered_commands:
+    _command_info.cls = _ToolWideHelpCommand
+
 _SEARCH_ALIASES = {"search-email", "search_email", "email-search", "email_search"}
 
 
 def _rewrite_argv(argv: List[str]) -> List[str]:
     """Rewrite argv for AI-friendly invocation.
 
-    Two transformations:
-    1. If the subcommand is one of the known search aliases
+    Three transformations, each a no-op on an argv it already rewrote:
+    1. A former option spelling (``_HIDDEN_SPELLINGS``) becomes the current one.
+    2. If the subcommand is one of the known search aliases
        (``email_search``, ``email-search``, ``search_email``, ``search-email``),
        rewrite it to ``search`` and emit a note to stderr.
-    2. If ``-i``/``--imap`` appears after the subcommand, hoist it to
-       before the subcommand so Typer's global callback sees it.
+    3. Each tool-wide option after the subcommand moves, with its value, to
+       before it, so Typer's group callback sees it.
 
     Skips when ``_COURIER_COMPLETE`` is set so shell-completion is undisturbed.
     """
     if os.environ.get("_COURIER_COMPLETE"):
         return argv
-    out = list(argv)
-    globals_with_value = {"--config", "-c", "--imap"}
+    end = argv.index("--") if "--" in argv else len(argv)
+    out: List[str] = []
+    for tok in argv[:end]:
+        name, eq, value = tok.partition("=")
+        out.append(_HIDDEN_SPELLINGS.get(name, name) + eq + value)
+    out += argv[end:]
     sub_idx: Optional[int] = None
     i = 0
-    while i < len(out):
+    while i < end:
         tok = out[i]
-        if tok == "--":
-            break
-        if tok in globals_with_value:
+        if tok in _TOOL_WIDE_VALUE or tok in ("--format", "-F"):
             i += 2
-            continue
-        if (
-            tok.startswith("--")
-            and "=" in tok
-            and tok.split("=", 1)[0] in globals_with_value
-        ):
-            i += 1
             continue
         if tok.startswith("-"):
             i += 1
@@ -3802,27 +3806,21 @@ def _rewrite_argv(argv: List[str]) -> List[str]:
     if sub in _SEARCH_ALIASES:
         sys.stderr.write(f"note: no such subcommand {sub!r}; running 'search'\n")
         out[sub_idx] = "search"
-    imap_values: List[str] = []
+    moved: List[str] = []
     tail: List[str] = []
     j = sub_idx + 1
-    while j < len(out):
+    while j < end:
         tok = out[j]
-        if tok == "--imap" and j + 1 < len(out):
-            imap_values.append(out[j + 1])
+        if tok in _TOOL_WIDE_VALUE and j + 1 < end:
+            moved += out[j : j + 2]
             j += 2
             continue
-        if tok.startswith("--imap="):
-            imap_values.append(tok.split("=", 1)[1])
-            j += 1
-            continue
-        tail.append(tok)
+        if tok in _TOOL_WIDE_BOOL or tok.split("=", 1)[0] in _TOOL_WIDE_VALUE:
+            moved.append(tok)
+        else:
+            tail.append(tok)
         j += 1
-    if imap_values:
-        flat: List[str] = []
-        for v in imap_values:
-            flat.extend(["--imap", v])
-        return out[:sub_idx] + flat + [out[sub_idx]] + tail
-    return out
+    return out[:sub_idx] + moved + [out[sub_idx]] + tail + out[end:]
 
 
 def main() -> None:

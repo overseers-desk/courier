@@ -250,7 +250,7 @@ class TestCommand:
 
     def _invoke(self, cfg: CourierConfig, *args: str) -> Any:
         with patch("courier.__main__.load_config", return_value=cfg):
-            return CliRunner().invoke(app, ["--all-imap", *args])
+            return CliRunner().invoke(app, ["-A", *args])
 
     def test_the_command_asks_for_50(self, server: SimpleNamespace):
         result = self._invoke(_config("a"), "search", "q")
