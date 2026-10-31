@@ -70,7 +70,7 @@ class _CourierGroup(TyperGroup):
     """The courier group, which reads tool-wide options on either side of the verb."""
 
     def parse_args(self, ctx: click.Context, args: List[str]) -> List[str]:
-        """Parse ``args`` once ``_rewrite_argv`` has put them in front of the verb.
+        """Move tool-wide options in front of the verb, then parse ``args``.
 
         Args:
             ctx: The group's Click context.
@@ -1500,8 +1500,8 @@ def _print_eager_warnings_if_relevant() -> None:
     """Print config warnings to stderr when user is 'checking in' on courier.
 
     Detects no-args, ``--help``, or ``-h`` in argv (after skipping the
-    tool-wide options). Surfaces warnings before
-    typer takes over so the user sees them above the help text.
+    tool-wide options). Surfaces warnings before typer takes over so the
+    user sees them above the help text.
 
     Safe-fails: any error in load (missing config, bad TOML) is swallowed
     here; the user will see the actual error from typer's normal flow if
@@ -3770,7 +3770,8 @@ _SEARCH_ALIASES = {"search-email", "search_email", "email-search", "email_search
 def _rewrite_argv(argv: List[str]) -> List[str]:
     """Rewrite argv for AI-friendly invocation.
 
-    Three transformations, each a no-op on an argv it already rewrote:
+    Three transformations; ``main`` and the group's ``parse_args`` both run
+    them, so each is a no-op on an argv it already rewrote:
     1. A former option spelling (``_HIDDEN_SPELLINGS``) becomes the current one.
     2. If the subcommand is one of the known search aliases
        (``email_search``, ``email-search``, ``search_email``, ``search-email``),

@@ -69,7 +69,7 @@ install -Dpm 644 debian/courier.1 %{buildroot}%{_mandir}/man1/courier.1
 %changelog
 * Sun Nov 01 2026 Weiwu Zhang <a@colourful.land> - 1.2.3-1
 - -a/--account picks the account and -A/--all-accounts takes every one. These, -c/--config, -v/--verbose and --no-cache work before or after the command, and every command's help lists them. The former spellings --imap, --all-imap and copy --from-imap still work.
-- read takes --format json, text or oneline, as search and thread do, and courier -c FILE mcp reads that file.
+- read takes --format json, text or oneline, as search and thread do, and courier -c FILE mcp reads that file instead of ignoring it.
 - courier thread lists the thread an email belongs to, newest first, so the latest reply in a known thread takes one call.
 - A header folded over several lines reads on one line in search results and listings.
 - IMAP with use_ssl = false upgrades with STARTTLS when the server offers it, and otherwise refuses to log in unless the block sets insecure_plaintext. SMTP verifies the certificate on port 465 and after STARTTLS, upgrades on any port that offers STARTTLS, and refuses a login without TLS unless insecure_plaintext is set. insecure_skip_verify turns the certificate check off. docs/CONFIGURATION.md describes both keys.

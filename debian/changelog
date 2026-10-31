@@ -5,7 +5,7 @@ courier (1.2.3) unstable; urgency=medium
     command, and every command's help lists them. The former spellings
     --imap, --all-imap and copy --from-imap still work.
   * read takes --format json, text or oneline, as search and thread do, and
-    courier -c FILE mcp reads that file.
+    courier -c FILE mcp reads that file instead of ignoring it.
   * courier thread lists the thread an email belongs to, newest first, so
     the latest reply in a known thread takes one call.
   * A header folded over several lines reads on one line in search results
