@@ -1,3 +1,59 @@
+courier (1.2.3) unstable; urgency=medium
+
+  * -a/--account picks the account and -A/--all-accounts takes every one.
+    These, -c/--config, -v/--verbose and --no-cache work before or after the
+    command, and every command's help lists them. The former spellings
+    --imap, --all-imap and copy --from-imap still work.
+  * read takes --format json, text or oneline, as search and thread do, and
+    courier -c FILE mcp reads that file.
+  * courier thread lists the thread an email belongs to, newest first, so
+    the latest reply in a known thread takes one call.
+  * A header folded over several lines reads on one line in search results
+    and listings.
+  * IMAP with use_ssl = false upgrades with STARTTLS when the server offers
+    it, and otherwise refuses to log in unless the block sets
+    insecure_plaintext. SMTP verifies the certificate on port 465 and after
+    STARTTLS, upgrades on any port that offers STARTTLS, and refuses a login
+    without TLS unless insecure_plaintext is set. insecure_skip_verify turns
+    the certificate check off. docs/CONFIGURATION.md describes both keys.
+  * A message with 8-bit content is sent with BODY=8BITMIME, and the send is
+    refused before MAIL FROM when the server does not offer 8BITMIME. An
+    attached email goes out 7bit or 8bit as RFC 2046 requires, and a text
+    attachment that can travel as it is goes out unencoded instead of
+    base64.
+  * A send whose server reply never comes is reported as outcome unknown,
+    not as a failure: no Sent copy is filed, the draft is kept, and the exit
+    code says not to retry. A server that refuses MAIL FROM is reported with
+    its code and text before any recipient is sent.
+  * A From display name containing < no longer corrupts the sender address,
+    on send and on send-draft, and a From with no address is refused by
+    name.
+  * A text attachment that is not UTF-8 goes out as application/octet-stream
+    in base64, keeping its filename. Every new message, MCP drafts included,
+    carries a Message-ID naming the sender's domain.
+  * A reply keeps an existing Re: prefix in any letter case, so RE: Hello
+    stays as it is, and its attribution line names the sender by decoded
+    name and address. A reply to a message with no References but one
+    In-Reply-To starts its References with that ID.
+  * Folder attributes match in any letter case, so a \Noselect folder stays
+    out of the folder list and a \Sent or \All folder is found by its role.
+    The thread search finds a Message-ID holding brackets, wildcards or
+    non-ASCII characters.
+  * A forwarded message is listed as one .eml attachment named from its
+    Subject, and its text and files no longer merge into the outer message.
+    A forwarded message that arrived base64 or quoted-printable saves
+    decoded.
+  * To, Cc, Bcc, Reply-To and From are split by the RFC 5322 address parser,
+    so a quoted display name containing a comma is one address and a group
+    yields its members.
+  * A Date with no zone or -0000 is read as UTC. A text part with an unknown
+    or missing charset reads as UTF-8 with replacement marks, and iso-8859-1
+    reads as windows-1252. A text part marked inline is the body, not an
+    attachment, and a malformed encoded header no longer makes a message
+    unreadable.
+
+ -- Weiwu Zhang <a@colourful.land>  Sun, 01 Nov 2026 00:00:00 +0000
+
 courier (1.2.2) unstable; urgency=medium
 
   * A crash prints no password, OAuth2 client secret or token: the
