@@ -230,7 +230,7 @@ When a solution genuinely requires a rule (e.g. "avoid `2>&1` in examples"), the
 - Send flags. The doc listed `--bcc`, `--cc`, `--attach`, `--body-html`, `--no-thread`, `--allow-no-copy`, `--keep-draft`, `--dry-run`, `--fcc IMAP:FOLDER`; for a routine reply the AI scanned the list and guessed a wrong combination instead of consulting `courier reply --help`.
 - Dispatch internals. The doc explained `X-GM-RAW` dispatch on Gmail and the `imap:` raw escape for parens grouping elsewhere; Gmail-only users absorbed reference material they never needed, and non-Gmail users met the runtime error anyway, which is more specific than the pre-explanation.
 - Niche send configuration. The doc pre-documented `--allow-no-copy`, `[identity.NAME].bcc`, `fcc` folder auto-detection and `save_sent = false`; the AI memorised configuration paths it almost never needs, while the error at the moment one matters names the exact corrective flag.
-- Superseded syntax. The doc carried "Migration: `-a <account>` → `--imap <name>`" for users coming from the pre-1.x CLI; a fresh AI session has never seen `-a` and reads the line as noise that wastes attention.
+- Superseded syntax. The doc carried a migration line from an old flag spelling to the current one; a fresh AI session has never seen the old spelling and reads the line as noise that wastes attention.
 
 **Solution.** Inventory lives in `--help`; the source demonstrates shape. Operator syntax comes from the example queries rather than a list. The Sending section carries the three verbs (`compose`, `reply`, `send-draft`), one complete send's flags (`--to`, `--subject`, `--body`, `--send`, of which only `--body` is required), and the identity flag (`-i NAME`). Relay-style sends, dispatch internals and niche configuration route to `courier <verb> --help`, where a runtime error at the point of failure beats a pre-explanation. Only current syntax is described.
 """
@@ -269,12 +269,12 @@ courier -A --format json \
 
 A zero answers only the query that produced it. Mail relayed through a mailing list or a Google Group carries the group's address in `from` (`'Example Agency' via Team <team@example.org>`) and the sender's own address (`notices@agency.example`) elsewhere in the message, so `from:notices` misses it while the bare word `notices`, which matches anywhere in the message, can find it. Before telling the user something never arrived, search a distinctive bare word or number they know (an address fragment, a reference number) with no operator in front of it.
 
-Output shape: `{op_key: {imap_name: {results: [...], provenance: {...}, status: ...}}}`, and `folders_failed` alongside them in a block where a folder's search or fetch failed. `status` is `complete` (every folder searched; an `-n` cut leaves it complete), `partial` (some folder failed, named in `folders_failed`) or `failed`, where `error` stands in place of `results` and gives the reason, `connection failed: <reason>` when the server could not be reached. `results: []` next to a `folders_failed` entry is a folder that was never looked in, not an absence; the exit code says the same, 1 for a clean zero and 2 for a zero with failures. `courier -A` queries every IMAP block; `--imap NAME` (repeats across the chain) selects specific blocks. Slice the JSON with `jq` against a tempfile; `head`/`tail` cut mid-structure. stderr carries notes addressed to the user's terminal (a config warning), so folding it into stdout with `2>&1` puts non-JSON text in front of `jq`. `provenance.indexed_at` is the local index's mtime, carried whether the answer came from the index or from IMAP; courier serves from the index at any age and leaves the judgement to you, so compare it against what your question tolerates and pass `--no-cache` when you need live data.
+Output shape: `{op_key: {imap_name: {results: [...], provenance: {...}, status: ...}}}`, and `folders_failed` alongside them in a block where a folder's search or fetch failed. `status` is `complete` (every folder searched; an `-n` cut leaves it complete), `partial` (some folder failed, named in `folders_failed`) or `failed`, where `error` stands in place of `results` and gives the reason, `connection failed: <reason>` when the server could not be reached. `results: []` next to a `folders_failed` entry is a folder that was never looked in, not an absence; the exit code says the same, 1 for a clean zero and 2 for a zero with failures. `courier -A` queries every account; `-a NAME`, repeatable, selects specific ones for the whole chain. Slice the JSON with `jq` against a tempfile; `head`/`tail` cut mid-structure. stderr carries notes addressed to the user's terminal (a config warning), so folding it into stdout with `2>&1` puts non-JSON text in front of `jq`. `provenance.indexed_at` is the local index's mtime, carried whether the answer came from the index or from IMAP; courier serves from the index at any age and leaves the judgement to you, so compare it against what your question tolerates and pass `--no-cache` when you need live data.
 
 ## Reads
 
 ```bash
-courier --imap <imap> --format json \
+courier -a <account> --format json \
   read -u 100 \
   read -u 200 \
   read -u 300 \
@@ -284,14 +284,14 @@ jq 'map_values(map_values({uid, folder, subject, from, date, body}))' "$RESULTS"
 
 UIDs from a prior search go into one chain over a single IMAP session; trailing `-f FOLDER` peels off as the chain default. Login dominates the per-fetch cost; Gmail caps simultaneous IMAP connections per account, so N parallel `read` processes hit that cap.
 
-For the latest email in a thread you already hold one message of, skip the search: `courier --imap <imap> thread -f <folder> -u <uid>` (or `--message-id "<id>"`) lists the whole thread newest first, the user's own replies included, so the first result is the latest.
+For the latest email in a thread you already hold one message of, skip the search: `courier -a <account> thread -f <folder> -u <uid>` (or `--message-id "<id>"`) lists the whole thread newest first, the user's own replies included, so the first result is the latest.
 
 ## Attachments
 
 ```bash
-courier --imap <imap> attachments -f <folder> -u <uid>
-courier --imap <imap> save -f <folder> -u <uid> --attachment <name> -o <path>
-courier --imap <imap> export -f <folder> -u <uid> --raw -o /tmp/msg.eml
+courier -a <account> attachments -f <folder> -u <uid>
+courier -a <account> save -f <folder> -u <uid> --attachment <name> -o <path>
+courier -a <account> export -f <folder> -u <uid> --raw -o /tmp/msg.eml
 ```
 
 `--attachment` accepts a filename or the numeric index reported by `attachments`.
@@ -300,12 +300,12 @@ courier --imap <imap> export -f <folder> -u <uid> --raw -o /tmp/msg.eml
 
 ```bash
 courier compose --to recipient@example.com --subject "..." --body "..." --send -i NAME
-courier --imap <imap> reply -f <folder> -u <uid> --body "..." --send -i NAME
-courier --imap <imap> reply --message-id "<id>" --body "..." --send -i NAME
-courier --imap <imap> send-draft -f Drafts -u <uid>
+courier -a <account> reply -f <folder> -u <uid> --body "..." --send -i NAME
+courier -a <account> reply --message-id "<id>" --body "..." --send -i NAME
+courier -a <account> send-draft -f Drafts -u <uid>
 ```
 
-`read` and `reply` take `--message-id` in place of `-f`/`-u`. It needs an explicit `--imap`, and it refuses when that account's search fails or the ID sits in several folders; `-f` then picks the folder.
+`read` and `reply` take `--message-id` in place of `-f`/`-u`. It needs an explicit `-a`, and it refuses when that account's search fails or the ID sits in several folders; `-f` then picks the folder.
 
 Subjects and bodies pass through as UTF-8 in whatever script the user writes; their correspondence runs in Spanish and Chinese as well as English.
 

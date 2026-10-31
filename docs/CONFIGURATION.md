@@ -41,10 +41,10 @@ imap = "work"
 address = "you@company.com"
 ```
 
-## Selecting an `[imap.*]` block with `--imap`
+## Selecting an account with `-a`
 
 ```bash
-courier --imap work search "is:unread"
+courier -a work search "is:unread"
 ```
 
 ## One mailbox, several identities
