@@ -586,7 +586,7 @@ class ImapClient:
         # Case 4: Connection might be stale - check and reconnect if needed
         if self._is_connection_stale():
             logger.info(f"Connection idle for >{idle_timeout}s, reconnecting...")
-            self.disconnect()
+            self._drop_connection()
             self.connect()
             return
 
@@ -594,7 +594,7 @@ class ImapClient:
         if self.block.verify_with_noop:
             if not self._verify_connection():
                 logger.warning("Connection verification failed, reconnecting...")
-                self.disconnect()
+                self._drop_connection()
                 self.connect()
 
     def get_capabilities(self) -> List[str]:
@@ -2710,7 +2710,10 @@ class ImapClient:
                 if not uids:
                     continue
                 self.select_folder(current_folder, readonly=True)
-                date_data = self._client_or_raise().fetch(uids, ["INTERNALDATE"])
+                with self._server_errors_mapped(
+                    f"FETCH INTERNALDATE in {current_folder}"
+                ):
+                    date_data = self._client_or_raise().fetch(uids, ["INTERNALDATE"])
                 for uid, data in date_data.items():
                     dt = data.get(b"INTERNALDATE")
                     if self._after_bound(dt):

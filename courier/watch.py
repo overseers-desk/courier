@@ -29,7 +29,6 @@ from courier.errors import (
     FolderNotFound,
     TransientError,
     WorldBoundRefused,
-    as_courier_error,
 )
 from courier.imap_client import ImapClient
 
@@ -234,7 +233,7 @@ def _watch_events(
                 raw_client.idle_done()
                 return
             except Exception as e:
-                err = as_courier_error(e)
+                err = client._mapped(e)
                 if not isinstance(err, TransientError):
                     if err is e:
                         raise
@@ -253,7 +252,6 @@ def _watch_events(
                     e,
                     backoff,
                 )
-                client.disconnect()
                 if stop is not None:
                     stop.wait(backoff)
                 else:

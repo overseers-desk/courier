@@ -105,6 +105,9 @@ class TestWatchEvents:
         assert events[0].uidvalidity == 111
         assert events[1].uidvalidity == 222
         assert stop.waits == [1.0]  # first backoff step
+        # The dropped socket is closed, not sent a LOGOUT it cannot answer.
+        inst1.shutdown.assert_called_once()
+        inst1.logout.assert_not_called()
 
     def test_reissue_after_elapsed_triggers_idle_done_and_reidle(self, monkeypatch):
         stop = threading.Event()

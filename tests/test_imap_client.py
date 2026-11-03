@@ -3612,3 +3612,43 @@ class TestBrokenConnectionDropped:
         assert client.connected is True
         assert client.client is mock_imap_client
         mock_imap_client.shutdown.assert_not_called()
+
+    def test_a_timed_out_date_fetch_in_a_search_drops(self, mock_imap_client):
+        client = ImapClient(self._block(), world_as_of=None)
+        mock_imap_client.search.return_value = [1]
+        mock_imap_client.fetch.side_effect = TimeoutError("timed out")
+        with patch("imapclient.IMAPClient", return_value=mock_imap_client):
+            client.connect()
+            result = client.search_emails("from:alice", folder="INBOX")
+
+        assert result["folders_failed"][0]["folder"] == "INBOX"
+        assert client.client is None
+        mock_imap_client.shutdown.assert_called_once()
+        mock_imap_client.logout.assert_not_called()
+
+    def test_a_failed_noop_reconnects_without_logout(self, mock_imap_client):
+        block = replace(self._block(), verify_with_noop=True)
+        client = ImapClient(block)
+        mock_imap_client.noop.side_effect = TimeoutError("timed out")
+        with patch(
+            "imapclient.IMAPClient", side_effect=[mock_imap_client, MagicMock()]
+        ) as factory:
+            client.connect()
+            client.ensure_connected()
+
+        assert factory.call_count == 2
+        mock_imap_client.shutdown.assert_called_once()
+        mock_imap_client.logout.assert_not_called()
+
+    def test_an_idle_stale_connection_reconnects_without_logout(self, mock_imap_client):
+        client = ImapClient(replace(self._block(), idle_timeout=1))
+        with patch(
+            "imapclient.IMAPClient", side_effect=[mock_imap_client, MagicMock()]
+        ) as factory:
+            client.connect()
+            client.last_activity = datetime(2000, 1, 1)
+            client.ensure_connected()
+
+        assert factory.call_count == 2
+        mock_imap_client.shutdown.assert_called_once()
+        mock_imap_client.logout.assert_not_called()
