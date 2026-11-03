@@ -399,8 +399,9 @@ class ImapClient:
                 port=block.port,
                 ssl=block.use_ssl,
                 ssl_context=context,
-                # The read bound covers every reply after the connect, the
-                # login's included, and Gmail's login reply can pass 10 s.
+                # connect bounds the TCP and TLS setup, the greeting and the
+                # first CAPABILITY; read bounds every reply after, the
+                # login's included, which Gmail can take over 10 s to send.
                 timeout=imapclient.SocketTimeout(connect=10, read=60),
             )
             if not block.use_ssl:

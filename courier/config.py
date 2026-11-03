@@ -455,8 +455,9 @@ class ImapBlock:
         insecure_skip_verify: When true, TLS runs without checking the
             server's certificate or host name. Default false: the
             certificate must verify against the system trust store.
-        idle_timeout: Seconds to keep the IMAP connection open. 0 closes
-            after each call; -1 keeps it forever; >0 closes on idle.
+        idle_timeout: Seconds a connection may sit idle and still be
+            reused; past it, the next call reconnects. 0 reconnects for
+            every call; -1 always reuses.
         verify_with_noop: Send NOOP before reusing a cached connection.
         allowed_folders: Whitelist of folder names this block exposes.
             None means all folders.
