@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from imapclient import SocketTimeout  # type: ignore[import-untyped]
 
 from courier.config import ImapBlock, OAuth2Config
 from courier.errors import (
@@ -130,7 +131,11 @@ class TestImapClient:
 
             # Verify connection was established with correct parameters
             mock_client_class.assert_called_once_with(
-                "imap.example.com", port=993, ssl=True, ssl_context=None, timeout=10
+                "imap.example.com",
+                port=993,
+                ssl=True,
+                ssl_context=None,
+                timeout=SocketTimeout(connect=10, read=60),
             )
 
             # Verify login was called with correct credentials
@@ -159,7 +164,11 @@ class TestImapClient:
             client.connect()
 
         mock_client_class.assert_called_once_with(
-            "imap.example.com", port=143, ssl=False, ssl_context=None, timeout=10
+            "imap.example.com",
+            port=143,
+            ssl=False,
+            ssl_context=None,
+            timeout=SocketTimeout(connect=10, read=60),
         )
         server.has_capability.assert_called_once_with("STARTTLS")
         server.starttls.assert_called_once()

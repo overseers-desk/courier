@@ -399,7 +399,9 @@ class ImapClient:
                 port=block.port,
                 ssl=block.use_ssl,
                 ssl_context=context,
-                timeout=10,  # 10 second connection timeout
+                # The read bound covers every reply after the connect, the
+                # login's included, and Gmail's login reply can pass 10 s.
+                timeout=imapclient.SocketTimeout(connect=10, read=60),
             )
             if not block.use_ssl:
                 if self.client.has_capability("STARTTLS"):
