@@ -6,7 +6,8 @@ reported in its own dict, so one unreachable server leaves the other
 blocks' results standing. A rejected query raises instead, since it
 would fail the same way on every block. The client connects only when
 the search needs the server, so a block the local cache answers makes
-no connection.
+no connection. A caller that holds its own client per block, to reuse
+one login across several searches, calls :func:`search_block` on it.
 """
 
 from datetime import datetime

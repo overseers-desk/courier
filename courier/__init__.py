@@ -4,9 +4,10 @@ The names in ``__all__`` are courier's supported library surface: config
 (``CourierConfig.from_dict`` for a dict the caller builds, ``load_config``
 for the file and environment the ``courier`` command reads), the error
 taxonomy, identity/SMTP resolution, the IMAP client and its Message-ID
-lookup, ``search`` across [imap.NAME] blocks, ``watch``, message models
-with ``Email.to_dict``, the query grammar, MIME building, and
-send-with-FCC.
+lookup, ``search`` across [imap.NAME] blocks (``search_block`` and
+``block_status`` for a caller holding its own client per block),
+``watch``, message models with ``Email.to_dict``, the query grammar,
+MIME building, and send-with-FCC.
 Anything not listed here is internal and may reshape without notice.
 
 The library reads only what it is handed. Importing it loads no ``.env``
@@ -51,7 +52,7 @@ from courier.query import (
     UntranslatableForBackend,
     parse,
 )
-from courier.searching import search
+from courier.searching import block_status, search, search_block
 from courier.sending import send_with_fcc
 from courier.smtp_client import create_mime
 from courier.smtp_transport import send as smtp_send
@@ -107,6 +108,8 @@ __all__ = [
     "UntranslatableQuery",
     # searching
     "search",
+    "search_block",
+    "block_status",
     # sending
     "create_mime",
     "smtp_send",

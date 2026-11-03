@@ -74,3 +74,21 @@ def test_search_and_the_lookup_and_bound_errors_are_in_all():
         "WorldAsOfInvalid",
         "WorldBoundRefused",
     } <= set(courier.__all__)
+
+
+def test_search_block_signature():
+    assert _shape(courier.search_block) == [
+        ("client", POSITIONAL, REQUIRED),
+        ("query", POSITIONAL, REQUIRED),
+        ("folder", KEYWORD, REQUIRED),
+        ("limit", KEYWORD, REQUIRED),
+        ("no_cache", KEYWORD, REQUIRED),
+    ]
+
+
+def test_block_status_signature():
+    assert _shape(courier.block_status) == [("result", POSITIONAL, REQUIRED)]
+
+
+def test_the_per_block_search_is_in_all():
+    assert {"search_block", "block_status"} <= set(courier.__all__)
