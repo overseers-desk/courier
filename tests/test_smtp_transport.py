@@ -610,9 +610,9 @@ class TestWireLineEndings:
 
 
 class TestSocketTimeout:
-    """The transport factory gets a bounded timeout, matching the IMAP side."""
+    """The connect and greeting get 10 seconds; each reply after them 60."""
 
-    def test_factory_receives_ten_second_timeout(self):
+    def test_connect_gets_10_seconds_and_the_session_60(self):
         captured: list = []
 
         def factory(host, port, timeout=None):
@@ -620,8 +620,9 @@ class TestSocketTimeout:
             captured.append(f)
             return f
 
-        send(_build_msg(), SmtpConfig(host="h"), transport=factory)
+        conn = open_session(SmtpConfig(host="h"), transport=factory)
         assert captured[0].timeout == 10
+        assert conn.sock.timeout == 60
 
 
 class TestDataReplyWait:
@@ -630,7 +631,7 @@ class TestDataReplyWait:
     Section 4.5.3.2.6 gives a server 10 minutes to answer the end-of-data
     dot, which one that scans the message before replying may use; every
     other read and write, each chunk of the upload included, keeps the
-    10-second socket timeout. A reply that never comes leaves the outcome
+    60-second socket timeout. A reply that never comes leaves the outcome
     unknown, since the server may have queued the message.
     """
 
@@ -659,13 +660,13 @@ class TestDataReplyWait:
         writes = [entry for entry in log if entry[0] == "sendall"]
         # The 354 is read under the session timeout; only the last read,
         # the reply to the end-of-data dot, waits 600 seconds.
-        assert reads == [("readline", 10), ("readline", 600)]
+        assert reads == [("readline", 60), ("readline", 600)]
         # The DATA command plus an upload of several writes, each bounded
         # on its own by the session timeout.
         assert len(writes) > 2
-        assert all(timeout == 10 for _op, _size, timeout in writes)
+        assert all(timeout == 60 for _op, _size, timeout in writes)
         # QUIT and anything after it are back under the session timeout.
-        assert captured[0].server.timeout == 10
+        assert captured[0].server.timeout == 60
 
     def test_line_starting_with_a_dot_is_stuffed_on_the_wire(self):
         msg = _build_msg()

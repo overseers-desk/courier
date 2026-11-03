@@ -261,6 +261,7 @@ class TestSendDraftDryRun:
         class _FakeSMTP:
             def __init__(self, host, port, timeout=None):
                 smtp_calls.append(("init", host, port, timeout))
+                self.sock = MagicMock()
 
             def ehlo(self):
                 smtp_calls.append(("ehlo",))

@@ -24,10 +24,16 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from courier.config import SmtpConfig, tls_context
 from courier.errors import CourierError, PermanentError
 
-# Socket timeout for each read or write in the SMTP session, in seconds:
-# connecting, each command and its reply, and each chunk of the message
-# upload, so a stalled server cannot hang a send forever.
-_SMTP_TIMEOUT = 10
+# Socket timeout for the connect, in seconds: the TCP connect, the TLS
+# handshake on port 465, and the server's greeting.
+_SMTP_CONNECT_TIMEOUT = 10
+
+# Socket timeout for each read or write after the greeting, in seconds:
+# each command and its reply, and each chunk of the message upload, so a
+# stalled server cannot hang a send forever. Longer than the connect's
+# because a healthy server may take a while to answer AUTH or a
+# recipient check.
+_SMTP_TIMEOUT = 60
 
 # Wait for the reply to the end-of-data dot, in seconds. RFC 5321
 # section 4.5.3.2.6 gives the server 10 minutes here, which one that
@@ -38,8 +44,8 @@ _DATA_REPLY_TIMEOUT = 600
 
 # Bytes per write of the message upload. A single sendall() of the whole
 # message runs under one deadline, so a large attachment on a slow link
-# would fail at 10 seconds; in chunks, each write gets its own. 64 KiB
-# per 10 seconds fails only a link slower than about 50 kbit/s.
+# would fail at 60 seconds; in chunks, each write gets its own. 64 KiB
+# per 60 seconds fails only a link slower than about 9 kbit/s.
 _DATA_CHUNK = 64 * 1024
 
 # Post-DATA "Ok <token>" line from SES. Real tokens look like
@@ -167,8 +173,9 @@ def open_session(
     """Open an SMTP session: connect, EHLO, TLS, and log in.
 
     The one opener behind ``send``, the ``courier status`` probe and
-    send-draft ``--dry-run``, so each connects under ``_SMTP_TIMEOUT``
-    and the same TLS rules. Port 465 is implicit TLS (``smtplib.SMTP_SSL``).
+    send-draft ``--dry-run``, so each connects under
+    ``_SMTP_CONNECT_TIMEOUT``, runs under ``_SMTP_TIMEOUT`` after the
+    greeting, and follows the same TLS rules. Port 465 is implicit TLS (``smtplib.SMTP_SSL``).
     Any other port connects plain and upgrades with STARTTLS whenever EHLO
     offers it, then sends EHLO again (RFC 3207 section 4.2). Every TLS
     context comes from :func:`courier.config.tls_context`: the server's
@@ -203,14 +210,20 @@ def open_session(
     implicit_tls = port == 465
     if transport is not None:
         if implicit_tls:
-            smtp = transport(host, port, timeout=_SMTP_TIMEOUT, context=context)
+            smtp = transport(host, port, timeout=_SMTP_CONNECT_TIMEOUT, context=context)
         else:
-            smtp = transport(host, port, timeout=_SMTP_TIMEOUT)
+            smtp = transport(host, port, timeout=_SMTP_CONNECT_TIMEOUT)
     elif implicit_tls:
-        smtp = smtplib.SMTP_SSL(host, port, timeout=_SMTP_TIMEOUT, context=context)
+        smtp = smtplib.SMTP_SSL(
+            host, port, timeout=_SMTP_CONNECT_TIMEOUT, context=context
+        )
     else:
-        smtp = smtplib.SMTP(host, port, timeout=_SMTP_TIMEOUT)
+        smtp = smtplib.SMTP(host, port, timeout=_SMTP_CONNECT_TIMEOUT)
     try:
+        # smtplib connects in its constructor when given a host; STARTTLS
+        # wraps this socket and keeps its timeout.
+        assert smtp.sock is not None
+        smtp.sock.settimeout(_SMTP_TIMEOUT)
         smtp.ehlo()
         encrypted = implicit_tls
         if not encrypted and smtp.has_extn("starttls"):
