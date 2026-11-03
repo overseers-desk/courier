@@ -3542,3 +3542,73 @@ class TestFetchSummariesRedaction:
 
         assert "redacted_by" not in row
         assert row["subject"] == "Your statement is ready"
+
+
+class TestBrokenConnectionDropped:
+    """A connection that drops, stalls or times out mid-command is shut
+    down and forgotten, so the next call logs in afresh whatever
+    verify_with_noop and idle_timeout say; a server NO/BAD keeps it."""
+
+    def _block(self) -> ImapBlock:
+        return ImapBlock(
+            host="imap.example.com",
+            port=993,
+            username="test@example.com",
+            password="password",
+            use_ssl=True,
+            verify_with_noop=False,
+        )
+
+    @pytest.mark.parametrize(
+        "method, call",
+        [
+            ("select_folder", lambda c: c.select_folder("INBOX")),
+            ("fetch", lambda c: c.fetch_email(42, "INBOX")),
+            ("add_flags", lambda c: c.mark_email(1, "INBOX", r"\Seen")),
+        ],
+    )
+    def test_a_timeout_drops_the_connection_without_logout(
+        self, mock_imap_client, method, call
+    ):
+        client = ImapClient(self._block())
+        with patch("imapclient.IMAPClient", return_value=mock_imap_client):
+            client.connect()
+            getattr(mock_imap_client, method).side_effect = TimeoutError(
+                "The read operation timed out"
+            )
+            with pytest.raises((ConnectionError, TransientError)):
+                call(client)
+
+        assert client.connected is False
+        assert client.client is None
+        mock_imap_client.shutdown.assert_called_once()
+        mock_imap_client.logout.assert_not_called()
+
+    def test_the_next_call_logs_in_afresh(self, mock_imap_client):
+        fresh = MagicMock()
+        client = ImapClient(self._block())
+        with patch(
+            "imapclient.IMAPClient", side_effect=[mock_imap_client, fresh]
+        ) as factory:
+            client.connect()
+            mock_imap_client.select_folder.side_effect = TimeoutError("timed out")
+            with pytest.raises(ConnectionError):
+                client.select_folder("INBOX")
+            client.select_folder("INBOX")
+
+        assert factory.call_count == 2
+        fresh.select_folder.assert_called_once()
+
+    def test_a_server_no_keeps_the_connection(self, mock_imap_client):
+        from imapclient.exceptions import IMAPClientError
+
+        client = ImapClient(self._block())
+        with patch("imapclient.IMAPClient", return_value=mock_imap_client):
+            client.connect()
+        mock_imap_client.add_flags.side_effect = IMAPClientError("STORE BAD")
+        with pytest.raises(PermanentError):
+            client.mark_email(1, "INBOX", r"\Seen")
+
+        assert client.connected is True
+        assert client.client is mock_imap_client
+        mock_imap_client.shutdown.assert_not_called()

@@ -34,6 +34,7 @@ from imapclient.imapclient import _literal  # type: ignore[import-untyped]
 from courier import world_bound
 from courier.config import ImapBlock, tls_context
 from courier.errors import (
+    CourierError,
     FolderNotFound,
     MessageNotFound,
     PermanentError,
@@ -351,7 +352,7 @@ class ImapClient:
         try:
             yield
         except (IMAPClientError, OSError) as e:
-            if isinstance(as_courier_error(e), TransientError):
+            if isinstance(self._mapped(e), TransientError):
                 raise ConnectionError(f"{what} failed: {e}") from e
             raise PermanentError(f"{what} refused: {e}") from e
 
@@ -442,7 +443,7 @@ class ImapClient:
             self.last_activity = datetime.now()  # Track connection time
             logger.info(f"Connected to IMAP server {self.block.host}")
         except Exception as e:
-            self.connected = False
+            self._drop_connection()
             logger.error(f"Failed to connect to IMAP server: {e}")
             raise ConnectionError(f"Failed to connect to IMAP server: {e}")
 
@@ -458,6 +459,38 @@ class ImapClient:
                 self.connected = False
                 self.last_activity = None  # Reset activity tracking
                 logger.info("Disconnected from IMAP server")
+
+    def _drop_connection(self) -> None:
+        """Close the socket without LOGOUT and forget the connection.
+
+        For a connection that broke mid-command: a LOGOUT on it would
+        wait out the read timeout, and reusing it would read the stale
+        command's reply as the next one's, so the next call logs in
+        afresh.
+        """
+        if self.client:
+            try:
+                self.client.shutdown()
+            except Exception as e:
+                logger.debug(f"Error closing broken IMAP socket: {e}")
+        self.client = None
+        self.connected = False
+        self.last_activity = None
+
+    def _mapped(self, exc: BaseException) -> CourierError:
+        """Map *exc* as :func:`as_courier_error` does, dropping a broken connection.
+
+        Args:
+            exc: The exception a server call raised.
+
+        Returns:
+            The courier error for *exc*; when it is a
+            :class:`TransientError` the connection has been dropped.
+        """
+        error = as_courier_error(exc)
+        if isinstance(error, TransientError):
+            self._drop_connection()
+        return error
 
     def __enter__(self) -> "ImapClient":
         """Open a ``with`` block that ends with :meth:`disconnect`.
@@ -734,7 +767,7 @@ class ImapClient:
             return result
         except (IMAPClientError, OSError) as e:
             logger.error(f"Error selecting folder {folder}: {e}")
-            if isinstance(as_courier_error(e), TransientError):
+            if isinstance(self._mapped(e), TransientError):
                 # Aborted connection, socket error or timeout
                 # mid-SELECT: connection-layer trouble, kept as the
                 # builtin ConnectionError the retry loops already
@@ -1171,7 +1204,7 @@ class ImapClient:
                 assert location.path is not None
                 email_obj = self.fetch_email_path(location.path, location.folder)
         except (OSError, IMAPClientError) as e:
-            raise as_courier_error(e) from e
+            raise self._mapped(e) from e
         if email_obj is None:
             raise TransientError(
                 f"Message-ID <{bare_message_id(message_id)}> was found in "
@@ -1540,7 +1573,7 @@ class ImapClient:
             )
         except Exception as e:
             logger.error(f"Pre-flight UID SEARCH failed: {e}")
-            raise as_courier_error(e) from e
+            raise self._mapped(e) from e
         present = [u for u in uids if u in found]
         missing = [u for u in uids if u not in found]
         if missing:
@@ -1592,7 +1625,7 @@ class ImapClient:
                     logger.debug(f"Removed flag {flag} from messages {matched}")
             except Exception as e:
                 logger.error(f"Failed to mark email: {e}")
-                raise as_courier_error(e) from e
+                raise self._mapped(e) from e
         self._update_activity()
         return {"matched_uids": matched, "not_found_uids": not_found}
 
@@ -1653,7 +1686,7 @@ class ImapClient:
                 )
             except Exception as e:
                 logger.error(f"Failed to move email: {e}")
-                raise as_courier_error(e) from e
+                raise self._mapped(e) from e
         self._update_activity()
         return {"matched_uids": matched, "not_found_uids": not_found}
 
@@ -1757,7 +1790,7 @@ class ImapClient:
                 logger.debug(f"Deleted messages {matched} from {folder}")
             except Exception as e:
                 logger.error(f"Failed to delete email: {e}")
-                raise as_courier_error(e) from e
+                raise self._mapped(e) from e
         self._update_activity()
         return {"matched_uids": matched, "not_found_uids": not_found}
 
@@ -1946,7 +1979,7 @@ class ImapClient:
             )
         except Exception as e:
             logger.error(f"folder_status failed for {folder}: {e}")
-            raise as_courier_error(e) from e
+            raise self._mapped(e) from e
         self._update_activity()
         return {
             (k.decode("ascii") if isinstance(k, bytes) else str(k)): int(v)
@@ -1986,7 +2019,7 @@ class ImapClient:
             )
         except Exception as e:
             logger.error(f"Failed to save draft: {e}")
-            raise as_courier_error(e) from e
+            raise self._mapped(e) from e
 
         result = self._parse_append_response(response, drafts_folder)
         self._update_activity()
@@ -2097,7 +2130,7 @@ class ImapClient:
             )
         except Exception as e:
             logger.error(f"Failed to append message to {folder}: {e}")
-            raise as_courier_error(e) from e
+            raise self._mapped(e) from e
 
         result = self._parse_append_response(response, folder)
         self._update_activity()
