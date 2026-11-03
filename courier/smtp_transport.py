@@ -26,8 +26,7 @@ from courier.errors import CourierError, PermanentError
 
 # Socket timeout for each read or write in the SMTP session, in seconds:
 # connecting, each command and its reply, and each chunk of the message
-# upload. Matches the IMAP side's connect timeout (imap_client passes
-# timeout=10) so a stalled server cannot hang a send forever.
+# upload, so a stalled server cannot hang a send forever.
 _SMTP_TIMEOUT = 10
 
 # Wait for the reply to the end-of-data dot, in seconds. RFC 5321
