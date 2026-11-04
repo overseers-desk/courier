@@ -848,6 +848,28 @@ class TestImapClient:
             assert "Test Sender" in email_obj.from_.name
             assert "sender@example.com" in email_obj.from_.address
 
+    def test_fetch_email_non_utf8_flag_is_read_not_raised(
+        self, mock_imap_client, make_test_email_response_data
+    ):
+        """A server keyword outside UTF-8 is shown replaced; the read succeeds."""
+        config = ImapBlock(
+            host="imap.example.com",
+            port=993,
+            username="test@example.com",
+            password="password",
+            use_ssl=True,
+        )
+        client = ImapClient(config)
+        data = make_test_email_response_data(flags=(b"\\Seen", b"caf\xe9"))
+
+        with patch("imapclient.IMAPClient", return_value=mock_imap_client):
+            mock_imap_client.select_folder.return_value = {b"EXISTS": 10}
+            mock_imap_client.fetch.return_value = {12345: data}
+            client.connect()
+            email_obj = client.fetch_email(12345, folder="INBOX")
+
+        assert email_obj.flags == ["\\Seen", "caf�"]
+
     def test_fetch_email_not_found(self, mock_imap_client):
         """Test fetching an email that doesn't exist."""
         config = ImapBlock(
@@ -3353,6 +3375,18 @@ class TestFetchSummaries:
             }
         ]
         assert summaries[0]["date"].startswith("2026-04-01")
+
+    def test_non_utf8_flag_is_listed_not_raised(self, mock_imap_client):
+        client = self._connected(mock_imap_client)
+        mock_imap_client.fetch.return_value = {
+            7: {
+                b"BODY[HEADER]": self.HEADER,
+                b"FLAGS": (b"\\Seen", b"caf\xe9"),
+                b"BODYSTRUCTURE": (b"text", b"plain"),
+            }
+        }
+        summaries = client.fetch_summaries([7], folder="INBOX")
+        assert summaries[0]["flags"] == ["\\Seen", "caf�"]
 
     def test_attachment_disposition_detected_from_structure(self, mock_imap_client):
         client = self._connected(mock_imap_client)

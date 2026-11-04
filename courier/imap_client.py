@@ -868,7 +868,7 @@ class ImapClient:
                 Email.from_message(message, uid=uid, folder=folder)
             )
             flags = [
-                f.decode("utf-8") if isinstance(f, bytes) else str(f)
+                f.decode("utf-8", "replace") if isinstance(f, bytes) else str(f)
                 for f in record.get(b"FLAGS", ())
             ]
             summary: Dict[str, Any] = {
@@ -1041,7 +1041,9 @@ class ImapClient:
         flags = message_data.get(b"FLAGS", ())
         internal_date = message_data.get(b"INTERNALDATE")
 
-        str_flags = [f.decode("utf-8") if isinstance(f, bytes) else f for f in flags]
+        str_flags = [
+            f.decode("utf-8", "replace") if isinstance(f, bytes) else f for f in flags
+        ]
         email_obj = self._email_from_bytes(raw_message, uid, folder, str_flags)
 
         self._refuse_read_after_bound(

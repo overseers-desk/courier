@@ -139,6 +139,7 @@ class MuBackend:
                 ["mu", "info", "store"],
                 capture_output=True,
                 text=True,
+                errors="surrogateescape",
                 timeout=10,
                 check=True,
             )
@@ -184,6 +185,7 @@ class MuBackend:
                 argv,
                 capture_output=True,
                 text=True,
+                errors="surrogateescape",
                 timeout=10,
                 check=True,
             )
@@ -415,7 +417,9 @@ class MuBackend:
         if not proc.stdout.strip():
             return [], emission.report, False
         try:
-            raw = json.loads(proc.stdout)
+            # mu copies a header's raw tab or other control character
+            # into its JSON strings unescaped.
+            raw = json.loads(proc.stdout, strict=False)
         except json.JSONDecodeError as e:
             raise MuFailure(f"could not decode mu json output: {e}") from e
         if not isinstance(raw, list):

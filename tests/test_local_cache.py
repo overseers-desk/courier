@@ -1,6 +1,7 @@
 """Tests for the optional local-cache search backend (mu)."""
 
 import json
+import os
 import subprocess
 from datetime import datetime
 from typing import Any, Dict
@@ -267,6 +268,29 @@ class TestMuBackendSearch:
         ):
             with pytest.raises(MuFailure, match="decode"):
                 backend.search(account_cfg, parse("from:alice"), limit=10)
+
+    def test_raw_control_character_in_mu_json_is_decoded(self, tmp_path):
+        """mu writes a header's raw tab unescaped into its JSON (seen in a
+        folded References id); the record is served, not refused."""
+        backend = self._backend(tmp_path)
+        account_cfg = _make_block("/var/local/mail/work")
+        stdout = (
+            '[{":path": "/var/local/mail/work/cur/123", ":subject": "Hi",'
+            ' ":date-unix": 1700000000, ":maildir": "/work",'
+            ' ":references": ["CAN_op-=Trz\t442Y@mail.gmail.com"]}]'
+        )
+
+        with patch(
+            "courier.local_cache.subprocess.run",
+            return_value=subprocess.CompletedProcess(
+                args=[], returncode=0, stdout=stdout, stderr=""
+            ),
+        ):
+            results, _report, _truncated = backend.search(
+                account_cfg, parse("from:alice"), limit=5
+            )
+
+        assert [r["subject"] for r in results] == ["Hi"]
 
     def test_imap_prefix_raises_untranslatable(self, tmp_path):
         """The imap: escape surfaces the emitter's refusal to the caller
@@ -984,6 +1008,25 @@ class TestStoreMaildirRoot:
             assert backend._store_maildir_root() is None
         # The miss is cached: one subprocess call for two lookups.
         assert mock_run.call_count == 1
+
+    def test_non_utf8_store_path_round_trips(self, tmp_path, monkeypatch):
+        """A store path outside UTF-8 survives mu info store intact."""
+        store = tmp_path / os.fsdecode(b"st\xffre")
+        bindir = tmp_path / "bin"
+        bindir.mkdir()
+        table = (
+            b"| maildir           | " + os.fsencode(str(store)) + b"/Maildir |\n"
+            b"| database-path     | " + os.fsencode(str(store)) + b"/xapian |\n"
+        )
+        (bindir / "table").write_bytes(table)
+        mu = bindir / "mu"
+        mu.write_text(f'#!/bin/sh\ncat "{bindir}/table"\n')
+        mu.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
+        backend = MuBackend(LocalCacheConfig())
+
+        assert backend.muhome == str(store)
+        assert backend._store_maildir_root() == f"{store}/Maildir"
 
 
 class TestWorldAsOfBoundsMuQuery:
