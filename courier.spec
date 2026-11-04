@@ -1,5 +1,5 @@
 Name:           courier
-Version:        1.2.3
+Version:        1.2.4
 Release:        1%{?dist}
 Summary:        Email toolkit for AI assistants and command-line scripting
 License:        MIT
@@ -67,6 +67,13 @@ install -Dpm 644 debian/courier.1 %{buildroot}%{_mandir}/man1/courier.1
 %{_mandir}/man1/courier.1*
 
 %changelog
+* Thu Nov 05 2026 Weiwu Zhang <a@colourful.land> - 1.2.4-1
+- A search whose hits include a message with a raw tab in a header is answered from the local index in about a second. Courier used to reject mu's output for such a message and fall back to a live IMAP search that took minutes. A mu store path that is not UTF-8 no longer crashes the search, and a server flag that is not UTF-8 is shown with a replacement character instead of failing the listing or read.
+- The IMAP connect allows 10 s for the TCP and TLS connect and 60 s for each reply after it, the login's included, so a Gmail login that takes 11 s succeeds.
+- An IMAP connection that drops, stalls or times out mid-command is closed without LOGOUT, and the next call logs in afresh instead of reusing the dead socket. A connection found dead by NOOP, gone stale while idle, or failing under watch's IDLE is closed the same way, without waiting out the 60 s read timeout.
+- SMTP allows 10 s for the connect, TLS handshake and greeting, and 60 s for each reply and upload chunk after them, so a server slow to answer AUTH or a recipient check no longer fails the send.
+- search_block and block_status are public library API, so a program holding one ImapClient per account gets the same failure envelope and status as courier.search.
+
 * Sun Nov 01 2026 Weiwu Zhang <a@colourful.land> - 1.2.3-1
 - -a/--account picks the account and -A/--all-accounts takes every one. These, -c/--config, -v/--verbose and --no-cache work before or after the command, and every command's help lists them. The former spellings --imap, --all-imap and copy --from-imap still work.
 - read takes --format json, text or oneline, as search and thread do, and courier -c FILE mcp reads that file instead of ignoring it.
