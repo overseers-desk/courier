@@ -48,15 +48,21 @@ class IdentityNotFound(LookupError):
     Raised when ``--from EMAIL`` (compose/reply) or the From header of a
     draft being sent (send-draft) does not match any of the [imap.NAME]
     block's identities. The unmatched address and the list of available
-    addresses are stored on the exception so the CLI can render them.
+    addresses are stored on the exception so the CLI can render them;
+    the message names the identity of another block that owns the address.
     """
 
-    def __init__(self, from_addr: str, available: List[str]):
+    def __init__(
+        self, from_addr: str, available: List[str], elsewhere: Optional[str] = None
+    ):
         self.from_addr = from_addr
         self.available = available
+        hint = (
+            f"; it is [identity.{elsewhere}], pass -i {elsewhere}" if elsewhere else ""
+        )
         super().__init__(
             f"From address '{from_addr}' is not configured for this "
-            f"[imap.NAME] block. Configured identities: {available}"
+            f"[imap.NAME] block. Configured identities: {available}{hint}"
         )
 
 
@@ -117,9 +123,13 @@ def resolve_identity_for_send(
     for ident in identities:
         if ident.address.lower() == target:
             return ident
+    elsewhere = next(
+        (n for n, i in cfg.identities.items() if i.address.lower() == target), None
+    )
     raise IdentityNotFound(
         from_addr=from_addr,
         available=[i.address for i in identities],
+        elsewhere=elsewhere,
     )
 
 

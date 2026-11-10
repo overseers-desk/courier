@@ -2960,10 +2960,14 @@ def compose(
 
     cfg = _load_cfg_or_exit()
 
-    if not send_flag and (identity_name or smtp_name or display_name or fcc):
+    if (
+        output is None
+        and not send_flag
+        and (identity_name or smtp_name or display_name or fcc)
+    ):
         typer.echo(
             "Error: --identity / --smtp / --name / --fcc are only valid "
-            "with --send. Drafting picks the identity from -a "
+            "with --send or --output. Drafting picks the identity from -a "
             "(--from selects by address).",
             err=True,
         )
@@ -3031,8 +3035,19 @@ def compose(
         return
 
     name = _resolve_single_imap_name()
+    route = (
+        _resolve_send_route(
+            cfg, identity_name, smtp_name, from_email, display_name, fcc
+        )
+        if output is not None
+        else None
+    )
     try:
-        identity = resolve_identity_for_send(cfg, name, from_addr=from_email)
+        identity = (
+            route[0]
+            if route is not None
+            else resolve_identity_for_send(cfg, name, from_addr=from_email)
+        )
     except (IdentityNotFound, SendDisabled) as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(1)
@@ -3172,7 +3187,8 @@ def reply(
         "--identity",
         "-i",
         help=(
-            "Send as the named [identity.NAME] block. On --send, either "
+            "Send as the named [identity.NAME] block, whichever -a "
+            "account it belongs to. On --send, either "
             "this or --smtp/--from is required unless the parent's "
             "recipients match a configured identity."
         ),
@@ -3258,10 +3274,14 @@ def reply(
 
     cfg = _load_cfg_or_exit()
 
-    if not send_flag and (identity_name or smtp_name or display_name or fcc):
+    if (
+        output is None
+        and not send_flag
+        and (identity_name or smtp_name or display_name or fcc)
+    ):
         typer.echo(
             "Error: --identity / --smtp / --name / --fcc are only valid "
-            "with --send.",
+            "with --send or --output.",
             err=True,
         )
         raise typer.Exit(1)
@@ -3364,8 +3384,17 @@ def reply(
             elif fcc_imap_for_send is None:
                 send_client = None
         else:
+            route = (
+                _resolve_send_route(
+                    cfg, identity_name, smtp_name, from_email, display_name, fcc
+                )
+                if output is not None
+                else None
+            )
             try:
-                if from_email is not None:
+                if route is not None:
+                    identity = route[0]
+                elif from_email is not None:
                     identity = resolve_identity_for_send(
                         cfg, name, from_addr=from_email
                     )

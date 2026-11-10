@@ -1590,3 +1590,61 @@ class TestSendFailureReporting:
         assert result.stderr.startswith("Error: SMTP send failed: ")
         assert "5.7.1 sender blocked" in result.stderr
         client.append_raw.assert_not_called()
+
+
+class TestOutputRendersSendRoute:
+    """``-o`` renders the From that ``--send`` would transmit."""
+
+    @staticmethod
+    def _cfg_cross_block() -> CourierConfig:
+        cfg = _cfg_with_relay()
+        cfg.identities["workid"] = Identity(
+            imap="work", address="me@work.com", name="Work Me"
+        )
+        return cfg
+
+    def _reply(self, extra: list) -> str:
+        client = _client()
+        client.fetch_email.return_value = TestReplySend._parent_unrelated()
+        with (
+            patch("courier.__main__.load_config", return_value=self._cfg_cross_block()),
+            patch("courier.__main__._make_client", return_value=client),
+        ):
+            result = runner.invoke(
+                app,
+                ["-a", "acct", "reply", "-f", "INBOX", "-u", "10", "--body", "hi"]
+                + extra
+                + ["-o", "-"],
+            )
+        assert result.exit_code == 0, result.output
+        return result.output
+
+    def test_reply_output_with_identity_on_other_block(self):
+        out = self._reply(["-i", "workid"])
+        assert "From: Work Me <me@work.com>" in out
+
+    def test_reply_output_with_smtp_route(self):
+        out = self._reply(["--smtp", "ses", "--from", "x@ses.com", "--name", "X Y"])
+        assert "From: X Y <x@ses.com>" in out
+
+    def test_compose_output_with_identity_on_other_block(self):
+        with (
+            patch("courier.__main__.load_config", return_value=self._cfg_cross_block()),
+            patch("courier.__main__._make_client", return_value=_client()),
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "compose",
+                    "--to",
+                    "a@y.com",
+                    "--body",
+                    "hi",
+                    "-i",
+                    "workid",
+                    "-o",
+                    "-",
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        assert "From: Work Me <me@work.com>" in result.output

@@ -278,3 +278,16 @@ class TestResolveSmtpForIdentity:
             )
         assert excinfo.value.imap_name == "myacct"
         assert sorted(excinfo.value.available) == ["a", "b"]
+
+
+def test_unknown_from_names_identity_on_other_block():
+    """A --from owned by another block's identity is named, with the -i to use."""
+    cfg = _cfg_with_identities(
+        {
+            "a": Identity(imap="acct", address="a@x.com"),
+            "elsewhere": Identity(imap="other", address="me@y.com"),
+        }
+    )
+    with pytest.raises(IdentityNotFound) as excinfo:
+        resolve_identity_for_send(cfg, "acct", from_addr="me@y.com")
+    assert "pass -i elsewhere" in str(excinfo.value)
