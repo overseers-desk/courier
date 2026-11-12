@@ -1,3 +1,16 @@
+courier (1.2.5) unstable; urgency=medium
+
+  * courier resend sends a stored email, unchanged, to people it missed:
+    courier -a NAME resend -f FOLDER -u UID --to ADDR --send. It adds
+    Resent-From, Resent-To, Resent-Date and Resent-Message-ID headers and
+    sends the stored bytes as they are, less the Bcc header, to the --to
+    addresses only. Without --send it prints what would be sent.
+  * A reply or compose written to a file with -o takes -i, --smtp, --from and
+    --name, so the file shows the From that --send would use. A --from that
+    belongs to another account's identity is refused with the -i to pass.
+
+ -- Weiwu Zhang <a@colourful.land>  Thu, 12 Nov 2026 00:00:00 +0000
+
 courier (1.2.4) unstable; urgency=medium
 
   * A search whose hits include a message with a raw tab in a header is

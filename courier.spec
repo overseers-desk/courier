@@ -1,5 +1,5 @@
 Name:           courier
-Version:        1.2.4
+Version:        1.2.5
 Release:        1%{?dist}
 Summary:        Email toolkit for AI assistants and command-line scripting
 License:        MIT
@@ -67,6 +67,10 @@ install -Dpm 644 debian/courier.1 %{buildroot}%{_mandir}/man1/courier.1
 %{_mandir}/man1/courier.1*
 
 %changelog
+* Thu Nov 12 2026 Weiwu Zhang <a@colourful.land> - 1.2.5-1
+- courier resend sends a stored email, unchanged, to people it missed: courier -a NAME resend -f FOLDER -u UID --to ADDR --send. It adds Resent-From, Resent-To, Resent-Date and Resent-Message-ID headers and sends the stored bytes as they are, less the Bcc header, to the --to addresses only. Without --send it prints what would be sent.
+- A reply or compose written to a file with -o takes -i, --smtp, --from and --name, so the file shows the From that --send would use. A --from that belongs to another account's identity is refused with the -i to pass.
+
 * Thu Nov 05 2026 Weiwu Zhang <a@colourful.land> - 1.2.4-1
 - A search whose hits include a message with a raw tab in a header is answered from the local index in about a second. Courier used to reject mu's output for such a message and fall back to a live IMAP search that took minutes. A mu store path that is not UTF-8 no longer crashes the search, and a server flag that is not UTF-8 is shown with a replacement character instead of failing the listing or read.
 - The IMAP connect allows 10 s for the TCP and TLS connect and 60 s for each reply after it, the login's included, so a Gmail login that takes 11 s succeeds.
