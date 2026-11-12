@@ -1229,6 +1229,7 @@ def _perform_send(
     mime_message: Any,
     identity: Any,
     sent_folder_override: Optional[str],
+    envelope: Optional[Tuple[str, List[str]]] = None,
 ) -> Dict[str, Any]:
     """Verify FCC folder, transmit via SMTP, and APPEND. Used by send paths.
 
@@ -1250,6 +1251,8 @@ def _perform_send(
         sent_folder_override: When set, overrides the identity's ``fcc``
             folder for the FCC step. ``None`` means use the identity's
             value or auto-discover.
+        envelope: ``(sender, recipients)`` when *mime_message* is raw
+            bytes to send unchanged (resend); see ``send_with_fcc``.
 
     Returns:
         The standard send-result JSON shape (status, identity, message_ids,
@@ -1277,6 +1280,7 @@ def _perform_send(
             smtp,
             fcc_client=client,
             fcc_folder=configured,
+            envelope=envelope,
         )
     except FccUnresolved:
         if configured is not None:
@@ -1331,7 +1335,7 @@ def _perform_send(
         "refused_recipients": refused,
         "fcc_folder": sent["fcc_folder"],
         "fcc_uid": sent["fcc_uid"],
-        "bcc": _message_bcc(mime_message),
+        "bcc": _message_bcc(mime_message) if envelope is None else [],
     }
     if sent["fcc_error"] is not None:
         result["fcc_error"] = sent["fcc_error"]
@@ -3726,6 +3730,203 @@ def send_draft(
                 send_client.disconnect()
     finally:
         client.disconnect()
+
+
+# ---------------------------------------------------------------------------
+# resend
+# ---------------------------------------------------------------------------
+
+
+@app.command("resend")
+def resend(
+    folder: Optional[str] = typer.Option(
+        None,
+        "--folder",
+        "-f",
+        help=(
+            "Folder containing the email. Required with --uid; narrows a "
+            "--message-id lookup."
+        ),
+    ),
+    uid: Optional[int] = typer.Option(None, "--uid", "-u", help="Email UID."),
+    message_id: Optional[str] = typer.Option(
+        None,
+        "--message-id",
+        help="Resend the message with this Message-ID instead of --uid. Needs -a NAME.",
+    ),
+    to: List[str] = typer.Option(
+        ..., "--to", help="New recipient. Repeatable. Only these receive it."
+    ),
+    send: bool = typer.Option(
+        False, "--send", help="Transmit. Without it, print what would be sent."
+    ),
+    identity_name: Optional[str] = typer.Option(
+        None,
+        "--identity",
+        "-i",
+        help=(
+            "Resend as the named [identity.NAME] block. Default: the "
+            "identity whose address is the message's From."
+        ),
+    ),
+    smtp_name: Optional[str] = typer.Option(
+        None,
+        "--smtp",
+        help="Send through the named [smtp.NAME] block with --from EMAIL (mode B).",
+    ),
+    from_email: Optional[str] = typer.Option(
+        None, "--from", help="Mode B Resent-From address. Required with --smtp."
+    ),
+    display_name: Optional[str] = typer.Option(
+        None, "--name", help="Display name for Resent-From. Mode B only."
+    ),
+    fcc: Optional[str] = typer.Option(
+        None,
+        "--fcc",
+        help="FCC the sent message into IMAP_NAME:FOLDER. Mode B only.",
+    ),
+    save_sent: Optional[bool] = typer.Option(
+        None,
+        "--save-sent/--no-save-sent",
+        help="Override the SMTP block's save_sent default for this send.",
+    ),
+    sent_folder: Optional[str] = typer.Option(
+        None,
+        "--sent-folder",
+        help="Override the identity's fcc folder for the FCC step.",
+    ),
+    allow_no_copy: bool = typer.Option(
+        False,
+        "--allow-no-copy",
+        help=(
+            "Permit sending when neither FCC nor a sender-self BCC will "
+            "retain a copy. Default is to refuse."
+        ),
+    ),
+) -> None:
+    """Resend an email unchanged to new recipients.
+
+    Prepends Resent-From/To/Date/Message-ID (RFC 5322 §3.6.6) and sends
+    the stored bytes otherwise as they are, less the Bcc header. Only
+    --to addresses receive it. Without --send, prints what would be sent.
+    """
+    from email.utils import formataddr, parseaddr
+
+    from courier.identity import (
+        IdentityNotFound,
+        SendDisabled,
+        resolve_identity_for_send,
+    )
+    from courier.smtp_client import make_resent
+
+    cfg = _load_cfg_or_exit()
+    _check_target_args(folder, uid, message_id)
+    name = _resolve_single_imap_name()
+
+    client = _make_client()
+    send_client: Optional[ImapClient] = None
+    owns_send_client = False
+    try:
+        folder, uid = _resolve_target(client, folder, uid, message_id)
+        fetched = client.fetch_raw(uid, folder)
+        if not fetched:
+            typer.echo(f"Error: email UID {uid} not found in {folder}", err=True)
+            raise typer.Exit(1)
+        if fetched.get("redacted_by"):
+            typer.echo(
+                f"Error: email UID {uid} in {folder} is withheld by redact "
+                f"policy (rule {fetched['redacted_by']}); refusing to resend it",
+                err=True,
+            )
+            raise typer.Exit(1)
+
+        smtp_override: Optional[SmtpConfig] = None
+        fcc_imap: Optional[str] = name
+        route = _resolve_send_route(
+            cfg, identity_name, smtp_name, from_email, display_name, fcc
+        )
+        if route is not None:
+            identity, smtp_override, fcc_imap = route
+        else:
+            stored_from = parseaddr(_header_from_raw(fetched["raw"]))[1]
+            try:
+                identity = resolve_identity_for_send(cfg, name, from_addr=stored_from)
+            except (IdentityNotFound, SendDisabled) as exc:
+                typer.echo(
+                    f"Error: {exc} Pass -i NAME to resend as one of your "
+                    "identities.",
+                    err=True,
+                )
+                raise typer.Exit(1)
+
+        resent_from = formataddr((identity.name, identity.address))
+        raw = make_resent(fetched["raw"], resent_from, list(to))
+        if not send:
+            _out(
+                {
+                    "status": "preview",
+                    "message": "Nothing sent; add --send to transmit.",
+                    "resent_from": resent_from,
+                    "to": list(to),
+                    "subject": fetched.get("subject"),
+                }
+            )
+            return
+
+        smtp_resolved = _resolve_smtp_or_exit(
+            identity,
+            cfg.imap_blocks.get(fcc_imap) if fcc_imap else None,
+            fcc_imap or "",
+            cfg.smtp_blocks,
+            smtp_override,
+        )
+        envelope_bcc = list(getattr(identity, "bcc", None) or [])
+        will_fcc = _will_fcc(
+            smtp_resolved, save_sent, identity_fcc=identity.fcc, fcc_imap=fcc_imap
+        )
+        _refuse_if_no_copy(
+            will_fcc,
+            bcc=envelope_bcc,
+            sender_addr=identity.address,
+            allow_no_copy=allow_no_copy,
+            smtp=smtp_resolved,
+        )
+        if will_fcc and fcc_imap == name:
+            send_client = client
+        elif will_fcc and fcc_imap:
+            send_client = _make_client(imap_override=fcc_imap)
+            owns_send_client = True
+
+        recipients = [parseaddr(t)[1] or t for t in to]
+        bcc_addrs = [parseaddr(b)[1] or b for b in envelope_bcc]
+        result = _perform_send(
+            send_client,
+            smtp_resolved,
+            raw,
+            identity,
+            sent_folder,
+            envelope=(identity.address, recipients + bcc_addrs),
+        )
+        result["bcc"] = bcc_addrs
+        _out(result)
+    finally:
+        if owns_send_client and send_client is not None:
+            send_client.disconnect()
+        client.disconnect()
+
+
+def _header_from_raw(raw: bytes) -> str:
+    """Return the From header of raw message bytes, or ``""``.
+
+    Args:
+        raw: The stored message.
+
+    Returns:
+        The decoded From value as written.
+    """
+    from email.parser import BytesParser
+
+    return str(BytesParser().parsebytes(raw, headersonly=True).get("From", "") or "")
 
 
 # ---------------------------------------------------------------------------

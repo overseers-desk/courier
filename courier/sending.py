@@ -7,13 +7,14 @@ sequence a send-with-copy always follows:
 1. Resolve and verify the FCC target BEFORE opening SMTP, so a bogus
    Sent folder refuses the send instead of transmitting and then losing
    the only local copy. A miss raises :class:`FccUnresolved`.
-2. Transmit via ``smtp_transport.send``.
+2. Transmit via ``smtp_transport.send``, or ``send_raw`` for a message
+   whose envelope is given apart from its headers (a resend).
 3. APPEND the sent bytes to the FCC folder. A failure here is reported
    in the result dict (``fcc_error``), never raised: the message has
    already left, so raising would be a lie about whether it was sent.
 """
 
-from typing import Any, Callable, Optional
+from typing import Any, Callable, List, Optional, Tuple
 
 from courier import smtp_transport
 from courier.config import SmtpConfig
@@ -28,6 +29,7 @@ def send_with_fcc(
     fcc_folder: Optional[str] = None,
     fcc_flags: tuple = (r"\Seen",),
     transport: Optional[Callable] = None,
+    envelope: Optional[Tuple[str, List[str]]] = None,
 ) -> dict:
     """Send *mime_message* via SMTP and file a copy (FCC) when requested.
 
@@ -41,6 +43,10 @@ def send_with_fcc(
         fcc_flags: Flags for the appended copy. Defaults to ``\\Seen``.
         transport: Optional ``smtplib.SMTP``-shaped factory, forwarded to
             the transport (tests inject a fake).
+        envelope: ``(sender, recipients)`` for MAIL FROM and RCPT TO.
+            When given, *mime_message* is raw bytes sent unchanged via
+            ``smtp_transport.send_raw``; otherwise both come from its
+            headers.
 
     Returns:
         The transport result (``message_id_local``, ``message_id_sent``,
@@ -64,9 +70,14 @@ def send_with_fcc(
         if fcc_target is None:
             raise FccUnresolved(configured=fcc_folder, tried=SENT_FOLDER_CANDIDATES)
 
-    fcc_bytes, send_result = smtp_transport.send(
-        mime_message, smtp, transport=transport
-    )
+    if envelope is None:
+        fcc_bytes, send_result = smtp_transport.send(
+            mime_message, smtp, transport=transport
+        )
+    else:
+        fcc_bytes, send_result = smtp_transport.send_raw(
+            mime_message, envelope[0], envelope[1], smtp, transport=transport
+        )
 
     result: dict = {
         **send_result,

@@ -96,7 +96,7 @@ fcc     = false
 
 ## Picking a send identity (`--send` mode)
 
-`compose --send`, `reply --send`, and `send-draft` require the route to be named explicitly. There are two forms.
+`compose --send`, `reply --send`, `send-draft` and `resend --send` require the route to be named explicitly. There are two forms.
 
 **Mode A: `--identity NAME`.** Names a configured `[identity.NAME]` block; resolves From, display name, the `[imap.*]` block, the SMTP route, and the Sent folder.
 
@@ -117,6 +117,8 @@ courier compose --send --smtp ses-syd \
 **Reply** has one extra path: when neither flag is given, courier matches the parent's recipients against identities on the selected `[imap.*]` block and uses the match. If no recipient matches, `reply --send` errors rather than silently picking an arbitrary identity. The drafting path (no `--send`) keeps the older fallback behaviour.
 
 **`send-draft`** by default uses the draft's own From header and refuses to send if it does not match a configured identity. `--identity` or `--smtp/--from` override the draft's From for that send.
+
+**`resend`** picks its identity the same way, from the stored message's From, and that identity becomes the Resent-From. `--identity` or `--smtp/--from` name a different resender; the original From is left as it is.
 
 Drafting (no `--send`) keeps the previous convenience defaults: the first identity on the selected `[imap.*]` block is the From, and `--from EMAIL` selects a different identity by address.
 
@@ -175,7 +177,7 @@ Bounded search results extend the existing `provenance` dict:
 
 `dropped_after_bound` makes the filtering auditable rather than invisible; a replay harness can assert it.
 
-Write verbs (`compose`, `send-draft`, `move`, `mark-*`, `flag`, `trash`, `delete`) emit no dated data and are out of the read-bound's scope; whether a replay harness should permit mutations at all is the harness's policy, not this variable's.
+Write verbs (`compose`, `send-draft`, `resend`, `move`, `mark-*`, `flag`, `trash`, `delete`) emit no dated data and are out of the read-bound's scope; whether a replay harness should permit mutations at all is the harness's policy, not this variable's.
 
 ## Claude Code integration
 

@@ -379,7 +379,83 @@ def send(
         else mime_msg.as_string().encode("utf-8")
     )
     on_wire = _to_crlf(_strip_bcc(raw))
+    result = _deliver(on_wire, from_addr, rcpts, msgid, smtp_cfg, transport)
 
+    fcc_bytes = on_wire
+    if smtp_cfg.rewrite_msgid_from_response:
+        token = parse_ses_token(result["smtp_response"])
+        if token:
+            result["message_id_sent"] = f"<{token}@email.amazonses.com>"
+            # rewrite_message_id re-serialises with bare LFs; restore
+            # CRLF so the FCC copy stays wire-clean.
+            fcc_bytes = _to_crlf(rewrite_message_id(on_wire, result["message_id_sent"]))
+    return fcc_bytes, result
+
+
+def send_raw(
+    raw: bytes,
+    sender: str,
+    recipients: List[str],
+    smtp_cfg: SmtpConfig,
+    transport: Optional[Callable[..., smtplib.SMTP]] = None,
+) -> Tuple[bytes, Dict[str, Any]]:
+    """Transmit *raw* unchanged to an envelope given apart from its headers.
+
+    For a resent message (see ``smtp_client.make_resent``), whose To and
+    Cc name the first recipients, not this send's. Only line endings
+    are normalised to CRLF. The Message-ID reported is the topmost
+    Resent-Message-ID, else the Message-ID. No SES Message-ID rewrite is
+    mirrored into the copy: the rewritten header would be the original's.
+
+    Args:
+        raw: The message bytes to transmit.
+        sender: Bare address for MAIL FROM.
+        recipients: Bare addresses for RCPT TO.
+        smtp_cfg: Resolved SmtpConfig with credentials filled in.
+        transport: Optional ``smtplib.SMTP``-shaped factory, as for
+            :func:`send`.
+
+    Returns:
+        ``(fcc_bytes, result)`` as for :func:`send`; ``fcc_bytes`` is
+        the message as transmitted.
+
+    Raises:
+        ValueError: *recipients* is empty.
+        Exception: Every SMTP-layer failure :func:`send` raises.
+    """
+    if not recipients:
+        raise ValueError("no recipients to resend to")
+    head = BytesParser().parsebytes(raw, headersonly=True)
+    msgid = str(head.get("Resent-Message-ID") or head.get("Message-ID") or "")
+    on_wire = _to_crlf(raw)
+    return on_wire, _deliver(on_wire, sender, recipients, msgid, smtp_cfg, transport)
+
+
+def _deliver(
+    on_wire: bytes,
+    from_addr: str,
+    rcpts: List[str],
+    msgid: str,
+    smtp_cfg: SmtpConfig,
+    transport: Optional[Callable[..., smtplib.SMTP]],
+) -> Dict[str, Any]:
+    """Run one SMTP session: MAIL FROM, RCPT TO each address, then DATA.
+
+    Args:
+        on_wire: The CRLF message bytes to upload.
+        from_addr: Bare address for MAIL FROM.
+        rcpts: Bare addresses for RCPT TO.
+        msgid: Message-ID named in the outcome-unknown error.
+        smtp_cfg: Resolved SmtpConfig with credentials filled in.
+        transport: Optional factory passed to :func:`open_session`.
+
+    Returns:
+        The result dict documented at the top of this module, with
+        ``message_id_sent`` equal to *msgid*.
+
+    Raises:
+        Exception: The failures documented on :func:`send`.
+    """
     smtp = open_session(smtp_cfg, transport)
     try:
         mail_options: List[str] = []
@@ -428,25 +504,13 @@ def send(
             smtp.quit()
         except Exception:
             pass
-
-    fcc_bytes = on_wire
-    msgid_sent = msgid
-    if smtp_cfg.rewrite_msgid_from_response:
-        token = parse_ses_token(response)
-        if token:
-            msgid_sent = f"<{token}@email.amazonses.com>"
-            # rewrite_message_id re-serialises with bare LFs; restore
-            # CRLF so the FCC copy stays wire-clean.
-            fcc_bytes = _to_crlf(rewrite_message_id(on_wire, msgid_sent))
-
     if isinstance(response, bytes):
         response_str = response.decode("utf-8", errors="replace")
     else:
         response_str = str(response)
-
-    return fcc_bytes, {
+    return {
         "message_id_local": msgid,
-        "message_id_sent": msgid_sent,
+        "message_id_sent": msgid,
         "smtp_response": response_str,
         "accepted_recipients": accepted,
         "refused_recipients": refused,

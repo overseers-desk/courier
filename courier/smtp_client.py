@@ -484,6 +484,45 @@ def make_message_id(sender: str) -> str:
     return email.utils.make_msgid(domain=domain if at else None)
 
 
+def make_resent(raw: bytes, resent_from: str, resent_to: List[str]) -> bytes:
+    """Return a stored message with a Resent-* block prepended (RFC 5322 §3.6.6).
+
+    The message is edited as bytes, not parsed and serialised again:
+    reserialising rewrites header folding in most stored mail, which
+    would make the copy differ from what the first recipients got.
+    The one change is that the top-level Bcc header goes, so the new
+    recipients do not learn whom the original was blind-copied to.
+
+    Args:
+        raw: The stored message, as fetched.
+        resent_from: Value of Resent-From, e.g. ``formataddr`` output.
+        resent_to: Addresses for Resent-To.
+
+    Returns:
+        The message to transmit, in *raw*'s own line endings.
+    """
+    eol = b"\r\n" if b"\r\n" in raw.split(b"\n", 1)[0] + b"\n" else b"\n"
+    head, sep, body = raw.partition(eol + eol)
+    kept: List[bytes] = []
+    in_bcc = False
+    for line in head.split(eol):
+        if line[:1] in (b" ", b"\t"):
+            if not in_bcc:
+                kept.append(line)
+            continue
+        in_bcc = line.lower().startswith(b"bcc:")
+        if not in_bcc:
+            kept.append(line)
+    sender = email.utils.parseaddr(resent_from)[1]
+    block = [
+        f"Resent-From: {resent_from}",
+        "Resent-To: " + ("," + eol.decode() + " ").join(resent_to),
+        f"Resent-Date: {email.utils.formatdate(localtime=True)}",
+        f"Resent-Message-ID: {make_message_id(sender)}",
+    ]
+    return eol.join([s.encode() for s in block] + kept) + sep + body
+
+
 def _find_reply_from_address(email_obj: Email, my_address: str) -> EmailAddress:
     """Find the best reply-from address by matching the account address.
 
