@@ -40,6 +40,20 @@ _UID_FROM_FILENAME = re.compile(r",U=(\d+)[,:]")
 logger = logging.getLogger(__name__)
 
 
+# The page and layout notes name how the cache's answer can differ from
+# the server's and the retry that gets the server's answer.
+_NOTE_PAGE = (
+    "the cache filled this page with the newest messages by Date header, "
+    "while the server picks the newest by when it received them, so the page "
+    "can hold other messages; --no-cache asks the server"
+)
+_NOTE_GMAIL = (
+    "this Gmail cache holds the label folders but not All Mail, so it misses "
+    "archived mail that carries no label, and its rows name a label folder "
+    "and UID where the server's name All Mail; --no-cache asks the server"
+)
+
+
 def _files_gone_notes(from_index: int, left_out: int) -> List[str]:
     """The notes for hits whose file was not on disk when the row was built.
 
@@ -398,8 +412,10 @@ class MuBackend:
             block, a hit whose on-disk file has vanished since the last
             index is skipped with a warning rather than aborting the
             whole result set.  ``report`` is the mu emission's
-            translation report for ``provenance.query``, with a note
-            added when some hit's file was gone.  ``truncated`` is
+            translation report for ``provenance.query``, with notes
+            added where this answer can differ from the server's: a
+            hit's file was gone, the page was cut, or a whole Gmail
+            block was searched.  ``truncated`` is
             ``True`` when the index holds more matches than ``limit``
             (probed by asking mu for one extra record, reading further
             when the bound or a vanished file took rows out), and a cut
@@ -453,11 +469,8 @@ class MuBackend:
         # one row per message; within one folder, and on other servers,
         # whose whole-account search covers every folder, copies are
         # rows live as well.
-        options = (
-            ["--skip-dups"]
-            if folder is None and self._gmail_layout(imap_block.maildir)
-            else []
-        )
+        whole_gmail = folder is None and self._gmail_layout(imap_block.maildir)
+        options = ["--skip-dups"] if whole_gmail else []
 
         # One extra record is requested so a full page can be told apart
         # from a truncated one.  Rows the bound or a vanished file takes
@@ -488,8 +501,13 @@ class MuBackend:
                 break
             want += left_out + dropped_after_bound
         report = emission.report
-        report.approximations.extend(_files_gone_notes(from_index, left_out))
         truncated = len(records) > limit
+        notes = _files_gone_notes(from_index, left_out)
+        if truncated:
+            notes.append(_NOTE_PAGE)
+        if whole_gmail:
+            notes.append(_NOTE_GMAIL)
+        report.approximations.extend(n for n in notes if n not in report.approximations)
         total_count: Optional[int] = len(records)
         if truncated:
             counted = self._count_matches(home, scoped, options)

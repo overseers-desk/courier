@@ -81,10 +81,35 @@ _XAPIAN_KEYWORDS = frozenset({"and", "or", "not", "xor"})
 # reference, wildcard, or group.
 _QUOTE_TRIGGERS = set(':*/()"')
 
-_NOTE_DATES = "the local cache evaluates dates in local time"
+# Each note names how the cache's answer can differ from the server's
+# and the retry that gets the server's answer (INVARIANTS.md).
+_NOTE_TEXT = (
+    "the cache matches whole words and whole addresses, ignoring accents "
+    "and markup, while the server matches by its own rules, often on parts "
+    "of words and addresses, so either can find messages the other misses; "
+    "--no-cache asks the server"
+)
+_NOTE_SIZE = (
+    "the cache measures each message as stored on disk, often with shorter "
+    "line endings than the server counts, so messages near the size bound "
+    "can differ; --no-cache asks the server"
+)
+_NOTE_RELATIVE = (
+    "the cache counts newer:/older: in whole days from the start of the "
+    "local day, by each message's Date header, while the server counts from "
+    "when it received the message, to the second where it can; --no-cache "
+    "asks the server"
+)
+_NOTE_DATES = (
+    "the cache judges dates by each message's Date header in this "
+    "computer's time zone, and a message without one matches no date, "
+    "while the server judges by when it received the message, in its own "
+    "time zone; --no-cache asks the server"
+)
 _NOTE_QUOTE = (
-    "the local index never contains quote characters (they are token "
-    "boundaries), so an embedded double quote matches as a space"
+    "the cache treats quote characters as token boundaries, so an embedded "
+    "double quote matches as a space, while the server matches the quote "
+    "itself; --no-cache asks the server"
 )
 
 
@@ -258,6 +283,7 @@ class _Renderer:
         op = term.op
         if op in (OP_WORD, OP_PHRASE):
             assert isinstance(term.value, str)
+            self._note(_NOTE_TEXT)
             if op == OP_PHRASE:
                 return f'"{self._clean_quotes(term.value)}"'
             return self._quote(term.value)
@@ -266,6 +292,9 @@ class _Renderer:
             return self._keyword_fragment(term.value)
         if op in _FIELDS:
             assert isinstance(term.value, str)
+            if op != "msgid":
+                # A Message-ID is one indexed term on both sides.
+                self._note(_NOTE_TEXT)
             return f"{_FIELDS[op]}:{self._quote(term.value)}"
         if op == "is":
             assert isinstance(term.value, Flag)
@@ -293,7 +322,7 @@ class _Renderer:
             return f"date:{day}..{day}"
         if op in ("newer", "older"):
             assert isinstance(term.value, timedelta)
-            self._note(_NOTE_DATES)
+            self._note(_NOTE_RELATIVE)
             boundary = (self.now - term.value).date()
             if op == "newer":
                 return f"date:{_mu_date(boundary)}.."
@@ -308,9 +337,11 @@ class _Renderer:
             return f"date:..{_mu_date(upper)}"
         if op == "larger":
             assert isinstance(term.value, int)
+            self._note(_NOTE_SIZE)
             return f"size:{term.value + 1}.."
         if op == "smaller":
             assert isinstance(term.value, int)
+            self._note(_NOTE_SIZE)
             return f"size:..{max(term.value - 1, 0)}"
         if op == "has":
             assert isinstance(term.value, str)

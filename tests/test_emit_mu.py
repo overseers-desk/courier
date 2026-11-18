@@ -164,9 +164,9 @@ class TestDates:
     def test_older_emits_prior_day(self):
         assert mu_of("older:2w") == "date:..20260630"
 
-    def test_local_time_note(self):
+    def test_time_zone_note(self):
         emission = emission_of("after:2026-07-13")
-        assert any("local time" in note for note in emission.report.approximations)
+        assert any("time zone" in note for note in emission.report.approximations)
 
 
 class TestSizes:
@@ -322,8 +322,67 @@ class TestReport:
     def test_dialect(self):
         assert emission_of("from:alice").report.dialect == "mu"
 
-    def test_exact_translation_has_no_notes(self):
-        assert emission_of("from:alice is:unread").report.approximations == []
+    @pytest.mark.parametrize("query", ["is:unread", "msgid:abc@host", "all"])
+    def test_exact_translation_has_no_notes(self, query):
+        assert emission_of(query).report.approximations == []
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            "from:alice",
+            "to:alice",
+            "cc:alice",
+            "bcc:alice",
+            "subject:invoice",
+            "list:announce.example.com",
+            "filename:pdf",
+            "body:invoice",
+            "invoice",
+            '"weekly report"',
+            "from:alice is:unread",
+        ],
+    )
+    def test_text_matching_is_disclosed(self, query):
+        """mu matches whole indexed terms; the server matches substrings."""
+        notes = emission_of(query).report.approximations
+        assert len(notes) == 1
+        assert "whole words and whole addresses" in notes[0]
+        assert "parts of words" in notes[0]
+        assert notes[0].endswith("; --no-cache asks the server")
+
+    @pytest.mark.parametrize("query", ["larger:1M", "smaller:10k"])
+    def test_size_is_disclosed(self, query):
+        notes = emission_of(query).report.approximations
+        assert len(notes) == 1
+        assert "line endings" in notes[0]
+        assert notes[0].endswith("; --no-cache asks the server")
+
+    @pytest.mark.parametrize("query", ["newer:3d", "older:2w"])
+    def test_relative_dates_are_disclosed(self, query):
+        notes = emission_of(query).report.approximations
+        assert len(notes) == 1
+        assert "start of the local day" in notes[0]
+        assert notes[0].endswith("; --no-cache asks the server")
+
+    @pytest.mark.parametrize(
+        "query", ["after:2026-07-13", "before:2026-07-13", "on:2026-07-13", "today"]
+    )
+    def test_calendar_dates_are_disclosed(self, query):
+        """The cache judges the Date header in the local time zone; the
+        server judges the date it received the message, in its own."""
+        notes = emission_of(query).report.approximations
+        assert len(notes) == 1
+        assert "Date header" in notes[0]
+        assert "when it received the message" in notes[0]
+        assert notes[0].endswith("; --no-cache asks the server")
+
+    def test_each_note_appears_once(self):
+        notes = emission_of(
+            "from:a to:b subject:c after:2026-01-01 before:2026-02-01 "
+            "larger:1M smaller:2M"
+        ).report.approximations
+        assert len(notes) == 3
+        assert len(set(notes)) == 3
 
 
 # ---------------------------------------------------------------------------

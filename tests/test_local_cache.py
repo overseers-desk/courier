@@ -74,6 +74,11 @@ def _mu_record(path: str, **overrides: Any) -> Dict[str, Any]:
     return record
 
 
+def _file_notes(report) -> list:
+    """The report's notes about hits whose file was gone after indexing."""
+    return [note for note in report.approximations if "after indexing" in note]
+
+
 class TestMuBackendIsEligible:
     """Eligibility check mirrors provenance.fell_back_reason vocabulary."""
 
@@ -599,8 +604,9 @@ class TestMuBackendSearch:
 
         assert [r["message_id"] for r in results] == ["<live@x>"]
         assert any(dead_path in rec.message for rec in caplog.records)
-        assert len(report.approximations) == 1
-        note = report.approximations[0]
+        notes = _file_notes(report)
+        assert len(notes) == 1
+        note = notes[0]
         assert note.startswith("1 matching message is left out")
         assert "redact policy" in note
         assert note.endswith("; --no-cache asks the server")
@@ -690,7 +696,7 @@ class TestMuBackendSearch:
         assert results == [expected]
         assert results[0]["message_id"] == "<menu-1@example.com>"
         assert results[0]["has_attachments"] is True
-        assert report.approximations == []
+        assert _file_notes(report) == []
 
     def test_flags_use_the_imap_vocabulary_from_the_file_name(self, tmp_path):
         """Maildir flag letters map to IMAP flags; mu's words never leak."""
@@ -720,8 +726,9 @@ class TestMuBackendSearch:
         assert row["has_attachments"] is True
         assert row["uid"] == 7
         assert row["path"] == gone
-        assert len(report.approximations) == 1
-        note = report.approximations[0]
+        notes = _file_notes(report)
+        assert len(notes) == 1
+        note = notes[0]
         assert note.startswith("1 row comes from the index alone")
         assert note.endswith("; --no-cache asks the server")
 
@@ -732,12 +739,16 @@ class TestMuBackendSearch:
         ]
         results, report, _, *_ = self._search_records(tmp_path, _make_block(), records)
         assert len(results) == 3
-        assert len(report.approximations) == 1
-        assert report.approximations[0].startswith("3 rows come from the index")
+        notes = _file_notes(report)
+        assert len(notes) == 1
+        assert notes[0].startswith("3 rows come from the index")
 
-    def _find_argvs(self, tmp_path, gmail: bool, folder=None) -> list:
-        """The ``mu find`` argvs of a search whose page is cut, so both
-        the page run and the counting run happen."""
+    def _cut_search(self, tmp_path, gmail: bool, folder=None, limit: int = 2):
+        """Search three hits, whose page *limit* 2 cuts so both the page
+        run and the counting run happen.
+
+        Returns ``(mu find argvs, outcome)``.
+        """
         maildir = tmp_path / "mail" / "work"
         (maildir / "INBOX" / "cur").mkdir(parents=True)
         if gmail:
@@ -758,28 +769,61 @@ class TestMuBackendSearch:
             return subprocess.CompletedProcess(argv, 0, json.dumps(records), "")
 
         with patch("courier.local_cache.subprocess.run", side_effect=fake_run):
-            backend.search(
-                _make_block(str(maildir)), parse("from:jane"), limit=2, folder=folder
+            outcome = backend.search(
+                _make_block(str(maildir)),
+                parse("from:jane"),
+                limit=limit,
+                folder=folder,
             )
-        return argvs
+        return argvs, outcome
 
     def test_whole_gmail_block_shows_each_message_once(self, tmp_path):
         """A Gmail maildir holds one copy per label; the server answers a
         whole-account search from All Mail, one row per message, so both
         the page and its count skip copies sharing a Message-ID."""
-        argvs = self._find_argvs(tmp_path, gmail=True)
+        argvs, _ = self._cut_search(tmp_path, gmail=True)
         assert len(argvs) == 2
         assert all("--skip-dups" in argv for argv in argvs)
 
     def test_one_gmail_folder_keeps_every_row(self, tmp_path):
-        argvs = self._find_argvs(tmp_path, gmail=True, folder="INBOX")
+        argvs, _ = self._cut_search(tmp_path, gmail=True, folder="INBOX")
         assert argvs and not any("--skip-dups" in argv for argv in argvs)
 
     def test_other_layouts_keep_every_row(self, tmp_path):
         """Elsewhere a whole-account search covers every folder, so two
         folders' copies of a message are two rows live as well."""
-        argvs = self._find_argvs(tmp_path, gmail=False)
+        argvs, _ = self._cut_search(tmp_path, gmail=False)
         assert argvs and not any("--skip-dups" in argv for argv in argvs)
+
+    def test_whole_gmail_block_says_what_the_cache_lacks(self, tmp_path):
+        """No All Mail on disk: archived mail without a label is missing,
+        and rows name a label folder and its UID."""
+        _, outcome = self._cut_search(tmp_path, gmail=True)
+        notes = [n for n in outcome.report.approximations if "All Mail" in n]
+        assert len(notes) == 1
+        assert "label" in notes[0]
+        assert notes[0].endswith("; --no-cache asks the server")
+
+    @pytest.mark.parametrize(
+        "gmail, folder", [(True, "INBOX"), (False, None)], ids=["folder", "other"]
+    )
+    def test_other_searches_carry_no_gmail_note(self, tmp_path, gmail, folder):
+        _, outcome = self._cut_search(tmp_path, gmail=gmail, folder=folder)
+        assert not [n for n in outcome.report.approximations if "All Mail" in n]
+
+    def test_cut_page_says_the_server_may_pick_other_rows(self, tmp_path):
+        """The cache picks the newest by Date header, the server by the
+        date it received each message."""
+        _, outcome = self._cut_search(tmp_path, gmail=False)
+        notes = [n for n in outcome.report.approximations if "page" in n]
+        assert len(notes) == 1
+        assert "Date header" in notes[0]
+        assert notes[0].endswith("; --no-cache asks the server")
+
+    def test_whole_page_carries_no_page_note(self, tmp_path):
+        _, outcome = self._cut_search(tmp_path, gmail=False, limit=5)
+        assert not outcome.truncated
+        assert not [n for n in outcome.report.approximations if "page" in n]
 
 
 class TestFolderExistenceCheck:
