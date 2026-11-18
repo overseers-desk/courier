@@ -1,3 +1,23 @@
+courier (1.3.0) unstable; urgency=medium
+
+  * A search the local cache answers reads as a live search does: rows carry
+    IMAP flags (\Seen, \Answered), the Message-ID in angle brackets, and names
+    and subjects written as live rows write them. A page cut at the limit
+    reports the full match count, and a whole-account Gmail search shows each
+    message once.
+  * Where the cache cannot match the server's answer without giving up its
+    speed or offline use (text operators, sizes, dates, newer:/older:, which
+    messages fill a cut page, Gmail's All Mail), the result says how it
+    differs and that --no-cache asks the server. JSON and MCP carry the note
+    in provenance.query.approximations, --format text prints it as a # note:
+    line, and --format oneline writes it to stderr.
+  * A live msgid: search on a non-Gmail server matches the whole Message-ID
+    only.
+  * Under WORLD_AS_OF, the cache drops mail dated after the bound before the
+    limit cut, so a bounded page fills to the limit.
+
+ -- Weiwu Zhang <a@colourful.land>  Wed, 18 Nov 2026 00:00:00 +0000
+
 courier (1.2.5) unstable; urgency=medium
 
   * courier resend sends a stored email, unchanged, to people it missed:

@@ -1,5 +1,5 @@
 Name:           courier
-Version:        1.2.5
+Version:        1.3.0
 Release:        1%{?dist}
 Summary:        Email toolkit for AI assistants and command-line scripting
 License:        MIT
@@ -67,6 +67,12 @@ install -Dpm 644 debian/courier.1 %{buildroot}%{_mandir}/man1/courier.1
 %{_mandir}/man1/courier.1*
 
 %changelog
+* Wed Nov 18 2026 Weiwu Zhang <a@colourful.land> - 1.3.0-1
+- A search the local cache answers reads as a live search does: rows carry IMAP flags (\Seen, \Answered), the Message-ID in angle brackets, and names and subjects written as live rows write them. A page cut at the limit reports the full match count, and a whole-account Gmail search shows each message once.
+- Where the cache cannot match the server's answer without giving up its speed or offline use (text operators, sizes, dates, newer:/older:, which messages fill a cut page, Gmail's All Mail), the result says how it differs and that --no-cache asks the server. JSON and MCP carry the note in provenance.query.approximations, --format text prints it as a # note: line, and --format oneline writes it to stderr.
+- A live msgid: search on a non-Gmail server matches the whole Message-ID only.
+- Under WORLD_AS_OF, the cache drops mail dated after the bound before the limit cut, so a bounded page fills to the limit.
+
 * Thu Nov 12 2026 Weiwu Zhang <a@colourful.land> - 1.2.5-1
 - courier resend sends a stored email, unchanged, to people it missed: courier -a NAME resend -f FOLDER -u UID --to ADDR --send. It adds Resent-From, Resent-To, Resent-Date and Resent-Message-ID headers and sends the stored bytes as they are, less the Bcc header, to the --to addresses only. Without --send it prints what would be sent.
 - A reply or compose written to a file with -o takes -i, --smtp, --from and --name, so the file shows the From that --send would use. A --from that belongs to another account's identity is refused with the -i to pass.
