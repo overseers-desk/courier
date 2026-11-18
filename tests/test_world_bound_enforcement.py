@@ -416,12 +416,14 @@ class TestLocalCachePathBoundedLikeImap:
     """The mu-cache path is bounded the same as the IMAP path."""
 
     def _local_client(self, results):
-        from courier.local_cache import EligibilityResult
+        from courier.local_cache import EligibilityResult, MuSearch
         from courier.query.ast import TranslationReport
 
         mu = MagicMock()
         mu.is_eligible.return_value = EligibilityResult(True)
-        mu.search.return_value = (results, TranslationReport(dialect="mu"), False)
+        mu.search.return_value = MuSearch(
+            results, TranslationReport(dialect="mu"), False, len(results)
+        )
         mu.index_mtime_iso.return_value = "2026-07-12T00:00:00+00:00"
         return (
             ImapClient(

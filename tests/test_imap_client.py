@@ -19,16 +19,26 @@ from courier.errors import (
     TransientError,
 )
 from courier.imap_client import ImapClient
-from courier.local_cache import EligibilityResult, MuFailure, UntranslatableQuery
+from courier.local_cache import (
+    EligibilityResult,
+    MuFailure,
+    MuSearch,
+    UntranslatableQuery,
+)
 from courier.models import Email
 from courier.query import parse
 from courier.query.ast import TranslationReport
 from courier.query.dispatch import extract_scope
 
 
-def _mu_hit(results, truncated: bool = False):
-    """Wrap canned cache results in MuBackend.search's return shape."""
-    return (results, TranslationReport(dialect="mu"), truncated)
+def _mu_hit(results, truncated: bool = False, total_count=None):
+    """Wrap canned cache results in MuBackend.search's return shape.
+
+    An uncut page counts its own rows unless *total_count* says otherwise.
+    """
+    if total_count is None and not truncated:
+        total_count = len(results)
+    return MuSearch(results, TranslationReport(dialect="mu"), truncated, total_count)
 
 
 def _make_maildir_root(tmp_path, folder: str = "INBOX") -> str:
@@ -2337,18 +2347,18 @@ class TestSearchEmailsDispatch:
 
         assert "hint" not in result["provenance"]
 
-    def test_search_emails_truncated_cache_page_has_no_total(self):
-        """A cache page cut at the limit cannot know the match count."""
+    def test_search_emails_truncated_cache_page_reports_the_index_total(self):
+        """A cache page cut at the limit carries the index's match count."""
         block = self._make_block_with_maildir()
 
         mu = MagicMock()
         mu.is_eligible.return_value = EligibilityResult(True)
-        mu.search.return_value = _mu_hit([{"subject": "x", "flags": []}], True)
+        mu.search.return_value = _mu_hit([{"subject": "x", "flags": []}], True, 57)
 
         client = ImapClient(block, local_cache=mu)
         result = client.search_emails("from:alice", limit=1)
         assert result["truncated"] is True
-        assert result["total_count"] is None
+        assert result["total_count"] == 57
 
     def test_search_emails_falls_back_on_mu_exception(self):
         """A MuFailure from the backend triggers an IMAP fallback."""

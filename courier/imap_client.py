@@ -60,7 +60,7 @@ from courier.query.emit_imap import emit as emit_imap
 from courier.query.emit_imap import unprotected_by_imapclient
 
 if TYPE_CHECKING:
-    from courier.local_cache import MuBackend
+    from courier.local_cache import MuBackend, MuSearch
 
 
 # mbsync encodes flags in the maildir filename suffix after ``:2,``.
@@ -2196,8 +2196,8 @@ class ImapClient:
             ``hint``, naming that the server was not consulted and the
             ``--no-cache`` retry.  Remote provenance adds
             ``folders_searched``.  ``total_count`` is the match count
-            before the limit cut (``None`` when the local cache cannot
-            know it), and ``truncated`` reports whether the limit cut
+            before the limit cut (``None`` only when a cut local-cache
+            page could not be counted), and ``truncated`` reports whether the limit cut
             anything.  When the client is bounded, ``provenance`` also
             carries a ``world_as_of`` block (see
             :meth:`_world_as_of_provenance`).
@@ -2220,7 +2220,7 @@ class ImapClient:
             remaining, scope, folder, limit, no_cache
         )
         if local is not None:
-            local_results, report, truncated = local
+            local_results, report = local.results, local.report
             dropped_after_bound = 0
             if self.world_as_of is not None:
                 local_results, dropped_after_bound = self._drop_results_after_bound(
@@ -2252,8 +2252,8 @@ class ImapClient:
             return {
                 "results": local_results,
                 "provenance": provenance,
-                "total_count": None if truncated else len(local_results),
-                "truncated": truncated,
+                "total_count": local.total_count,
+                "truncated": local.truncated,
             }
 
         fallbacks: List[Dict[str, str]] = []
@@ -2317,9 +2317,9 @@ class ImapClient:
         remaining, scope = query_dispatch.extract_scope(parse(f"msgid:<{bare}>"))
         query_dispatch.ensure_no_folder_conflict(folder, scope)
         local, _reason = self._try_local_cache_search(remaining, scope, folder, 20)
-        if local is None or not local[0]:
+        if local is None or not local.results:
             return None
-        return local[0]
+        return local.results
 
     def _world_as_of_provenance(
         self, dropped_after_bound: int, date_source: str
@@ -2392,10 +2392,7 @@ class ImapClient:
         folder: Optional[str],
         limit: int,
         no_cache: bool = False,
-    ) -> Tuple[
-        Optional[Tuple[List[Dict[str, Any]], TranslationReport, bool]],
-        Optional[str],
-    ]:
+    ) -> Tuple[Optional["MuSearch"], Optional[str]]:
         """Attempt to serve a search from the local cache.
 
         Args:
@@ -2408,9 +2405,9 @@ class ImapClient:
                 ``"no_cache"`` so the caller goes to live IMAP.
 
         Returns:
-            ``((results, report, truncated), None)`` on a successful
-            local-cache hit, or ``(None, reason)`` when the local cache
-            cannot serve the call.  ``reason`` is ``None`` when the
+            ``(MuSearch, None)`` on a successful local-cache hit, or
+            ``(None, reason)`` when the local cache cannot serve the
+            call.  ``reason`` is ``None`` when the
             account is not opted into the local cache (the wrapped
             shape still applies, but no fallback is reported);
             otherwise it is one of the tags from the

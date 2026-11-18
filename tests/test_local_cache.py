@@ -210,7 +210,7 @@ class TestMuBackendSearch:
                 stderr="",
             ),
         ):
-            results, _report, _truncated = backend.search(
+            results, _report, _truncated, *_ = backend.search(
                 account_cfg, parse("from:alice"), limit=5
             )
 
@@ -248,7 +248,7 @@ class TestMuBackendSearch:
                 args=[], returncode=2, stdout="", stderr="no matches\n"
             ),
         ):
-            results, report, truncated = backend.search(
+            results, report, truncated, *_ = backend.search(
                 account_cfg, parse("from:nobody"), limit=10
             )
 
@@ -326,7 +326,7 @@ class TestMuBackendSearch:
                 args=[], returncode=0, stdout=stdout, stderr=""
             ),
         ):
-            results, _report, _truncated = backend.search(
+            results, _report, _truncated, *_ = backend.search(
                 account_cfg, parse("from:alice"), limit=5
             )
 
@@ -388,7 +388,7 @@ class TestMuBackendSearch:
                 args=[], returncode=0, stdout=json.dumps(sample), stderr=""
             ),
         ):
-            results, _report, _truncated = backend.search(
+            results, _report, _truncated, *_ = backend.search(
                 block, parse("from:alice"), limit=5
             )
 
@@ -419,7 +419,7 @@ class TestMuBackendSearch:
                 args=[], returncode=0, stdout=json.dumps(sample), stderr=""
             ),
         ):
-            results, _report, _truncated = backend.search(
+            results, _report, _truncated, *_ = backend.search(
                 block, parse("from:alice"), limit=5
             )
 
@@ -472,7 +472,7 @@ class TestMuBackendSearch:
                 args=[], returncode=0, stdout=json.dumps(sample), stderr=""
             ),
         ):
-            results, _report, _truncated = backend.search(
+            results, _report, _truncated, *_ = backend.search(
                 block, parse("from:alice"), limit=5
             )
 
@@ -529,7 +529,7 @@ class TestMuBackendSearch:
             patch.object(MuBackend, "_store_maildir_root", return_value=block.maildir),
             patch("courier.local_cache.subprocess.run", side_effect=fake_run),
         ):
-            results, _report, _truncated = backend.search(
+            results, _report, _truncated, *_ = backend.search(
                 block, parse("from:alice"), limit=5
             )
 
@@ -593,7 +593,7 @@ class TestMuBackendSearch:
             ),
             caplog.at_level(logging.WARNING, logger="courier.local_cache"),
         ):
-            results, report, _truncated = backend.search(
+            results, report, _truncated, *_ = backend.search(
                 block, parse("from:alice"), limit=5
             )
 
@@ -644,7 +644,7 @@ class TestMuBackendSearch:
                 args=[], returncode=0, stdout=json.dumps(sample), stderr=""
             ),
         ):
-            results, _report, _truncated = backend.search(
+            results, _report, _truncated, *_ = backend.search(
                 block, parse("from:alice"), limit=5
             )
 
@@ -674,7 +674,7 @@ class TestMuBackendSearch:
 
         path = tmp_path / "1700000000.1.host,U=42,FMD5=abc:2,RS"
         path.write_bytes(_LIVE_SHAPED_RAW)
-        results, report, _ = self._search_records(
+        results, report, _, *_ = self._search_records(
             tmp_path, _make_block(), [_mu_record(str(path))]
         )
 
@@ -696,7 +696,7 @@ class TestMuBackendSearch:
         """Maildir flag letters map to IMAP flags; mu's words never leak."""
         path = tmp_path / "1700000000.1.host,U=9,FMD5=abc:2,DFT"
         path.write_bytes(_LIVE_SHAPED_RAW)
-        results, _report, _ = self._search_records(
+        results, _report, _, *_ = self._search_records(
             tmp_path,
             _make_block(),
             [_mu_record(str(path), **{":flags": ["draft", "flagged", "trashed"]})],
@@ -708,7 +708,7 @@ class TestMuBackendSearch:
         fields (Message-ID bracketed, flags from the file name), and the
         report counts the rows served that way."""
         gone = str(tmp_path / "moved-away,U=7,FMD5=abc:2,S")
-        results, report, _ = self._search_records(
+        results, report, _, *_ = self._search_records(
             tmp_path, _make_block(), [_mu_record(gone)]
         )
         assert len(results) == 1
@@ -730,7 +730,7 @@ class TestMuBackendSearch:
             _mu_record(str(tmp_path / f"gone{n},U={n}:2,S"), **{":date-unix": n})
             for n in range(1, 4)
         ]
-        results, report, _ = self._search_records(tmp_path, _make_block(), records)
+        results, report, _, *_ = self._search_records(tmp_path, _make_block(), records)
         assert len(results) == 3
         assert len(report.approximations) == 1
         assert report.approximations[0].startswith("3 rows come from the index")
@@ -783,7 +783,7 @@ class TestFolderExistenceCheck:
         with patch(
             "courier.local_cache.subprocess.run", side_effect=self._mu_ok
         ) as mock_run:
-            results, _report, truncated = backend.search(
+            results, _report, truncated, *_ = backend.search(
                 block, parse("from:alice"), limit=10, folder="Archive"
             )
 
@@ -800,7 +800,7 @@ class TestFolderExistenceCheck:
         block = _make_block(str(root))
 
         with patch("courier.local_cache.subprocess.run", side_effect=self._mu_ok):
-            results, _report, _truncated = backend.search(
+            results, _report, _truncated, *_ = backend.search(
                 block, parse("from:alice"), limit=10, folder="INBOX"
             )
 
@@ -813,7 +813,7 @@ class TestFolderExistenceCheck:
         block = _make_block(self._maildir(tmp_path, "INBOX"))
 
         with patch("courier.local_cache.subprocess.run", side_effect=self._mu_ok):
-            results, _report, _truncated = backend.search(
+            results, _report, _truncated, *_ = backend.search(
                 block, parse("from:alice"), limit=10, folder="INBOX"
             )
 
@@ -1197,33 +1197,75 @@ class TestSearchTruncationProbe:
             ":maildir": "/work",
         }
 
-    def _search(self, tmp_path, records, limit):
+    def _search(
+        self, tmp_path, records, limit, count_stdout: bytes = b"", count_exit: int = 0
+    ):
+        """Run search() with mu faked; the ``--fields=i`` counting run
+        answers *count_stdout*. Every ``mu find`` argv is kept on
+        ``self.calls``."""
         backend = self._backend(tmp_path)
         block = _make_block("/var/local/mail/work")
-        with patch(
-            "courier.local_cache.subprocess.run",
-            return_value=subprocess.CompletedProcess(
-                args=[], returncode=0, stdout=json.dumps(records), stderr=""
-            ),
-        ):
+        self.calls: list = []
+
+        def fake_run(argv, **kwargs):
+            if argv[:2] == ["mu", "find"]:
+                self.calls.append(argv)
+            if "--fields=i" in argv:
+                return subprocess.CompletedProcess(argv, count_exit, count_stdout, b"")
+            return subprocess.CompletedProcess(argv, 0, json.dumps(records), "")
+
+        with patch("courier.local_cache.subprocess.run", side_effect=fake_run):
             return backend.search(block, parse("from:alice"), limit=limit)
 
     def test_extra_record_marks_truncated_and_is_cut(self, tmp_path):
-        results, _report, truncated = self._search(
-            tmp_path, [self._record(n) for n in range(3)], limit=2
+        results, _report, truncated, *_ = self._search(
+            tmp_path,
+            [self._record(n) for n in range(3)],
+            limit=2,
+            count_stdout=b"m@x\n" * 3,
         )
         assert truncated is True
         assert len(results) == 2
 
     def test_full_page_without_extra_is_not_truncated(self, tmp_path):
-        results, _report, truncated = self._search(
+        results, _report, truncated, *_ = self._search(
             tmp_path, [self._record(n) for n in range(2)], limit=2
         )
         assert truncated is False
         assert len(results) == 2
 
+    def test_cut_page_counts_every_match(self, tmp_path):
+        """A cut page reports the index's whole match count, from a
+        second run over the same scoped query with no limit."""
+        outcome = self._search(
+            tmp_path,
+            [self._record(n) for n in range(3)],
+            limit=2,
+            count_stdout=b"m@x\n" * 57,
+        )
+        assert outcome.truncated is True
+        assert outcome.total_count == 57
+        page_run, count_run = self.calls
+        assert count_run[-1] == page_run[-1]
+        assert "--maxnum" not in count_run
+        assert count_run[2] == page_run[2]
+        assert count_run[2].startswith("--muhome=")
+
+    def test_uncut_page_total_is_its_length(self, tmp_path):
+        outcome = self._search(tmp_path, [self._record(n) for n in range(2)], limit=5)
+        assert outcome.total_count == 2
+        assert len(self.calls) == 1
+
+    def test_failed_count_leaves_the_total_unknown(self, tmp_path):
+        """A count that cannot be had is reported as unknown, never guessed."""
+        outcome = self._search(
+            tmp_path, [self._record(n) for n in range(3)], limit=2, count_exit=1
+        )
+        assert outcome.truncated is True
+        assert outcome.total_count is None
+
     def test_report_carries_the_mu_dialect(self, tmp_path):
-        _results, report, _truncated = self._search(
+        _results, report, _truncated, *_ = self._search(
             tmp_path, [self._record(1)], limit=5
         )
         assert report.dialect == "mu"

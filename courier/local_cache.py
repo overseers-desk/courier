@@ -22,7 +22,7 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
 from .config import ImapBlock, LocalCacheConfig
 from .imap_client import ImapClient
@@ -117,6 +117,28 @@ class EligibilityResult:
 
     eligible: bool
     reason: Optional[str] = None
+
+
+class MuSearch(NamedTuple):
+    """One local-cache search, before envelope assembly.
+
+    Named fields only, no behaviour, the same standard as the remote
+    search's result in ``imap_client``: a flag and counts cross this
+    boundary, and a bare tuple would transpose them silently.
+
+    Attributes:
+        results: Result rows, newest first, at most ``limit`` of them.
+        report: The mu emission's translation report, with the notes
+            this search added.
+        truncated: Whether the index holds more matches than ``limit``.
+        total_count: The match count before the limit cut; ``None``
+            only when the page was cut and counting failed.
+    """
+
+    results: List[Dict[str, Any]]
+    report: TranslationReport
+    truncated: bool
+    total_count: Optional[int]
 
 
 class MuBackend:
@@ -334,7 +356,7 @@ class MuBackend:
         folder: Optional[str] = None,
         world_as_of: Optional[datetime] = None,
         allowed_folders: Optional[List[str]] = None,
-    ) -> Tuple[List[Dict[str, Any]], TranslationReport, bool]:
+    ) -> MuSearch:
         """Run a search against the local mu store, scoped to the block.
 
         Args:
@@ -361,16 +383,17 @@ class MuBackend:
                 *folder* against the whitelist itself.
 
         Returns:
-            ``(results, report, truncated)``.  ``results`` is a list of
-            result dicts built from each hit's file as a live search
-            builds its rows (see :meth:`_format_result`), plus ``path``;
-            on a redact block, a hit whose on-disk file has vanished
-            since the last index is skipped with a warning rather than
-            aborting the whole result set.  ``report`` is the mu
-            emission's translation report for ``provenance.query``,
-            with a note added when some hit's file was gone.
-            ``truncated`` is ``True`` when the index holds more matches
-            than ``limit`` (probed by asking mu for one extra record).
+            The :class:`MuSearch`.  Its ``results`` are result dicts
+            built from each hit's file as a live search builds its rows
+            (see :meth:`_format_result`), plus ``path``; on a redact
+            block, a hit whose on-disk file has vanished since the last
+            index is skipped with a warning rather than aborting the
+            whole result set.  ``report`` is the mu emission's
+            translation report for ``provenance.query``, with a note
+            added when some hit's file was gone.  ``truncated`` is
+            ``True`` when the index holds more matches than ``limit``
+            (probed by asking mu for one extra record), and a cut page's
+            ``total_count`` comes from a second run counting every match.
 
         Raises:
             UntranslatableForBackend: When the query cannot be expressed
@@ -452,11 +475,11 @@ class MuBackend:
             # Exit 2 on an emitter-produced query is therefore a
             # genuine miss, served as one; the caller's envelope
             # disclosure names the --no-cache retry (issue #95).
-            return [], emission.report, False
+            return MuSearch([], emission.report, False, 0)
         if proc.returncode != 0:
             raise MuFailure(f"mu find exited {proc.returncode}: {proc.stderr.strip()}")
         if not proc.stdout.strip():
-            return [], emission.report, False
+            return MuSearch([], emission.report, False, 0)
         try:
             # mu copies a header's raw tab or other control character
             # into its JSON strings unescaped.
@@ -481,7 +504,45 @@ class MuBackend:
         report = emission.report
         report.approximations.extend(_files_gone_notes(from_index, left_out))
         truncated = len(records) > limit
-        return records[:limit], report, truncated
+        total_count: Optional[int] = len(records)
+        if truncated:
+            counted = self._count_matches(home, scoped)
+            # The count cannot fall below the rows already seen, and the
+            # hits left out above are not answers.
+            total_count = (
+                None if counted is None else max(counted - left_out, len(records))
+            )
+        return MuSearch(records[:limit], report, truncated, total_count)
+
+    @staticmethod
+    def _count_matches(home: str, scoped: str) -> Optional[int]:
+        """Count every match of a scoped query, with no limit.
+
+        ``mu find --fields=i`` prints one Message-ID line per match,
+        which is cheap to produce even for tens of thousands of
+        matches.
+
+        Args:
+            home: The muhome.
+            scoped: The scoped mu query the page was read with.
+
+        Returns:
+            The number of matches, or ``None`` (with a warning) when mu
+            could not run or failed.
+        """
+        argv = ["mu", "find", f"--muhome={home}", "--fields=i", scoped]
+        try:
+            proc = subprocess.run(argv, capture_output=True, timeout=30, check=False)
+        except (subprocess.TimeoutExpired, OSError) as e:
+            logger.warning(f"could not count the index's matches: {e}")
+            return None
+        if proc.returncode != 0:
+            logger.warning(
+                f"could not count the index's matches: mu find exited "
+                f"{proc.returncode}"
+            )
+            return None
+        return proc.stdout.count(b"\n")
 
     @staticmethod
     def _folder_synced(maildir: str, folder: str) -> bool:
@@ -799,5 +860,6 @@ __all__ = [
     "EligibilityResult",
     "MuBackend",
     "MuFailure",
+    "MuSearch",
     "UntranslatableQuery",
 ]
