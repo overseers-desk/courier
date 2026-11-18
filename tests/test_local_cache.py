@@ -34,6 +34,46 @@ def _make_xapian_dir(tmp_path) -> str:
     return str(muhome)
 
 
+_LIVE_SHAPED_RAW = (
+    b'From: "Doe, Jane" <jane@example.com>\r\n'
+    b"To: =?utf-8?q?Bj=C3=B6rn?= <bjorn@example.com>, plain@example.com\r\n"
+    b"Subject: =?utf-8?q?Caf=C3=A9_menu?=\r\n"
+    b"  for Friday\r\n"
+    b"Date: Tue, 14 Nov 2023 22:13:20 +0000\r\n"
+    b"Message-ID: <menu-1@example.com>\r\n"
+    b"MIME-Version: 1.0\r\n"
+    b'Content-Type: multipart/mixed; boundary="b1"\r\n'
+    b"\r\n"
+    b"--b1\r\n"
+    b"Content-Type: text/plain\r\n"
+    b"\r\n"
+    b"See attached.\r\n"
+    b"--b1\r\n"
+    b"Content-Type: application/pdf\r\n"
+    b'Content-Disposition: attachment; filename="menu.pdf"\r\n'
+    b"Content-Transfer-Encoding: base64\r\n"
+    b"\r\n"
+    b"JVBERi0K\r\n"
+    b"--b1--\r\n"
+)
+
+
+def _mu_record(path: str, **overrides: Any) -> Dict[str, Any]:
+    """A mu JSON record for *path*, worded the way mu words its fields."""
+    record: Dict[str, Any] = {
+        ":path": path,
+        ":from": [{":email": "jane@example.com", ":name": "Doe, Jane"}],
+        ":to": [{":email": "bjorn@example.com", ":name": "Björn"}],
+        ":subject": "Café menu for Friday",
+        ":date-unix": 1700000000,
+        ":flags": ["seen", "replied", "attach"],
+        ":message-id": "menu-1@example.com",
+        ":maildir": "/work",
+    }
+    record.update(overrides)
+    return record
+
+
 class TestMuBackendIsEligible:
     """Eligibility check mirrors provenance.fell_back_reason vocabulary."""
 
@@ -144,12 +184,12 @@ class TestMuBackendSearch:
         assert argv[-1] == '(from:alice) AND maildir:"/work/"'
 
     def test_parses_mu_json_output(self, tmp_path):
-        """A single mu json record round-trips into the courier result shape."""
+        """A record whose file is not on disk round-trips from mu's fields."""
         backend = self._backend(tmp_path)
         account_cfg = _make_block("/var/local/mail/work")
         sample = [
             {
-                ":path": "/var/local/mail/work/cur/123",
+                ":path": "/var/local/mail/work/cur/123:2,S",
                 "size": 174217,
                 ":from": [{":email": "a@b.com", ":name": "Alice"}],
                 ":to": [{":email": "c@d.com"}],
@@ -177,7 +217,7 @@ class TestMuBackendSearch:
         assert len(results) == 1
         rec = results[0]
         assert rec["message_id"] == "<m@x>"
-        assert rec["path"] == "/var/local/mail/work/cur/123"
+        assert rec["path"] == "/var/local/mail/work/cur/123:2,S"
         assert rec["folder"] == "INBOX"
         assert rec["from"] == "Alice <a@b.com>"
         assert rec["to"] == ["c@d.com"]
@@ -189,7 +229,7 @@ class TestMuBackendSearch:
         assert datetime.fromisoformat(rec["date"]) == datetime(
             2023, 11, 14, 22, 13, 20, tzinfo=timezone.utc
         )
-        assert rec["flags"] == ["seen", "attach"]
+        assert rec["flags"] == ["\\Seen"]
         assert rec["has_attachments"] is True
 
     def test_exit_code_2_is_a_served_miss(self, tmp_path):
@@ -387,40 +427,6 @@ class TestMuBackendSearch:
         assert "uid" not in results[0]
         assert results[0]["message_id"] == "<m@x>"
 
-    def test_search_skips_file_read_when_no_policy(self, tmp_path):
-        """Fast-path discipline: when the block has no redact policy the
-        backend never opens the maildir file. The path may be entirely
-        fictitious; if the code attempted to read it the test would
-        raise."""
-        backend = self._backend(tmp_path)
-        block = _make_block("/var/local/mail/work")
-        # The path is intentionally non-existent; reading it would raise.
-        sample = [
-            {
-                ":path": "/nonexistent/path/that/does/not/exist,U=1,FMD5=x:2,S",
-                ":from": [{":email": "a@b.com"}],
-                ":to": [],
-                ":subject": "Hi",
-                ":date-unix": 1700000000,
-                ":flags": [],
-                ":message-id": "<m@x>",
-                ":maildir": "/work",
-            }
-        ]
-        with patch(
-            "courier.local_cache.subprocess.run",
-            return_value=subprocess.CompletedProcess(
-                args=[], returncode=0, stdout=json.dumps(sample), stderr=""
-            ),
-        ):
-            results, _report, _truncated = backend.search(
-                block, parse("from:alice"), limit=5
-            )
-
-        assert len(results) == 1
-        assert results[0]["subject"] == "Hi"
-        assert "redacted_by" not in results[0]
-
     def test_search_applies_redact_to_matching_hit(self, tmp_path):
         """When the block carries a redact policy that matches, the
         result carries ``redacted_by="redacted"``, blanked content
@@ -533,8 +539,8 @@ class TestMuBackendSearch:
     def test_redact_block_skips_dead_path_keeps_rest(self, tmp_path, caplog):
         """One stale on-disk path (the syncer renamed the file since the
         last index) must not discard the block's whole result set on a
-        redact block: the dead hit is skipped with a warning and the
-        rest are served (issue #64)."""
+        redact block: the dead hit is skipped with a warning, the rest
+        are served (issue #64), and the report counts what was left out."""
         import logging
 
         backend = self._backend(tmp_path)
@@ -587,12 +593,17 @@ class TestMuBackendSearch:
             ),
             caplog.at_level(logging.WARNING, logger="courier.local_cache"),
         ):
-            results, _report, _truncated = backend.search(
+            results, report, _truncated = backend.search(
                 block, parse("from:alice"), limit=5
             )
 
         assert [r["message_id"] for r in results] == ["<live@x>"]
         assert any(dead_path in rec.message for rec in caplog.records)
+        assert len(report.approximations) == 1
+        note = report.approximations[0]
+        assert note.startswith("1 matching message is left out")
+        assert "redact policy" in note
+        assert note.endswith("; --no-cache asks the server")
 
     def test_search_passthrough_when_policy_does_not_match(self, tmp_path):
         """A policy that returns False yields the normal record shape,
@@ -643,6 +654,86 @@ class TestMuBackendSearch:
         assert rec["subject"] == "keep me"
         assert rec["path"] == str(maildir_file)
         assert rec["uid"] == 43
+
+    def _search_records(self, tmp_path, block: ImapBlock, records, limit: int = 5):
+        """Run search() over canned mu records."""
+        backend = self._backend(tmp_path)
+        with patch(
+            "courier.local_cache.subprocess.run",
+            return_value=subprocess.CompletedProcess(
+                args=[], returncode=0, stdout=json.dumps(records), stderr=""
+            ),
+        ):
+            return backend.search(block, parse("from:jane"), limit=limit)
+
+    def test_row_equals_the_live_projection_of_the_file(self, tmp_path):
+        """Names, subject, Message-ID, flags, date and attachments come
+        from the file through the live path's Email projection; ``path``
+        is the one extra key."""
+        from courier.imap_client import ImapClient
+
+        path = tmp_path / "1700000000.1.host,U=42,FMD5=abc:2,RS"
+        path.write_bytes(_LIVE_SHAPED_RAW)
+        results, report, _ = self._search_records(
+            tmp_path, _make_block(), [_mu_record(str(path))]
+        )
+
+        flags = ["\\Answered", "\\Seen"]
+        email_obj = ImapClient._email_from_bytes(_LIVE_SHAPED_RAW, 42, "INBOX", flags)
+        expected = email_obj.as_search_result(
+            folder="INBOX",
+            flags=email_obj.flags,
+            date_iso=email_obj.date.astimezone().isoformat(),
+            has_attachments=len(email_obj.attachments) > 0,
+        )
+        expected["path"] = str(path)
+        assert results == [expected]
+        assert results[0]["message_id"] == "<menu-1@example.com>"
+        assert results[0]["has_attachments"] is True
+        assert report.approximations == []
+
+    def test_flags_use_the_imap_vocabulary_from_the_file_name(self, tmp_path):
+        """Maildir flag letters map to IMAP flags; mu's words never leak."""
+        path = tmp_path / "1700000000.1.host,U=9,FMD5=abc:2,DFT"
+        path.write_bytes(_LIVE_SHAPED_RAW)
+        results, _report, _ = self._search_records(
+            tmp_path,
+            _make_block(),
+            [_mu_record(str(path), **{":flags": ["draft", "flagged", "trashed"]})],
+        )
+        assert results[0]["flags"] == ["\\Draft", "\\Flagged", "\\Deleted"]
+
+    def test_vanished_file_keeps_the_index_row_and_says_so(self, tmp_path):
+        """A file moved after indexing still yields its row, from mu's
+        fields (Message-ID bracketed, flags from the file name), and the
+        report counts the rows served that way."""
+        gone = str(tmp_path / "moved-away,U=7,FMD5=abc:2,S")
+        results, report, _ = self._search_records(
+            tmp_path, _make_block(), [_mu_record(gone)]
+        )
+        assert len(results) == 1
+        row = results[0]
+        assert row["subject"] == "Café menu for Friday"
+        assert row["from"] == "Doe, Jane <jane@example.com>"
+        assert row["message_id"] == "<menu-1@example.com>"
+        assert row["flags"] == ["\\Seen"]
+        assert row["has_attachments"] is True
+        assert row["uid"] == 7
+        assert row["path"] == gone
+        assert len(report.approximations) == 1
+        note = report.approximations[0]
+        assert note.startswith("1 row comes from the index alone")
+        assert note.endswith("; --no-cache asks the server")
+
+    def test_vanished_files_are_counted_in_one_note(self, tmp_path):
+        records = [
+            _mu_record(str(tmp_path / f"gone{n},U={n}:2,S"), **{":date-unix": n})
+            for n in range(1, 4)
+        ]
+        results, report, _ = self._search_records(tmp_path, _make_block(), records)
+        assert len(results) == 3
+        assert len(report.approximations) == 1
+        assert report.approximations[0].startswith("3 rows come from the index")
 
 
 class TestFolderExistenceCheck:

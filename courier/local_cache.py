@@ -14,7 +14,6 @@ When a check fails, eligibility returns ``False`` and the caller is
 expected to fall back to IMAP.
 """
 
-import email as email_pkg
 import json
 import logging
 import os
@@ -26,7 +25,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from .config import ImapBlock, LocalCacheConfig
-from .models import Email
+from .imap_client import ImapClient
 from .query.ast import TranslationReport, UntranslatableForBackend
 from .query.emit_mu import emit as emit_mu
 from .query.grammar import ParseResult
@@ -38,6 +37,47 @@ UntranslatableQuery = UntranslatableForBackend
 _UID_FROM_FILENAME = re.compile(r",U=(\d+)[,:]")
 
 logger = logging.getLogger(__name__)
+
+
+def _files_gone_notes(from_index: int, left_out: int) -> List[str]:
+    """The notes for hits whose file was not on disk when the row was built.
+
+    Args:
+        from_index: Rows built from mu's own fields instead of the file.
+        left_out: Hits dropped because a redact policy needed the file.
+
+    Returns:
+        One note per nonzero count, each naming how the answer differs
+        from the server's and the ``--no-cache`` retry.
+    """
+    notes: List[str] = []
+    if from_index == 1:
+        notes.append(
+            "1 row comes from the index alone because its file was moved or "
+            "removed after indexing, so its sender, recipients, subject and "
+            "date may be written differently from the server's; --no-cache "
+            "asks the server"
+        )
+    elif from_index > 1:
+        notes.append(
+            f"{from_index} rows come from the index alone because their files "
+            "were moved or removed after indexing, so their senders, "
+            "recipients, subjects and dates may be written differently from "
+            "the server's; --no-cache asks the server"
+        )
+    if left_out == 1:
+        notes.append(
+            "1 matching message is left out because its file was moved or "
+            "removed after indexing and the redact policy cannot be checked "
+            "without it; --no-cache asks the server"
+        )
+    elif left_out > 1:
+        notes.append(
+            f"{left_out} matching messages are left out because their files "
+            "were moved or removed after indexing and the redact policy cannot "
+            "be checked without them; --no-cache asks the server"
+        )
+    return notes
 
 
 class MuFailure(Exception):
@@ -322,14 +362,15 @@ class MuBackend:
 
         Returns:
             ``(results, report, truncated)``.  ``results`` is a list of
-            result dicts mirroring the IMAP search shape minus ``uid``,
-            plus ``message_id`` and ``path``; on a redact block, a hit
-            whose on-disk file has vanished since the last index is
-            skipped with a warning rather than aborting the whole result
-            set.  ``report`` is the mu emission's translation report for
-            ``provenance.query``.  ``truncated`` is ``True`` when the
-            index holds more matches than ``limit`` (probed by asking mu
-            for one extra record).
+            result dicts built from each hit's file as a live search
+            builds its rows (see :meth:`_format_result`), plus ``path``;
+            on a redact block, a hit whose on-disk file has vanished
+            since the last index is skipped with a warning rather than
+            aborting the whole result set.  ``report`` is the mu
+            emission's translation report for ``provenance.query``,
+            with a note added when some hit's file was gone.
+            ``truncated`` is ``True`` when the index holds more matches
+            than ``limit`` (probed by asking mu for one extra record).
 
         Raises:
             UntranslatableForBackend: When the query cannot be expressed
@@ -424,10 +465,23 @@ class MuBackend:
             raise MuFailure(f"could not decode mu json output: {e}") from e
         if not isinstance(raw, list):
             raise MuFailure("mu json output was not a list")
-        formatted = (self._format_result(imap_block, rec, prefix) for rec in raw)
-        records = [rec for rec in formatted if rec is not None]
+        records: List[Dict[str, Any]] = []
+        from_index = 0
+        left_out = 0
+        for rec in raw:
+            row, file_gone = self._format_result(imap_block, rec, prefix)
+            if row is None:
+                left_out += 1
+                continue
+            records.append(row)
+            if len(records) > limit:
+                break
+            if file_gone:
+                from_index += 1
+        report = emission.report
+        report.approximations.extend(_files_gone_notes(from_index, left_out))
         truncated = len(records) > limit
-        return records[:limit], emission.report, truncated
+        return records[:limit], report, truncated
 
     @staticmethod
     def _folder_synced(maildir: str, folder: str) -> bool:
@@ -533,70 +587,119 @@ class MuBackend:
 
     def _format_result(
         self, imap_block: ImapBlock, rec: Dict[str, Any], scope_prefix: str
-    ) -> Optional[Dict[str, Any]]:
-        """Translate a single mu json record into courier result shape.
+    ) -> Tuple[Optional[Dict[str, Any]], bool]:
+        """Build the result row for one mu record from its file on disk.
 
-        UID is parsed from the mbsync-style ``,U=N,`` segment of the
-        filename when present so search→read piping works uniformly with
-        IMAP-served hits; records from non-mbsync layouts omit the
-        ``uid`` key.
+        The row is built the way a live search builds its rows: the
+        file is parsed into an :class:`~courier.models.Email` as every
+        disk read parses it, and projected with
+        :meth:`~courier.models.Email.as_search_result`, so names,
+        subject, date and the ``<...>`` Message-ID read as the server's
+        would.  Flags come from the ``:2,`` suffix of the file name,
+        mapped to IMAP flags as disk reads map them.  The UID is parsed
+        from the mbsync-style ``,U=N`` segment of the file name so
+        search→read piping works uniformly with IMAP-served hits; a
+        row whose file name has none carries no ``uid`` key.  ``path``
+        is added so a later read can open the file.
 
-        When ``imap_block.redact_policy`` is set the on-disk maildir
-        file at ``:path`` is read and parsed and the policy is evaluated
-        against the resulting :class:`Email`.  Matching records get the
-        redacted shape (blank from/to/subject, ``redacted_by`` set, no
-        ``path``); non-matching records pass through untouched.  When
-        no policy is set the file is not opened.  Returns ``None``
-        (with a warning) when the file has vanished since the last
-        index — a routine state while the syncer renames files on flag
-        changes — so one stale path degrades that record alone instead
-        of discarding the block's whole result set.
+        When ``imap_block.redact_policy`` is set and matches, the row
+        takes the redacted shape (blank from/to/subject, ``redacted_by``
+        set, no ``path``).
+
+        A file moved or removed since the last index (a routine state
+        while the syncer renames files on flag changes) cannot be
+        parsed, so the row is built from mu's own fields instead.  On a
+        block with a redact policy, which cannot be judged without the
+        file, the hit is dropped with a warning instead, so one stale
+        path degrades that record alone rather than the block's whole
+        result set.
+
+        Args:
+            imap_block: The [imap.NAME] block the hit belongs to.
+            rec: One record of ``mu find --format=json``.
+            scope_prefix: The block's scope prefix from
+                :meth:`_scope_prefix`.
+
+        Returns:
+            ``(row, file_gone)``: the result row, or ``None`` when the
+            hit is dropped; ``file_gone`` is ``True`` when the file
+            could not be read, so the caller can count the rows that
+            affected.
         """
-        flags = rec.get(":flags") or []
         path = rec.get(":path", "")
         folder = self._derive_folder(scope_prefix, rec.get(":maildir"))
-
-        base: Dict[str, Any] = {
-            "message_id": rec.get(":message-id", ""),
-            "path": path,
-            "folder": folder,
-            "from": self._format_address_first(rec.get(":from")),
-            "to": self._format_address_list(rec.get(":to")),
-            "subject": rec.get(":subject", ""),
-            "date": self._format_date(rec.get(":date-unix")),
-            "flags": list(flags),
-            "has_attachments": "attach" in flags,
-        }
-
         uid = self._parse_uid_from_path(path)
-        if uid is not None:
-            base["uid"] = uid
-
-        if imap_block.redact_policy is None:
-            return base
-
+        flags = ImapClient._parse_maildir_flags(path)
         try:
             with open(path, "rb") as fh:
                 raw = fh.read()
         except OSError as e:
-            logger.warning(
-                f"skipping search hit whose maildir file is gone "
-                f"(stale index path {path!r}): {e}"
-            )
-            return None
-        message = email_pkg.message_from_bytes(raw)
-        email_obj = Email.from_message(message, uid=uid, folder=folder)
-        email_obj.flags = list(flags)
-        if not imap_block.redact_policy(email_obj):
-            return base
-
-        redacted = email_obj.redact("redacted")
-        return redacted.as_search_result(
+            if imap_block.redact_policy is not None:
+                logger.warning(
+                    f"skipping search hit whose maildir file is gone "
+                    f"(stale index path {path!r}): {e}"
+                )
+                return None, True
+            return self._index_row(rec, path, folder, uid, flags), True
+        email_obj = ImapClient._email_from_bytes(raw, uid, folder, flags)
+        policy = imap_block.redact_policy
+        if policy is not None and policy(email_obj):
+            email_obj = email_obj.redact("redacted")
+        row = email_obj.as_search_result(
             folder=folder,
-            flags=list(flags),
-            date_iso=base["date"],
-            has_attachments=False,
+            flags=email_obj.flags,
+            date_iso=(
+                email_obj.date.astimezone().isoformat() if email_obj.date else None
+            ),
+            has_attachments=len(email_obj.attachments) > 0,
         )
+        if uid is None:
+            del row["uid"]
+        if email_obj.redacted_by is None:
+            row["path"] = path
+        return row, False
+
+    def _index_row(
+        self,
+        rec: Dict[str, Any],
+        path: str,
+        folder: str,
+        uid: Optional[int],
+        flags: List[str],
+    ) -> Dict[str, Any]:
+        """Build a result row from mu's fields, for a hit whose file is gone.
+
+        The keys and the Message-ID's angle brackets match the rows
+        built from files; names and subject are mu's renderings.
+
+        Args:
+            rec: One record of ``mu find --format=json``.
+            path: The file path mu indexed.
+            folder: The folder derived from the record.
+            uid: The UID from the file name, or ``None``.
+            flags: The IMAP flags from the file name.
+
+        Returns:
+            The result row.
+        """
+        message_id = rec.get(":message-id") or ""
+        if message_id and not message_id.startswith("<"):
+            message_id = f"<{message_id}>"
+        row: Dict[str, Any] = {} if uid is None else {"uid": uid}
+        row.update(
+            {
+                "folder": folder,
+                "from": self._format_address_first(rec.get(":from")),
+                "to": self._format_address_list(rec.get(":to")),
+                "subject": rec.get(":subject", ""),
+                "date": self._format_date(rec.get(":date-unix")),
+                "flags": flags,
+                "has_attachments": "attach" in (rec.get(":flags") or []),
+                "message_id": message_id,
+                "path": path,
+            }
+        )
+        return row
 
     @staticmethod
     def _parse_uid_from_path(path: str) -> Optional[int]:

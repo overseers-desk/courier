@@ -480,16 +480,14 @@ class Email:
     ) -> Dict[str, Any]:
         """Project this Email into the shape consumed by ``search`` callers.
 
-        The shape mirrors the IMAP search-result dict and is also
-        emitted by the local-cache backend when redact applies.
-        ``flags`` and ``date_iso`` are accepted rather than read off
-        the Email because callers often hold them pre-formatted in
-        their source vocabulary (IMAP RFC 3501 vs mu keyword flags;
-        upstream ISO date string vs ``datetime``).
+        The live search and the local-cache backend both build their
+        rows here, so a row reads the same whichever answered.  Both
+        pass IMAP flags: the server's, or on the cache the maildir
+        file-name letters mapped to IMAP flags as disk reads map them.
 
         Args:
             folder: Folder name to attribute to this hit.
-            flags: Flag list, passed through verbatim.
+            flags: IMAP flag list, passed through verbatim.
             date_iso: Pre-formatted ISO 8601 date string, or ``None``.
             has_attachments: Whether the message carries attachments.
 

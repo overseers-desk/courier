@@ -256,7 +256,11 @@ class TestReadByMessageIdFromCache:
         assert result.exit_code == 1
 
     def test_hit_with_another_message_id_is_not_trusted(self, world: World):
-        path = world.add_message("INBOX", "1700000000.1.host,U=7:2,S")
+        path = world.add_message(
+            "INBOX",
+            "1700000000.1.host,U=7:2,S",
+            RAW.replace("<inbox-1@example.com>", "<someone-else@example.com>"),
+        )
         world.records = [world.hit(path, "INBOX", "<someone-else@example.com>")]
 
         world.invoke(["read", "--message-id", MID])
