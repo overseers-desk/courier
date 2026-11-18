@@ -58,4 +58,19 @@ When `mu` is missing, the index is missing, the query is untranslatable, `--no-c
 
 Use `--no-cache` on `search` or `read` to force live IMAP for a single call: to verify against the server, or when the index or the last sync is not trusted.
 
+## How a cached answer compares with the server's
+
+A search the index answers gives the answer the server would give to the same query, or says how its answer differs; [INVARIANTS.md](../INVARIANTS.md) states the rule. Each row is built from the message's file the way a live search builds its rows, so names, subject, date, attachments, the system flags (`\Seen`, `\Answered`, `\Flagged`, `\Deleted` and `\Draft`, read from the maildir file name) and the `<...>` Message-ID read the same whichever side answered. A cached row also carries the file's `path`, carries no `uid` when the file name records none, and carries none of the server's keywords (such as `$NotJunk`), which the file name does not record. A page cut at the limit reports the index's full match count as `total_count`. A whole-account search of a Gmail maildir (one holding a `[Gmail]` folder) shows each message once, as the server's All Mail does. `msgid:` matches the whole Message-ID on both sides. Under `WORLD_AS_OF`, mail dated after the bound leaves before the limit cut, as it does on the server.
+
+Where matching the server would cost the index its speed or its offline answer, the cached answer can differ, and `provenance.query.approximations` says how: one sentence per difference, each ending with the `--no-cache` retry. `--format text` prints them as `# note:` lines, `--format oneline` writes them to stderr and leaves stdout to the rows, and JSON and MCP carry them in the envelope. The differences disclosed:
+
+- Text operators (`from:`, `to:`, `cc:`, `bcc:`, `subject:`, `list:`, `filename:`, `body:`) and bare words and phrases: the index matches whole words and whole addresses, ignores accents and HTML markup, and reads only the fields it indexes, while the server matches by its own rules, often on parts of words and addresses (Gmail's `to:` also searches Cc), so either side can find messages the other misses.
+- `larger:` and `smaller:`: the index measures each message as stored on disk, often with shorter line endings than the server counts, so messages near the bound can differ.
+- `newer:` and `older:`: the index counts whole days from the start of the local day, by each message's Date header, while the server counts from the date it received the message, to the second where it can.
+- `after:`, `before:`, `on:`, `today`, `yesterday`, `week` and `month`: the index judges each message's Date header in the local time zone, and a message without one matches no date, while the server judges the date it received the message, in its own time zone.
+- A double quote inside a value: the index treats quote characters as token boundaries, so the quote matches as a space, while the server matches the quote itself.
+- A page cut at the limit: the index keeps the newest messages by Date header, the server the newest by the date it received them, so the two pages can hold different messages.
+- A whole-account search of a Gmail maildir: the maildir holds the label folders but not All Mail, so archived mail that carries no label is missing, and rows name a label folder and its UID where the server's name All Mail.
+- A message whose file was moved or removed after indexing: its row comes from the index's own fields, which can be worded differently from the server's; on a block with a `redact` policy, which cannot be judged without the file, the message is left out. The note gives the count.
+
 A `redact` policy on an `[imap.*]` block does not disable the cache. The policy is evaluated against the parsed on-disk message file at search and read time. Records whose policy matches are returned with sensitive fields blanked and `redacted_by` set, the same shape an IMAP-served call would return.
