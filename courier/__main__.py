@@ -1545,7 +1545,17 @@ def _print_eager_warnings_if_relevant() -> None:
 
 
 def _format_provenance_line(provenance: Dict[str, Any]) -> str:
-    """Format a one-line provenance summary for the text output mode."""
+    """Format the provenance summary for the text output mode.
+
+    One line of source, index age and fallback, then the hint, then one
+    ``# note:`` line per way the answer can differ from the server's.
+
+    Args:
+        provenance: A search result's ``provenance``.
+
+    Returns:
+        The ``#``-prefixed lines, newline-joined.
+    """
     source = provenance.get("source", "remote")
     indexed_at = provenance.get("indexed_at") or "-"
     reason = provenance.get("fell_back_reason")
@@ -1556,7 +1566,22 @@ def _format_provenance_line(provenance: Dict[str, Any]) -> str:
     hint = provenance.get("hint")
     if hint:
         line += f"\n# {hint}"
+    for note in _provenance_notes(provenance):
+        line += f"\n# note: {note}"
     return line
+
+
+def _provenance_notes(provenance: Dict[str, Any]) -> List[str]:
+    """The notes on how a search answer can differ, each once, in order.
+
+    Args:
+        provenance: A search result's ``provenance``.
+
+    Returns:
+        ``provenance.query.approximations`` without repeats.
+    """
+    query = provenance.get("query") or {}
+    return list(dict.fromkeys(query.get("approximations") or []))
 
 
 def _format_chain_text(result: Dict[str, Dict[str, Any]]) -> str:
@@ -1639,6 +1664,35 @@ def _format_chain_oneline(result: Dict[str, Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def _format_chain_notes(result: Dict[str, Dict[str, Any]]) -> str:
+    """Render each search's hint and notes for stderr beside oneline rows.
+
+    The oneline rows stay the only thing on stdout, so a pipe counting
+    or cutting them is unchanged, while a reader still learns how a
+    cached answer can differ from the server's. Lines lead with the
+    rows' first two columns, op_key and imap_name.
+
+    Args:
+        result: ``{op_key: {block_name: value}}``, as ``_execute_chain``
+            builds it.
+
+    Returns:
+        The lines, newline-joined; empty when no search carries any.
+    """
+    lines: List[str] = []
+    for op_key, blocks in result.items():
+        for imap_name, value in blocks.items():
+            if "results" not in value:
+                continue
+            provenance = value.get("provenance") or {}
+            hint = provenance.get("hint")
+            if hint:
+                lines.append(f"{op_key}\t{imap_name}\t# {hint}")
+            for note in _provenance_notes(provenance):
+                lines.append(f"{op_key}\t{imap_name}\t# note: {note}")
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # config-check, list, status
 # ---------------------------------------------------------------------------
@@ -1674,6 +1728,9 @@ def config_check() -> None:
 def _echo_chain_result(result: Dict[str, Dict[str, Any]], output_format: str) -> bool:
     """Print a chain-shaped result in the requested output format.
 
+    ``oneline`` prints the rows alone on stdout and each search's hint
+    and notes on stderr; ``text`` prints the notes inline.
+
     Args:
         result: ``{op_key: {block_name: value}}``, as ``_execute_chain`` builds it.
         output_format: ``json``, ``text`` or ``oneline``.
@@ -1687,6 +1744,9 @@ def _echo_chain_result(result: Dict[str, Dict[str, Any]], output_format: str) ->
         typer.echo(_format_chain_text(result))
     elif output_format == "oneline":
         typer.echo(_format_chain_oneline(result))
+        notes = _format_chain_notes(result)
+        if notes:
+            typer.echo(notes, err=True)
     else:
         typer.echo(
             f"Error: unknown --format '{output_format}'. Use json, text, or oneline.",
@@ -2104,7 +2164,9 @@ applied per block.
 ``--format text`` renders multi-line, prompt-friendly output grouped
 by operation and block; ``--format oneline`` renders one
 tab-separated line per result (op_key, imap_name, date, subject,
-from -> to, message_id).
+from -> to, message_id). A cached answer's notes on how it can differ
+from the server's print as ``# note:`` lines in text, and on stderr
+beside oneline rows.
 
 Exit code: 0 on hits; 1 on a clean zero (every block searched
 everything and found nothing); 2 when nothing was found and something

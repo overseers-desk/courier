@@ -43,7 +43,10 @@ _SEARCH_TOOL_DESCRIPTION = (
     "provenance.fell_back_reason names the condition that forced an IMAP "
     "fallback or is null; provenance.query is the translation report "
     "{dialect, approximations, fallbacks, treated_as_text} declaring how "
-    "the query was expressed on the backend that served it. folders_failed "
+    "the query was expressed on the backend that served it. "
+    "provenance.query.approximations lists, one sentence each, the ways this "
+    "answer can differ from the server's answer to the same query; on a "
+    "local answer, no_cache=true gets the server's answer. folders_failed "
     "(present only when some folder's search or fetch failed) lists "
     '{"folder", "error"} records — results with folders_failed present are '
     "incomplete, not authoritative absence. total_count/truncated mark the "

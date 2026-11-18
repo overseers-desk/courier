@@ -5,7 +5,15 @@ SPAR-A prompt, so the Message-ID has to appear there for the agent to thread
 a reply onto the parent.
 """
 
-from courier.__main__ import _format_chain_oneline, _format_chain_text
+from courier.__main__ import (
+    _echo_chain_result,
+    _format_chain_notes,
+    _format_chain_oneline,
+    _format_chain_text,
+)
+
+NOTE_A = "the cache matches whole words; --no-cache asks the server"
+NOTE_B = "the cache filled this page by Date header; --no-cache asks the server"
 
 
 def _hit(message_id: str = "<m@example.com>") -> dict:
@@ -35,6 +43,24 @@ def _wrap(hits: list, account: str = "acct1", op_key: str = "search q") -> dict:
             }
         }
     }
+
+
+def _cached(hits: list, notes: list, hint: str = "") -> dict:
+    """A cached search result whose provenance carries notes and a hint."""
+    provenance = {
+        "source": "local",
+        "indexed_at": "2026-11-18T00:00:00+00:00",
+        "fell_back_reason": None,
+        "query": {
+            "dialect": "mu",
+            "approximations": notes,
+            "fallbacks": [],
+            "treated_as_text": [],
+        },
+    }
+    if hint:
+        provenance["hint"] = hint
+    return {"search q": {"acct1": {"results": hits, "provenance": provenance}}}
 
 
 def _read_message(message_id: str = "<r@example.com>") -> dict:
@@ -135,6 +161,22 @@ class TestFormatChainText:
         out = _format_chain_text(_read_wrap(_read_message()))
         assert "source=" not in out
 
+    def test_prints_each_note_once_under_the_provenance_line(self):
+        """A cached answer's notes on how it can differ from the server's
+        print as '# note:' lines."""
+        out = _format_chain_text(_cached([_hit()], [NOTE_A, NOTE_B, NOTE_A]))
+        lines = out.splitlines()
+        source = next(i for i, ln in enumerate(lines) if ln.startswith("# source="))
+        assert lines[source + 1 : source + 3] == [
+            f"# note: {NOTE_A}",
+            f"# note: {NOTE_B}",
+        ]
+        assert sum(ln.startswith("# note:") for ln in lines) == 2
+
+    def test_without_notes_prints_none(self):
+        out = _format_chain_text(_cached([_hit()], []))
+        assert "# note:" not in out
+
 
 class TestFormatChainOneline:
 
@@ -208,3 +250,33 @@ class TestFormatChainOneline:
         }
         out = _format_chain_oneline(wrapped)
         assert "(error: Email UID 9 not found in INBOX)" in out
+
+    def test_rows_stay_rows_when_the_answer_carries_notes(self):
+        """Notes never reach stdout, so a pipe counting rows still counts
+        rows."""
+        out = _format_chain_oneline(_cached([_hit(), _hit()], [NOTE_A, NOTE_B]))
+        assert len(out.splitlines()) == 2
+        assert "note" not in out
+
+    def test_notes_and_hint_name_the_search_and_the_account(self):
+        hint = "no match in the local index; re-run with --no-cache"
+        out = _format_chain_notes(_cached([], [NOTE_A], hint=hint))
+        assert out.splitlines() == [
+            f"search q\tacct1\t# {hint}",
+            f"search q\tacct1\t# note: {NOTE_A}",
+        ]
+
+    def test_reads_and_errors_have_no_notes(self):
+        assert _format_chain_notes(_read_wrap(_read_message())) == ""
+        assert _format_chain_notes({"search q": {"acct1": {"error": "x"}}}) == ""
+
+    def test_oneline_writes_rows_to_stdout_and_notes_to_stderr(self, capsys):
+        assert _echo_chain_result(_cached([_hit()], [NOTE_A]), "oneline")
+        captured = capsys.readouterr()
+        assert len(captured.out.splitlines()) == 1
+        assert "note" not in captured.out
+        assert captured.err.splitlines() == [f"search q\tacct1\t# note: {NOTE_A}"]
+
+    def test_oneline_without_notes_writes_nothing_to_stderr(self, capsys):
+        assert _echo_chain_result(_wrap([_hit()]), "oneline")
+        assert capsys.readouterr().err == ""

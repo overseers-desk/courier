@@ -728,3 +728,12 @@ class TestSearchToolDescription:
             "treated_as_text",
         ):
             assert token in _SEARCH_TOOL_DESCRIPTION, token
+
+    def test_approximations_read_as_differences_from_the_server(self):
+        """A caller learns that each approximation is a way the answer can
+        differ from the server's, and how to get the server's answer."""
+        from courier.tools import _SEARCH_TOOL_DESCRIPTION
+
+        assert "provenance.query.approximations" in _SEARCH_TOOL_DESCRIPTION
+        assert "differ from the server's answer" in _SEARCH_TOOL_DESCRIPTION
+        assert "no_cache=true" in _SEARCH_TOOL_DESCRIPTION
