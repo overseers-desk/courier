@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
+from . import world_bound
 from .config import ImapBlock, LocalCacheConfig
 from .imap_client import ImapClient
 from .query.ast import TranslationReport, UntranslatableForBackend
@@ -131,14 +132,18 @@ class MuSearch(NamedTuple):
         report: The mu emission's translation report, with the notes
             this search added.
         truncated: Whether the index holds more matches than ``limit``.
-        total_count: The match count before the limit cut; ``None``
-            only when the page was cut and counting failed.
+        total_count: The match count before the limit cut and after
+            the WORLD_AS_OF cut; ``None`` only when the page was cut and
+            counting failed.
+        dropped_after_bound: Hits the WORLD_AS_OF cut took out, counted
+            before the limit cut.
     """
 
     results: List[Dict[str, Any]]
     report: TranslationReport
     truncated: bool
     total_count: Optional[int]
+    dropped_after_bound: int = 0
 
 
 class MuBackend:
@@ -373,8 +378,10 @@ class MuBackend:
                 resolve against it, and the mu query gains a
                 ``date:..<bound>`` clause (Layer 1).  Note the semantic
                 caveat: mu indexes the Date header, not INTERNALDATE, so
-                the caller flags results with ``date_source: "mu_index"``
-                and post-filters on the result's date field (Layer 2).
+                the caller flags results with ``date_source: "mu_index"``.
+                Rows dated after the bound are then dropped on their
+                date field (Layer 2) before the limit cut, as on the IMAP
+                path, and counted in ``dropped_after_bound``.
             allowed_folders: When set (and *folder* is ``None``), the
                 block's ``allowed_folders`` whitelist: the whole-block
                 scope is replaced by the union of these folders' exact
@@ -392,8 +399,10 @@ class MuBackend:
             translation report for ``provenance.query``, with a note
             added when some hit's file was gone.  ``truncated`` is
             ``True`` when the index holds more matches than ``limit``
-            (probed by asking mu for one extra record), and a cut page's
-            ``total_count`` comes from a second run counting every match.
+            (probed by asking mu for one extra record, reading further
+            when the bound or a vanished file took rows out), and a cut
+            page's ``total_count`` comes from a second run counting
+            every match.
 
         Raises:
             UntranslatableForBackend: When the query cannot be expressed
@@ -438,17 +447,75 @@ class MuBackend:
         prefix = self._scope_prefix(imap_block)
         scoped = self._scope_query(prefix, translated, folder, allowed_folders)
 
+        # One extra record is requested so a full page can be told apart
+        # from a truncated one.  Rows the bound or a vanished file takes
+        # out are not answers: the page is read again, that many records
+        # further, until it holds the extra record or the index runs out,
+        # so the cut falls where the server's would (issue #115).
+        want = limit + 1
+        while True:
+            raw = self._find_page(home, scoped, want)
+            records: List[Dict[str, Any]] = []
+            from_index = left_out = dropped_after_bound = 0
+            for rec in raw:
+                row, file_gone = self._format_result(imap_block, rec, prefix)
+                if row is None:
+                    left_out += 1
+                    continue
+                if world_as_of is not None and self._dated_after(row, world_as_of):
+                    # Layer 2: exact, and ahead of the limit cut as on
+                    # the IMAP path.
+                    dropped_after_bound += 1
+                    continue
+                records.append(row)
+                if len(records) > limit:
+                    break
+                if file_gone:
+                    from_index += 1
+            if len(records) > limit or len(raw) < want:
+                break
+            want += left_out + dropped_after_bound
+        report = emission.report
+        report.approximations.extend(_files_gone_notes(from_index, left_out))
+        truncated = len(records) > limit
+        total_count: Optional[int] = len(records)
+        if truncated:
+            counted = self._count_matches(home, scoped)
+            # The count cannot fall below the rows already seen, and the
+            # hits taken out above are not answers.
+            total_count = (
+                None
+                if counted is None
+                else max(counted - left_out - dropped_after_bound, len(records))
+            )
+        return MuSearch(
+            records[:limit], report, truncated, total_count, dropped_after_bound
+        )
+
+    def _find_page(self, home: str, scoped: str, maxnum: int) -> List[Dict[str, Any]]:
+        """Read the newest *maxnum* matches of a scoped query from mu.
+
+        Args:
+            home: The muhome.
+            scoped: The scoped mu query.
+            maxnum: How many records to read, newest first by date.
+
+        Returns:
+            mu's JSON records; empty when nothing matches.
+
+        Raises:
+            MuFailure: When mu times out, cannot run, exits other than
+                0 or 2, or prints output that is not a JSON list.
+        """
         # ``--muhome`` is parsed by ``mu find`` (the subcommand), not the
         # outer ``mu`` driver, so it must follow ``find`` in the argv.
-        # One extra record is requested so a full page can be told apart
-        # from a truncated one.
         argv = [
             "mu",
             "find",
             f"--muhome={home}",
             "--format=json",
             "--maxnum",
-            str(limit + 1),
+            str(maxnum),
             "--sortfield",
             "date",
             "--reverse",
@@ -475,11 +542,11 @@ class MuBackend:
             # Exit 2 on an emitter-produced query is therefore a
             # genuine miss, served as one; the caller's envelope
             # disclosure names the --no-cache retry (issue #95).
-            return MuSearch([], emission.report, False, 0)
+            return []
         if proc.returncode != 0:
             raise MuFailure(f"mu find exited {proc.returncode}: {proc.stderr.strip()}")
         if not proc.stdout.strip():
-            return MuSearch([], emission.report, False, 0)
+            return []
         try:
             # mu copies a header's raw tab or other control character
             # into its JSON strings unescaped.
@@ -488,31 +555,29 @@ class MuBackend:
             raise MuFailure(f"could not decode mu json output: {e}") from e
         if not isinstance(raw, list):
             raise MuFailure("mu json output was not a list")
-        records: List[Dict[str, Any]] = []
-        from_index = 0
-        left_out = 0
-        for rec in raw:
-            row, file_gone = self._format_result(imap_block, rec, prefix)
-            if row is None:
-                left_out += 1
-                continue
-            records.append(row)
-            if len(records) > limit:
-                break
-            if file_gone:
-                from_index += 1
-        report = emission.report
-        report.approximations.extend(_files_gone_notes(from_index, left_out))
-        truncated = len(records) > limit
-        total_count: Optional[int] = len(records)
-        if truncated:
-            counted = self._count_matches(home, scoped)
-            # The count cannot fall below the rows already seen, and the
-            # hits left out above are not answers.
-            total_count = (
-                None if counted is None else max(counted - left_out, len(records))
-            )
-        return MuSearch(records[:limit], report, truncated, total_count)
+        return raw
+
+    @staticmethod
+    def _dated_after(row: Dict[str, Any], bound: datetime) -> bool:
+        """Whether a result row is dated after the WORLD_AS_OF bound.
+
+        An undated or unparseable date is kept: an undated message is
+        not "dated after the bound".
+
+        Args:
+            row: A result row carrying a ``date`` ISO 8601 string.
+            bound: The WORLD_AS_OF instant.
+
+        Returns:
+            ``True`` when the row must not leave the tool.
+        """
+        iso = row.get("date")
+        if not isinstance(iso, str):
+            return False
+        try:
+            return world_bound.after_bound(datetime.fromisoformat(iso), bound)
+        except ValueError:
+            return False
 
     @staticmethod
     def _count_matches(home: str, scoped: str) -> Optional[int]:

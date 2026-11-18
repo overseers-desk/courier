@@ -434,19 +434,6 @@ class TestLocalCachePathBoundedLikeImap:
             mu,
         )
 
-    def _result(self, message_id: str, iso_date: str) -> dict:
-        return {
-            "message_id": message_id,
-            "path": f"/var/local/mail/work/cur/{message_id}",
-            "folder": "INBOX",
-            "from": "Alice <a@b.com>",
-            "to": ["c@d.com"],
-            "subject": "Hi",
-            "date": iso_date,
-            "flags": ["seen"],
-            "has_attachments": False,
-        }
-
     def test_bound_threaded_to_backend(self):
         from courier.query import parse
 
@@ -461,27 +448,120 @@ class TestLocalCachePathBoundedLikeImap:
             allowed_folders=None,
         )
 
-    def test_post_filter_drops_and_counts(self):
-        client, _ = self._local_client(
-            [
-                self._result("keep", "2026-07-12T16:00:00+10:00"),
-                self._result("drop", "2026-07-12T18:00:00+10:00"),
-            ]
+    def _record(self, message_id: str, when) -> dict:
+        """A mu record whose file is not on disk, so its row is mu's."""
+        record = {
+            ":path": f"/var/local/mail/work/cur/{message_id}:2,S",
+            ":from": [{":email": "a@b.com", ":name": "Alice"}],
+            ":to": [{":email": "c@d.com"}],
+            ":subject": "Hi",
+            ":flags": ["seen"],
+            ":message-id": message_id,
+            ":maildir": "/work",
+        }
+        if when is not None:
+            record[":date-unix"] = int(when.timestamp())
+        return record
+
+    def _search(self, tmp_path, records, limit: int = 10) -> dict:
+        """search_emails through a real MuBackend over a faked mu.
+
+        The fake honours ``--maxnum`` and counts every record on the
+        ``--fields=i`` run; each page run's argv lands on ``self.pages``.
+        """
+        import json
+        import subprocess
+
+        from courier.config import LocalCacheConfig
+        from courier.local_cache import EligibilityResult, MuBackend
+
+        (tmp_path / "muhome" / "xapian").mkdir(parents=True)
+        backend = MuBackend(LocalCacheConfig(mu_index=str(tmp_path / "muhome")))
+        backend._mu_root = "/var/local/mail"
+        backend._mu_root_resolved = True
+        self.pages: list = []
+
+        def fake_run(argv, **kwargs):
+            if "--fields=i" in argv:
+                return subprocess.CompletedProcess(argv, 0, b"id\n" * len(records), b"")
+            self.pages.append(argv)
+            maxnum = int(argv[argv.index("--maxnum") + 1])
+            return subprocess.CompletedProcess(
+                argv, 0, json.dumps(records[:maxnum]), ""
+            )
+
+        client = ImapClient(
+            _block(maildir="/var/local/mail/work"),
+            local_cache=backend,
+            world_as_of=BOUND,
         )
-        result = client.search_emails("from:alice")
-        assert [r["message_id"] for r in result["results"]] == ["keep"]
+        with (
+            patch.object(
+                MuBackend, "is_eligible", return_value=EligibilityResult(True)
+            ),
+            patch("courier.local_cache.subprocess.run", side_effect=fake_run),
+        ):
+            return client.search_emails("from:alice", limit=limit)
+
+    def test_post_filter_drops_and_counts(self, tmp_path):
+        result = self._search(
+            tmp_path,
+            [
+                self._record("drop", SAME_DAY_AFTER),
+                self._record("keep", SAME_DAY_BEFORE),
+            ],
+        )
+        assert [r["message_id"] for r in result["results"]] == ["<keep>"]
         prov = result["provenance"]["world_as_of"]
         assert prov["bound"] == BOUND_STR
         assert prov["dropped_after_bound"] == 1
         assert prov["date_source"] == "mu_index"
 
-    def test_undated_results_are_kept(self):
-        record = self._result("undated", "2026-07-12T16:00:00+10:00")
-        record["date"] = None
-        client, _ = self._local_client([record])
-        result = client.search_emails("from:alice")
+    def test_undated_results_are_kept(self, tmp_path):
+        result = self._search(tmp_path, [self._record("undated", None)])
         assert len(result["results"]) == 1
         assert result["provenance"]["world_as_of"]["dropped_after_bound"] == 0
+
+    def test_bound_applies_before_limit_cut(self, tmp_path):
+        # As on the IMAP path: three candidates, the newest post-bound.
+        # With limit=2 both pre-bound messages return; a cut made before
+        # the bound filter would return only one.
+        result = self._search(
+            tmp_path,
+            [
+                self._record("after", SAME_DAY_AFTER),
+                self._record("same-day", SAME_DAY_BEFORE),
+                self._record(
+                    "earlier", datetime(2026, 7, 10, 0, 0, tzinfo=BOUND.tzinfo)
+                ),
+            ],
+            limit=2,
+        )
+        assert [r["message_id"] for r in result["results"]] == [
+            "<same-day>",
+            "<earlier>",
+        ]
+        assert result["truncated"] is False
+        assert result["total_count"] == 2
+        assert result["provenance"]["world_as_of"]["dropped_after_bound"] == 1
+
+    def test_page_shortened_by_the_bound_is_refilled(self, tmp_path):
+        """When the bound drops rows from a full page, the index is read
+        further so the page holds ``limit`` rows if the index has them."""
+        before = [
+            self._record(f"b{n}", datetime(2026, 7, 10 - n, tzinfo=BOUND.tzinfo))
+            for n in range(3)
+        ]
+        result = self._search(
+            tmp_path,
+            [self._record("a1", NEXT_DAY), self._record("a2", SAME_DAY_AFTER), *before],
+            limit=2,
+        )
+        assert [r["message_id"] for r in result["results"]] == ["<b0>", "<b1>"]
+        assert result["truncated"] is True
+        assert result["total_count"] == 3
+        assert result["provenance"]["world_as_of"]["dropped_after_bound"] == 2
+        assert [argv[argv.index("--maxnum") + 1] for argv in self.pages] == ["3", "5"]
 
 
 class TestFoldersHonestRule:

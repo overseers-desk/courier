@@ -2221,11 +2221,6 @@ class ImapClient:
         )
         if local is not None:
             local_results, report = local.results, local.report
-            dropped_after_bound = 0
-            if self.world_as_of is not None:
-                local_results, dropped_after_bound = self._drop_results_after_bound(
-                    local_results
-                )
             provenance: Dict[str, Any] = {
                 "source": "local",
                 "indexed_at": (
@@ -2238,7 +2233,7 @@ class ImapClient:
             }
             if self.world_as_of is not None:
                 provenance["world_as_of"] = self._world_as_of_provenance(
-                    dropped_after_bound, date_source="mu_index"
+                    local.dropped_after_bound, date_source="mu_index"
                 )
             if not local_results:
                 # A local miss is the caller's decision point, not a
@@ -2352,38 +2347,6 @@ class ImapClient:
             "current_state_fields": ["flags", "folder"],
             "date_source": date_source,
         }
-
-    def _drop_results_after_bound(
-        self, results: List[Dict[str, Any]]
-    ) -> Tuple[List[Dict[str, Any]], int]:
-        """Exact post-filter over assembled result dicts (Layer 2).
-
-        Used on the local-cache path, whose date field is the indexed
-        (Date-header) date rendered as ISO 8601. Undated or unparseable
-        dates are kept: an undated message is not "dated after the
-        bound".
-
-        Args:
-            results: Search result dicts carrying a ``date`` ISO string.
-
-        Returns:
-            ``(kept_results, dropped_count)``.
-        """
-        kept: List[Dict[str, Any]] = []
-        dropped = 0
-        for result in results:
-            iso = result.get("date")
-            dt: Optional[datetime] = None
-            if isinstance(iso, str):
-                try:
-                    dt = datetime.fromisoformat(iso)
-                except ValueError:
-                    dt = None
-            if self._after_bound(dt):
-                dropped += 1
-                continue
-            kept.append(result)
-        return kept, dropped
 
     def _try_local_cache_search(
         self,
