@@ -57,7 +57,7 @@ from courier.query.ast import (
 )
 from courier.query.emit_gmail import emit as emit_gmail
 from courier.query.emit_imap import emit as emit_imap
-from courier.query.emit_imap import unprotected_by_imapclient
+from courier.query.emit_imap import exact_message_ids, unprotected_by_imapclient
 
 if TYPE_CHECKING:
     from courier.local_cache import MuBackend, MuSearch
@@ -218,6 +218,35 @@ def _apply_search_bound(
     if isinstance(criteria, str):
         return f"{criteria} BEFORE {_imap_date(before_day)}"
     return list(criteria) + ["BEFORE", before_day]
+
+
+def _has_message_id(fetched: Dict[Any, Any], wanted: Sequence[str]) -> bool:
+    """Whether a fetched Message-ID header is exactly each wanted ID.
+
+    The comparison is the one :func:`courier.message_lookup.locate_message_id`
+    holds a live hit to: the bare IDs must be equal.
+
+    Args:
+        fetched: One message's FETCH response, carrying the
+            ``BODY[HEADER.FIELDS (MESSAGE-ID)]`` item.
+        wanted: Bare Message-IDs, as the query's msgid: terms hold them.
+
+    Returns:
+        ``True`` when the message's Message-ID equals every wanted ID;
+        ``False`` when it differs or the header did not come back.
+    """
+    header = next(
+        (
+            value
+            for key, value in fetched.items()
+            if isinstance(key, bytes) and key.startswith(b"BODY[HEADER.FIELDS")
+        ),
+        None,
+    )
+    if not isinstance(header, bytes):
+        return False
+    found = bare_message_id(email.message_from_bytes(header).get("Message-ID", ""))
+    return all(found == value for value in wanted)
 
 
 def _message_id_search(
@@ -2659,6 +2688,15 @@ class ImapClient:
 
         folders_to_search = self._resolve_search_folders(scope, folder, use_gmail)
 
+        # Generic IMAP HEADER matches any Message-ID containing the
+        # value, while msgid: means the whole ID (Gmail's rfc822msgid:
+        # is exact already): the Message-ID comes back with the date so
+        # a hit carrying another ID leaves before the count.
+        exact_ids = [] if use_gmail else exact_message_ids(remaining)
+        date_items = ["INTERNALDATE"]
+        if exact_ids:
+            date_items.append("BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)]")
+
         # Pass 1: collect (uid, folder, date) using a lightweight fetch.
         # The exact WORLD_AS_OF cut happens here, on the fetched
         # INTERNALDATE and before the limit cut: SEARCH BEFORE (Layer 1)
@@ -2675,8 +2713,10 @@ class ImapClient:
                 with self._server_errors_mapped(
                     f"FETCH INTERNALDATE in {current_folder}"
                 ):
-                    date_data = self._client_or_raise().fetch(uids, ["INTERNALDATE"])
+                    date_data = self._client_or_raise().fetch(uids, date_items)
                 for uid, data in date_data.items():
+                    if exact_ids and not _has_message_id(data, exact_ids):
+                        continue
                     dt = data.get(b"INTERNALDATE")
                     if self._after_bound(dt):
                         dropped_after_bound += 1

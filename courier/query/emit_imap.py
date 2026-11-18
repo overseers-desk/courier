@@ -95,6 +95,10 @@ _NOTE_TEXT_SUBSTRING = (
     "IMAP TEXT matches substrings anywhere in the message, not whole words"
 )
 _NOTE_PHRASE_SUBSTRING = "a quoted phrase matches as one contiguous substring"
+_NOTE_MSGID_NESTED = (
+    "msgid: under or/not matches every Message-ID that contains the value, "
+    "not only the whole ID"
+)
 _NOTE_DATES = (
     "IMAP dates compare the server's INTERNALDATE at day granularity "
     "in the server's local time"
@@ -264,6 +268,7 @@ class _Emitter:
             (server-side WITHIN is ineligible then, because the server
             evaluates it against its own clock).
         notes: The approximation notes gathered on the walk.
+        nested: How many or/not nodes enclose the node being emitted.
     """
 
     def __init__(self, now: datetime, supports_within: bool, bounded: bool) -> None:
@@ -271,6 +276,7 @@ class _Emitter:
         self.supports_within = supports_within
         self.bounded = bounded
         self.notes: list[str] = []
+        self.nested = 0
 
     def _note(self, note: str) -> None:
         """Record an approximation note once, in first-seen order.
@@ -300,9 +306,17 @@ class _Emitter:
                 keys.extend(self.keys(child))
             return keys
         if isinstance(node, Or):
-            return [self._or_key(list(node.children))]
+            self.nested += 1
+            try:
+                return [self._or_key(list(node.children))]
+            finally:
+                self.nested -= 1
         if isinstance(node, Not):
-            inner = self.keys(node.child)
+            self.nested += 1
+            try:
+                inner = self.keys(node.child)
+            finally:
+                self.nested -= 1
             if len(inner) == 1:
                 return [[b"NOT", *inner[0]]]
             return [[b"NOT", _group(inner)]]
@@ -395,6 +409,10 @@ class _Emitter:
             return [[b"SMALLER", term.value]]
         if op in _HEADER_FIELDS:
             assert isinstance(term.value, str)
+            if op == "msgid" and self.nested:
+                # A top-level msgid: is held exact by the caller (see
+                # exact_message_ids); under or/not it cannot be.
+                self._note(_NOTE_MSGID_NESTED)
             return [[b"HEADER", _HEADER_FIELDS[op], _encode(f"{op}:", term.value)]]
         if op == "has":
             assert isinstance(term.value, str)
@@ -506,6 +524,32 @@ def _raw_criteria(raw: str) -> List[Atom]:
     except ValueError:
         tokens = raw.split()
     return [token.encode("utf-8") for token in tokens]
+
+
+def exact_message_ids(parsed: ParseResult) -> List[str]:
+    """The msgid: values every hit must carry as its whole Message-ID.
+
+    ``HEADER Message-ID`` matches any Message-ID containing the value,
+    while ``msgid:`` means the whole ID. A msgid: term reached through
+    and-joins alone constrains every hit, so the caller keeps only hits
+    whose Message-ID equals each value returned here; under or/not that
+    is not possible, and the emitter notes it instead.
+
+    Args:
+        parsed: The parse result, ``in:`` scope already stripped.
+
+    Returns:
+        The bare msgid: values of the and-joined terms, in query order.
+    """
+    values: List[str] = []
+    pending: List[Node] = [parsed.ast]
+    while pending:
+        node = pending.pop(0)
+        if isinstance(node, And):
+            pending[0:0] = list(node.children)
+        elif isinstance(node, Term) and node.op == "msgid":
+            values.append(str(node.value))
+    return values
 
 
 def _needs_charset(criteria: List[Atom]) -> bool:

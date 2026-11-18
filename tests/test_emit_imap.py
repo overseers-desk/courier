@@ -14,7 +14,7 @@ import pytest
 from imapclient import IMAPClient
 
 from courier.query import UntranslatableForBackend, parse
-from courier.query.emit_imap import emit
+from courier.query.emit_imap import emit, exact_message_ids
 
 NOW = datetime(2026, 7, 15, 12, 0, 0)
 
@@ -186,6 +186,21 @@ class TestHeaderOperators:
             b"Message-ID",
             b"abc@host",
         ]
+
+    def test_top_level_msgid_is_matched_exactly_by_the_caller(self):
+        """HEADER matches substrings, so the caller keeps only hits whose
+        Message-ID is a top-level msgid: value, and no note is due."""
+        assert exact_message_ids(parse("msgid:<abc@host> from:alice")) == ["abc@host"]
+        assert emission_of("msgid:abc@host from:alice").report.approximations == []
+
+    def test_nested_msgid_cannot_be_held_exact_and_says_so(self):
+        for query in ("msgid:abc@host or from:alice", "-msgid:abc@host"):
+            assert exact_message_ids(parse(query)) == []
+            notes = emission_of(query).report.approximations
+            assert notes == [
+                "msgid: under or/not matches every Message-ID that contains "
+                "the value, not only the whole ID"
+            ]
 
     def test_list(self):
         assert criteria_of("list:announce.example.com") == [

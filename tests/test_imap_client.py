@@ -2895,6 +2895,75 @@ class TestSearchEmailsImapResultShape:
         ):
             assert key in results[0]
 
+    def _run_pass_one(self, query, headers, capabilities=("IMAP4REV1",), limit=10):
+        """Run a remote search whose pass-1 FETCH answers *headers*.
+
+        Returns ``(outcome, fetch_items, fetched_uids)``.
+        """
+        from datetime import datetime
+
+        client = self._make_client()
+        items_seen: list = []
+        fetched: list = []
+
+        def fetch(uids, items):
+            items_seen.append(list(items))
+            return {
+                uid: {
+                    b"INTERNALDATE": datetime(2026, 4, 1, 10, 0, uid),
+                    b"BODY[HEADER.FIELDS (MESSAGE-ID)]": headers[uid],
+                }
+                for uid in uids
+            }
+
+        def fetch_emails(uid_list, folder, no_cache=False):
+            fetched.extend(uid_list)
+            return {uid: self._make_email(f"<{uid}>") for uid in uid_list}
+
+        with (
+            patch.object(client, "ensure_connected"),
+            patch.object(client, "get_capabilities", return_value=list(capabilities)),
+            patch.object(client, "find_special_use_folder", return_value=None),
+            patch.object(client, "list_folders", return_value=["INBOX"]),
+            patch.object(client, "search", return_value=sorted(headers)),
+            patch.object(client, "select_folder"),
+            patch.object(client, "_client_or_raise") as mock_clientor,
+            patch.object(client, "fetch_emails", side_effect=fetch_emails),
+        ):
+            mock_clientor.return_value.fetch.side_effect = fetch
+            outcome = self._run_remote(client, query, folder="INBOX", limit=limit)
+        return outcome, items_seen, fetched
+
+    def test_msgid_keeps_only_the_whole_message_id(self):
+        """Generic IMAP HEADER matches substrings: hits whose Message-ID is
+        not the one asked for leave before the count and the limit cut."""
+        outcome, items_seen, fetched = self._run_pass_one(
+            "msgid:abc@host",
+            {
+                1: b"Message-ID: <xabc@host>\r\n\r\n",
+                2: b"Message-Id:\r\n <abc@host>\r\n\r\n",
+                3: b"Message-ID: <abc@host.example>\r\n\r\n",
+            },
+            limit=1,
+        )
+        assert items_seen == [["INTERNALDATE", "BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)]"]]
+        assert fetched == [2]
+        assert outcome.total_count == 1
+
+    def test_other_queries_fetch_only_the_date(self):
+        _outcome, items_seen, _fetched = self._run_pass_one(
+            "from:alice", {1: b"", 2: b""}
+        )
+        assert items_seen == [["INTERNALDATE"]]
+
+    def test_gmail_msgid_is_exact_already(self):
+        """Gmail's rfc822msgid: matches the whole ID, so no header is fetched."""
+        outcome, items_seen, _fetched = self._run_pass_one(
+            "msgid:abc@host", {1: b"", 2: b""}, capabilities=("X-GM-EXT-1",)
+        )
+        assert items_seen == [["INTERNALDATE"]]
+        assert outcome.total_count == 2
+
     def test_imap_search_subject_of_folded_header_is_one_line(self):
         """A Subject the message folds over two lines reaches the search
         result unfolded, through the real fetch-and-parse path."""
