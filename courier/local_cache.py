@@ -373,7 +373,9 @@ class MuBackend:
             limit: Maximum number of results to return.
             folder: When given, narrow the search to that one IMAP folder
                 (exact, non-recursive); when ``None``, search the whole
-                block.
+                block, showing each Message-ID once on a Gmail maildir
+                (see :meth:`_gmail_layout`), as the server's All Mail
+                does.
             world_as_of: When set, the WORLD_AS_OF bound: relative terms
                 resolve against it, and the mu query gains a
                 ``date:..<bound>`` clause (Layer 1).  Note the semantic
@@ -446,6 +448,16 @@ class MuBackend:
             translated = f"({translated}) AND {clause}" if translated else clause
         prefix = self._scope_prefix(imap_block)
         scoped = self._scope_query(prefix, translated, folder, allowed_folders)
+        # A Gmail maildir holds one copy of a message per label, while
+        # the server answers a whole-account search from All Mail with
+        # one row per message; within one folder, and on other servers,
+        # whose whole-account search covers every folder, copies are
+        # rows live as well.
+        options = (
+            ["--skip-dups"]
+            if folder is None and self._gmail_layout(imap_block.maildir)
+            else []
+        )
 
         # One extra record is requested so a full page can be told apart
         # from a truncated one.  Rows the bound or a vanished file takes
@@ -454,7 +466,7 @@ class MuBackend:
         # so the cut falls where the server's would (issue #115).
         want = limit + 1
         while True:
-            raw = self._find_page(home, scoped, want)
+            raw = self._find_page(home, scoped, want, options)
             records: List[Dict[str, Any]] = []
             from_index = left_out = dropped_after_bound = 0
             for rec in raw:
@@ -480,7 +492,7 @@ class MuBackend:
         truncated = len(records) > limit
         total_count: Optional[int] = len(records)
         if truncated:
-            counted = self._count_matches(home, scoped)
+            counted = self._count_matches(home, scoped, options)
             # The count cannot fall below the rows already seen, and the
             # hits taken out above are not answers.
             total_count = (
@@ -492,13 +504,16 @@ class MuBackend:
             records[:limit], report, truncated, total_count, dropped_after_bound
         )
 
-    def _find_page(self, home: str, scoped: str, maxnum: int) -> List[Dict[str, Any]]:
+    def _find_page(
+        self, home: str, scoped: str, maxnum: int, options: List[str]
+    ) -> List[Dict[str, Any]]:
         """Read the newest *maxnum* matches of a scoped query from mu.
 
         Args:
             home: The muhome.
             scoped: The scoped mu query.
             maxnum: How many records to read, newest first by date.
+            options: Further ``mu find`` options (``--skip-dups``).
 
         Returns:
             mu's JSON records; empty when nothing matches.
@@ -513,6 +528,7 @@ class MuBackend:
             "mu",
             "find",
             f"--muhome={home}",
+            *options,
             "--format=json",
             "--maxnum",
             str(maxnum),
@@ -580,7 +596,7 @@ class MuBackend:
             return False
 
     @staticmethod
-    def _count_matches(home: str, scoped: str) -> Optional[int]:
+    def _count_matches(home: str, scoped: str, options: List[str]) -> Optional[int]:
         """Count every match of a scoped query, with no limit.
 
         ``mu find --fields=i`` prints one Message-ID line per match,
@@ -590,12 +606,13 @@ class MuBackend:
         Args:
             home: The muhome.
             scoped: The scoped mu query the page was read with.
+            options: The ``mu find`` options the page was read with.
 
         Returns:
             The number of matches, or ``None`` (with a warning) when mu
             could not run or failed.
         """
-        argv = ["mu", "find", f"--muhome={home}", "--fields=i", scoped]
+        argv = ["mu", "find", f"--muhome={home}", *options, "--fields=i", scoped]
         try:
             proc = subprocess.run(argv, capture_output=True, timeout=30, check=False)
         except (subprocess.TimeoutExpired, OSError) as e:
@@ -608,6 +625,22 @@ class MuBackend:
             )
             return None
         return proc.stdout.count(b"\n")
+
+    @staticmethod
+    def _gmail_layout(maildir: str) -> bool:
+        """Whether the block's maildir is a synced Gmail account.
+
+        A Gmail sync writes the server's ``[Gmail]`` folders (Sent
+        Mail, Trash and so on) under the block maildir, and each label
+        as a folder holding its own copy of the message.
+
+        Args:
+            maildir: The block's maildir root path.
+
+        Returns:
+            ``True`` when a ``[Gmail]`` folder sits under the block root.
+        """
+        return os.path.isdir(os.path.join(os.path.expanduser(maildir), "[Gmail]"))
 
     @staticmethod
     def _folder_synced(maildir: str, folder: str) -> bool:

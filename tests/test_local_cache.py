@@ -735,6 +735,52 @@ class TestMuBackendSearch:
         assert len(report.approximations) == 1
         assert report.approximations[0].startswith("3 rows come from the index")
 
+    def _find_argvs(self, tmp_path, gmail: bool, folder=None) -> list:
+        """The ``mu find`` argvs of a search whose page is cut, so both
+        the page run and the counting run happen."""
+        maildir = tmp_path / "mail" / "work"
+        (maildir / "INBOX" / "cur").mkdir(parents=True)
+        if gmail:
+            (maildir / "[Gmail]" / "Sent Mail" / "cur").mkdir(parents=True)
+        backend = self._backend(tmp_path)
+        records = [
+            _mu_record(str(maildir / f"gone{n}:2,S"), **{":maildir": "/work"})
+            for n in range(3)
+        ]
+        argvs: list = []
+
+        def fake_run(argv, **kwargs):
+            if argv[:2] != ["mu", "find"]:
+                return subprocess.CompletedProcess(argv, 1, "", "")
+            argvs.append(argv)
+            if "--fields=i" in argv:
+                return subprocess.CompletedProcess(argv, 0, b"x\n" * 3, b"")
+            return subprocess.CompletedProcess(argv, 0, json.dumps(records), "")
+
+        with patch("courier.local_cache.subprocess.run", side_effect=fake_run):
+            backend.search(
+                _make_block(str(maildir)), parse("from:jane"), limit=2, folder=folder
+            )
+        return argvs
+
+    def test_whole_gmail_block_shows_each_message_once(self, tmp_path):
+        """A Gmail maildir holds one copy per label; the server answers a
+        whole-account search from All Mail, one row per message, so both
+        the page and its count skip copies sharing a Message-ID."""
+        argvs = self._find_argvs(tmp_path, gmail=True)
+        assert len(argvs) == 2
+        assert all("--skip-dups" in argv for argv in argvs)
+
+    def test_one_gmail_folder_keeps_every_row(self, tmp_path):
+        argvs = self._find_argvs(tmp_path, gmail=True, folder="INBOX")
+        assert argvs and not any("--skip-dups" in argv for argv in argvs)
+
+    def test_other_layouts_keep_every_row(self, tmp_path):
+        """Elsewhere a whole-account search covers every folder, so two
+        folders' copies of a message are two rows live as well."""
+        argvs = self._find_argvs(tmp_path, gmail=False)
+        assert argvs and not any("--skip-dups" in argv for argv in argvs)
+
 
 class TestFolderExistenceCheck:
     """A folder-scoped search verifies the folder exists in the synced
