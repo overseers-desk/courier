@@ -825,6 +825,19 @@ class TestMuBackendSearch:
         assert not outcome.truncated
         assert not [n for n in outcome.report.approximations if "page" in n]
 
+    def test_rows_say_server_keywords_are_missing(self, tmp_path):
+        """A maildir file name records the system flags only, so a keyword
+        the server keeps never reaches a cached row."""
+        _, outcome = self._cut_search(tmp_path, gmail=False, limit=5)
+        notes = [n for n in outcome.report.approximations if "keywords" in n]
+        assert len(notes) == 1
+        assert notes[0].endswith("; --no-cache asks the server")
+
+    def test_empty_answer_carries_no_keywords_note(self, tmp_path):
+        records: list = []
+        _, report, *_ = self._search_records(tmp_path, _make_block(), records)
+        assert not [n for n in report.approximations if "keywords" in n]
+
 
 class TestFolderExistenceCheck:
     """A folder-scoped search verifies the folder exists in the synced

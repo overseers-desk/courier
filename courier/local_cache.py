@@ -52,6 +52,11 @@ _NOTE_GMAIL = (
     "archived mail that carries no label, and its rows name a label folder "
     "and UID where the server's name All Mail; --no-cache asks the server"
 )
+_NOTE_KEYWORDS = (
+    "the cache's rows list only the flags a maildir file name records "
+    "(\\Seen, \\Answered, \\Flagged, \\Deleted, \\Draft), not \\Recent or the "
+    "keywords the server keeps; --no-cache asks the server"
+)
 
 
 def _files_gone_notes(from_index: int, left_out: int) -> List[str]:
@@ -507,6 +512,8 @@ class MuBackend:
             notes.append(_NOTE_PAGE)
         if whole_gmail:
             notes.append(_NOTE_GMAIL)
+        if records:
+            notes.append(_NOTE_KEYWORDS)
         report.approximations.extend(n for n in notes if n not in report.approximations)
         total_count: Optional[int] = len(records)
         if truncated:
